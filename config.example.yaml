@@ -1,0 +1,30 @@
+# snappcloud-bot — SnappCloud Mattermost bot.
+#
+# Connects to Mattermost (WebSocket) and Dify. Authorization is delegated to the
+# per-region mcp-authz API — the bot holds no cluster credentials.
+#
+# Secrets are read from the environment (never in YAML):
+#   MATTERMOST_TOKEN, DIFY_API_KEY, MCP_AUTHZ_TOKEN.
+
+mattermost:
+  url: https://chat.snapp.services
+  tokenEnv: MATTERMOST_TOKEN
+  identityMap: {}
+  # Channels: answer only when @-mentioned. DMs: always answered. Default true.
+  requireMention: true
+
+dify:
+  url: http://172.21.162.207/v1
+  apiKeyEnv: DIFY_API_KEY
+
+authz:
+  tokenEnv: MCP_AUTHZ_TOKEN
+  cacheTTL: 5m
+  timeout: 10s
+  # One mcp-authz endpoint per cluster. `name` MUST match the per-cluster MCP
+  # tool group in the Dify workflow.
+  regions:
+    - name: okd4-teh-1
+      url: https://mcp-authz.apps.private.okd4.teh-1.snappcloud.io
+    - name: okd4-ts-2
+      url: https://mcp-authz.apps.private.okd4.ts-2.staging-snappcloud.io

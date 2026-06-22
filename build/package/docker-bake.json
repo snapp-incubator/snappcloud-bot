@@ -1,0 +1,18 @@
+{
+  "group": { "default": { "targets": ["snappcloud-bot"] } },
+  "variable": { "TAG": { "default": "latest" }, "SHA": { "default": "dev" } },
+  "target": {
+    "snappcloud-bot": {
+      "dockerfile": "Dockerfile",
+      "context": ".",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "args": { "VERSION": "${TAG}", "COMMIT": "${SHA}" },
+      "tags": [
+        "ghcr.io/snapp-incubator/snappcloud-bot:${TAG}",
+        "ghcr.io/snapp-incubator/snappcloud-bot:sha-${SHA}"
+      ],
+      "cache-from": ["type=gha,scope=snappcloud-bot"],
+      "cache-to": ["type=gha,mode=max,scope=snappcloud-bot"]
+    }
+  }
+}
