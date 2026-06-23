@@ -64,13 +64,27 @@ func (c *Client) Chat(ctx context.Context, user, query string, inputs map[string
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return "", fmt.Errorf("dify chat-messages: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return "", fmt.Errorf("dify chat-messages: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode dify response: %w", err)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", fmt.Errorf("decode dify response: %w (body: %s)", err, snippet(raw))
+	}
+	if strings.TrimSpace(out.Answer) == "" {
+		// 200 but no answer — surface the raw payload so the cause (agent error,
+		// wrong app type, missing input) is visible in logs instead of posting "".
+		return "", fmt.Errorf("dify returned an empty answer (body: %s)", snippet(raw))
 	}
 	return out.Answer, nil
+}
+
+func snippet(b []byte) string {
+	const max = 2 << 10
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
