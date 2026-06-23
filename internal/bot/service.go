@@ -23,7 +23,7 @@ type difyClient interface {
 
 type mmClient interface {
 	GetUser(ctx context.Context, userID string) (mattermost.User, error)
-	CreatePost(ctx context.Context, channelID, message string) error
+	CreatePost(ctx context.Context, channelID, message, rootID string) error
 }
 
 // Service ties identity, authorization, and the Dify workflow together.
@@ -74,7 +74,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	identity := s.resolveIdentity(user.Email)
 	if identity == "" {
-		s.reply(ctx, p.ChannelID, msgUnauthorized)
+		s.replyTo(ctx, p, msgUnauthorized)
 		return nil
 	}
 
@@ -82,12 +82,12 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	scope, err := s.resolver.Resolve(ctx, identity)
 	if err != nil {
 		s.log.Error("authorize", "user", identity, "err", err)
-		s.reply(ctx, p.ChannelID, msgBackendError)
+		s.replyTo(ctx, p, msgBackendError)
 		return nil
 	}
 	if scope.Empty() {
 		s.log.Info("denied", "user", identity, "reason", "no allowed namespaces on any cluster")
-		s.reply(ctx, p.ChannelID, msgUnauthorized)
+		s.replyTo(ctx, p, msgUnauthorized)
 		return nil
 	}
 	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
@@ -98,10 +98,10 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	})
 	if err != nil {
 		s.log.Error("dify", "user", identity, "err", err)
-		s.reply(ctx, p.ChannelID, msgDifyError)
+		s.replyTo(ctx, p, msgDifyError)
 		return nil
 	}
-	s.reply(ctx, p.ChannelID, answer)
+	s.replyTo(ctx, p, answer)
 	return nil
 }
 
@@ -136,8 +136,14 @@ func (s *Service) resolveIdentity(email string) string {
 	return email
 }
 
-func (s *Service) reply(ctx context.Context, channelID, msg string) {
-	if err := s.mm.CreatePost(ctx, channelID, msg); err != nil {
-		s.log.Error("post reply", "channel", channelID, "err", err)
+// replyTo answers a post. In channels it threads the reply under the original
+// (mentioned) message; in direct messages it posts plainly.
+func (s *Service) replyTo(ctx context.Context, p mattermost.Post, msg string) {
+	root := ""
+	if !p.IsDirect() {
+		root = p.ThreadRoot()
+	}
+	if err := s.mm.CreatePost(ctx, p.ChannelID, msg, root); err != nil {
+		s.log.Error("post reply", "channel", p.ChannelID, "err", err)
 	}
 }

@@ -19,6 +19,9 @@ type Post struct {
 	UserID    string `json:"user_id"`
 	ChannelID string `json:"channel_id"`
 	Message   string `json:"message"`
+	// RootID is the thread root when the post is itself a reply; empty for a
+	// top-level post.
+	RootID string `json:"root_id"`
 
 	// ChannelType is the event's channel_type: "D" direct, "G" group, "O" open,
 	// "P" private.
@@ -29,6 +32,16 @@ type Post struct {
 
 // IsDirect reports whether the post is in a direct (1:1) message channel.
 func (p Post) IsDirect() bool { return p.ChannelType == "D" }
+
+// ThreadRoot returns the post id to reply under so the reply lands in the same
+// thread: the existing thread root if the post is already a reply, else the post
+// itself.
+func (p Post) ThreadRoot() string {
+	if p.RootID != "" {
+		return p.RootID
+	}
+	return p.ID
+}
 
 // PostHandler is invoked for every incoming post that is not from the bot.
 type PostHandler func(ctx context.Context, p Post) error

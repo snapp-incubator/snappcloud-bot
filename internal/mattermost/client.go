@@ -82,8 +82,12 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	return u, err
 }
 
-// CreatePost replies in a channel.
-func (c *Client) CreatePost(ctx context.Context, channelID, message string) error {
-	return c.do(ctx, http.MethodPost, "/api/v4/posts",
-		map[string]string{"channel_id": channelID, "message": message}, nil)
+// CreatePost posts a message in a channel. When rootID is non-empty the post is
+// a threaded reply under that root.
+func (c *Client) CreatePost(ctx context.Context, channelID, message, rootID string) error {
+	body := map[string]string{"channel_id": channelID, "message": message}
+	if rootID != "" {
+		body["root_id"] = rootID
+	}
+	return c.do(ctx, http.MethodPost, "/api/v4/posts", body, nil)
 }

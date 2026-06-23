@@ -12,15 +12,17 @@ import (
 )
 
 type fakeMM struct {
-	email  string
-	posted []string
+	email    string
+	posted   []string
+	lastRoot string
 }
 
 func (f *fakeMM) GetUser(_ context.Context, _ string) (mattermost.User, error) {
 	return mattermost.User{Email: f.email}, nil
 }
-func (f *fakeMM) CreatePost(_ context.Context, _, msg string) error {
+func (f *fakeMM) CreatePost(_ context.Context, _, msg, rootID string) error {
 	f.posted = append(f.posted, msg)
+	f.lastRoot = rootID
 	return nil
 }
 
@@ -86,6 +88,38 @@ func TestAuthorizedForwardsClusterScopedToDify(t *testing.T) {
 	want := "okd4-teh-1: team-a, team-b\nokd4-ts-2: team-c"
 	if d.gotNS != want {
 		t.Fatalf("scope not passed correctly:\n got %q\nwant %q", d.gotNS, want)
+	}
+}
+
+func TestChannelMentionRepliesInThread(t *testing.T) {
+	mm := &fakeMM{email: "saman@snapp.cab"}
+	d := &fakeDify{answer: "ok"}
+	svc := newSvc(mm, d, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+
+	p := post()
+	p.ID = "post123"
+	p.ChannelType = "O"
+	p.Mentioned = true
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatalf("OnPost: %v", err)
+	}
+	if mm.lastRoot != "post123" {
+		t.Fatalf("channel reply not threaded: root=%q", mm.lastRoot)
+	}
+}
+
+func TestDirectMessageNotThreaded(t *testing.T) {
+	mm := &fakeMM{email: "saman@snapp.cab"}
+	d := &fakeDify{answer: "ok"}
+	svc := newSvc(mm, d, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+
+	p := post() // ChannelType "D"
+	p.ID = "post123"
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatalf("OnPost: %v", err)
+	}
+	if mm.lastRoot != "" {
+		t.Fatalf("DM should not be threaded: root=%q", mm.lastRoot)
 	}
 }
 
