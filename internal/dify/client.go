@@ -87,7 +87,10 @@ type streamEvent struct {
 func readStream(r io.Reader) (string, error) {
 	var b strings.Builder
 	br := bufio.NewReader(r)
+	var readErr error
 	for {
+		// ReadString returns the (possibly final, newline-less) line *and* the
+		// error together — process the line before acting on the error.
 		line, err := br.ReadString('\n')
 		if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
 			data = strings.TrimSpace(data)
@@ -107,15 +110,21 @@ func readStream(r io.Reader) (string, error) {
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
-				break
+			if err != io.EOF {
+				readErr = err // e.g. unexpected EOF: stream cut mid/after answer
 			}
-			return "", fmt.Errorf("read dify stream: %w", err)
+			break
 		}
 	}
+
 	answer := strings.TrimSpace(b.String())
-	if answer == "" {
-		return "", fmt.Errorf("dify returned an empty answer")
+	if answer != "" {
+		// We have content. A non-clean stream end (unexpected EOF) must NOT throw
+		// away a complete or partial answer — return it rather than nothing.
+		return answer, nil
 	}
-	return answer, nil
+	if readErr != nil {
+		return "", fmt.Errorf("read dify stream: %w", readErr)
+	}
+	return "", fmt.Errorf("dify returned an empty answer")
 }
