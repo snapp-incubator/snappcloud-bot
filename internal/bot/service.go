@@ -93,6 +93,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
 
 	// 3. Forward to Dify, scoped to the allowed clusters/namespaces.
+	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "query", query)
 	answer, err := s.dify.Chat(ctx, identity, query, map[string]any{
 		"allowed_namespaces": formatScope(scope),
 	})
