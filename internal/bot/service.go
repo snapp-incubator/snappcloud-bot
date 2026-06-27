@@ -24,6 +24,7 @@ type difyClient interface {
 type mmClient interface {
 	GetUser(ctx context.Context, userID string) (mattermost.User, error)
 	CreatePost(ctx context.Context, channelID, message, rootID string) error
+	Typing(ctx context.Context, channelID, parentID string)
 }
 
 // Service ties identity, authorization, and the Dify workflow together.
@@ -66,6 +67,16 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	if query == "" {
 		return nil
 	}
+
+	// Show a typing indicator for the whole turn (auth + Dify can be slow). In a
+	// channel it appears in the reply thread; in a DM, top-level.
+	typingRoot := ""
+	if !p.IsDirect() {
+		typingRoot = p.ThreadRoot()
+	}
+	typingCtx, stopTyping := context.WithCancel(ctx)
+	go s.mm.Typing(typingCtx, p.ChannelID, typingRoot)
+	defer stopTyping()
 
 	// 1. Resolve the authenticated SSO identity.
 	user, err := s.mm.GetUser(ctx, p.UserID)

@@ -25,6 +25,7 @@ func (f *fakeMM) CreatePost(_ context.Context, _, msg, rootID string) error {
 	f.lastRoot = rootID
 	return nil
 }
+func (f *fakeMM) Typing(_ context.Context, _, _ string) {}
 
 type fakeDify struct {
 	called bool

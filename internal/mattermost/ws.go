@@ -76,6 +76,8 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 		return fmt.Errorf("dial %s: %w", wsURL, err)
 	}
 	defer func() { _ = conn.Close() }()
+	c.setConn(conn)
+	defer c.setConn(nil)
 	log.Info("websocket connected", "url", wsURL)
 
 	// Keepalive: without it an idle connection is dropped by the LB/proxy with a
@@ -136,6 +138,45 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 		p.Mentioned = mentions(ev.Data.Mentions, botUserID)
 		if err := h(ctx, p); err != nil {
 			log.Error("handle post", "post", p.ID, "user", p.UserID, "err", err)
+		}
+	}
+}
+
+func (c *Client) setConn(conn *websocket.Conn) {
+	c.wsMu.Lock()
+	c.wsConn = conn
+	c.wsMu.Unlock()
+}
+
+// sendTyping emits one user_typing action on the live WebSocket. parentID is the
+// thread root (empty for a top-level/DM message). No-op if not connected.
+func (c *Client) sendTyping(channelID, parentID string) {
+	c.wsMu.Lock()
+	defer c.wsMu.Unlock()
+	if c.wsConn == nil {
+		return
+	}
+	c.seq++
+	_ = c.wsConn.WriteJSON(map[string]any{
+		"action": "user_typing",
+		"seq":    c.seq,
+		"data":   map[string]string{"channel_id": channelID, "parent_id": parentID},
+	})
+}
+
+// Typing keeps the "bot is typing…" indicator alive in a channel until ctx is
+// cancelled. The Mattermost indicator expires after a few seconds, so it is
+// re-sent on an interval. Run it in a goroutine for the duration of processing.
+func (c *Client) Typing(ctx context.Context, channelID, parentID string) {
+	c.sendTyping(channelID, parentID)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.sendTyping(channelID, parentID)
 		}
 	}
 }

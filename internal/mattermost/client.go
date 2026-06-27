@@ -10,14 +10,25 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-// Client talks to the Mattermost REST API as the bot account.
+// Client talks to the Mattermost REST API as the bot account, and (once Listen
+// is running) sends typing indicators over the live WebSocket.
 type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+
+	// wsMu guards the active WebSocket connection and the action sequence. Data
+	// writes (typing) must be serialized; the read loop and control pings are
+	// separate per gorilla's concurrency rules.
+	wsMu   sync.Mutex
+	wsConn *websocket.Conn
+	seq    int
 }
 
 // NewClient builds a REST client.
