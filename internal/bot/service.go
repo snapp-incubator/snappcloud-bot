@@ -8,12 +8,14 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
+	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
@@ -51,10 +53,15 @@ func New(mm mmClient, d difyClient, resolver authzclient.Resolver, identityMap m
 	}
 }
 
+// maxDifyAttempts: how many times to call Dify before giving up on an empty
+// answer (1 retry). A transient upstream stream cut usually succeeds on retry.
+const maxDifyAttempts = 2
+
 const (
-	msgUnauthorized = "You are not authorized: you have no namespaces you can query on any cluster. Contact your cluster admin if this is unexpected."
-	msgBackendError = "Authorization is temporarily unavailable. Please try again shortly."
-	msgDifyError    = "Sorry — I couldn't complete that request. Please try again."
+	msgUnauthorized = "🔒 You have no namespaces you can query on any cluster. If that's unexpected, ask your cluster admin to grant access."
+	msgBackendError = "⚙️ Authorization is temporarily unavailable. Please try again in a moment."
+	msgDifyError    = "⚠️ I hit an error talking to the workflow. Please try again shortly."
+	msgNoAnswer     = "⌛ I couldn't get a complete answer in time (the lookup may have run long). Please try again, ideally narrowing to one cluster or namespace."
 )
 
 // OnPost handles one incoming Mattermost post.
@@ -103,14 +110,31 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
 
-	// 3. Forward to Dify, scoped to the allowed clusters/namespaces.
+	// 3. Forward to Dify, scoped to the allowed clusters/namespaces. Retry on an
+	// empty answer (usually a transient upstream stream cut on a long run).
+	inputs := map[string]any{"allowed_namespaces": formatScope(scope)}
 	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "query", query)
-	answer, err := s.dify.Chat(ctx, identity, query, map[string]any{
-		"allowed_namespaces": formatScope(scope),
-	})
-	if err != nil {
-		s.log.Error("dify", "user", identity, "err", err)
-		s.replyTo(ctx, p, msgDifyError)
+
+	var answer string
+	var derr error
+	for attempt := 1; attempt <= maxDifyAttempts; attempt++ {
+		answer, derr = s.dify.Chat(ctx, identity, query, inputs)
+		if derr == nil {
+			break
+		}
+		if errors.Is(derr, dify.ErrEmptyAnswer) && attempt < maxDifyAttempts {
+			s.log.Warn("dify empty answer, retrying", "user", identity, "attempt", attempt, "err", derr)
+			continue
+		}
+		break
+	}
+	if derr != nil {
+		s.log.Error("dify", "user", identity, "err", derr)
+		if errors.Is(derr, dify.ErrEmptyAnswer) {
+			s.replyTo(ctx, p, msgNoAnswer)
+		} else {
+			s.replyTo(ctx, p, msgDifyError)
+		}
 		return nil
 	}
 	s.replyTo(ctx, p, answer)

@@ -14,7 +14,9 @@ mattermost:
   requireMention: true
 
 dify:
-  url: http://172.21.162.207/v1
+  # In-cluster Dify API service — bypasses the Contour ingress (no SSE-cutting
+  # response/idle timeout, no TLS). Format: http://<api-svc>.<ns>.svc:5001/v1.
+  url: http://spcld-user-docs-chatbot-api-svc.snappcloud-docs-chatbot.svc:5001/v1
   apiKeyEnv: DIFY_API_KEY
 
 authz:

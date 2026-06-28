@@ -7,12 +7,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrEmptyAnswer means the workflow produced no answer text — usually a stream
+// cut before any content (upstream timeout) or an agent that emitted nothing.
+// It is retryable.
+var ErrEmptyAnswer = errors.New("dify returned no answer")
 
 // Client invokes a Dify advanced-chat app via /chat-messages.
 type Client struct {
@@ -26,7 +32,10 @@ func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+		// Long: a multi-tool agent run streams for a while. The total cap must
+		// exceed any single run; the upstream ingress idle/response timeouts are
+		// the real backstop.
+		http: &http.Client{Timeout: 15 * time.Minute},
 	}
 }
 
@@ -84,10 +93,15 @@ type streamEvent struct {
 // readStream parses the SSE body and returns the concatenated answer. Text
 // arrives in "message"/"agent_message" events; "message_replace" replaces the
 // whole answer (moderation); "error" aborts.
+// truncatedNote is appended when the stream ends before Dify signalled a clean
+// finish, so the user knows the answer is incomplete (vs. silently partial).
+const truncatedNote = "\n\n_⚠️ The response was cut off before Dify finished (the workflow ended the stream early). Try again, or simplify the query._"
+
 func readStream(r io.Reader) (string, error) {
 	var b strings.Builder
 	br := bufio.NewReader(r)
 	var readErr error
+	finished := false
 	for {
 		// ReadString returns the (possibly final, newline-less) line *and* the
 		// error together — process the line before acting on the error.
@@ -103,6 +117,8 @@ func readStream(r io.Reader) (string, error) {
 					case "message_replace":
 						b.Reset()
 						b.WriteString(ev.Answer)
+					case "message_end", "workflow_finished":
+						finished = true
 					case "error":
 						return "", fmt.Errorf("dify stream error: %s %s", ev.Code, ev.Message)
 					}
@@ -119,12 +135,17 @@ func readStream(r io.Reader) (string, error) {
 
 	answer := strings.TrimSpace(b.String())
 	if answer != "" {
-		// We have content. A non-clean stream end (unexpected EOF) must NOT throw
-		// away a complete or partial answer — return it rather than nothing.
+		// We have content. A non-clean stream end must NOT throw away a complete
+		// or partial answer. If Dify never signalled a finish, the answer is
+		// truncated — flag it rather than passing it off as complete.
+		if !finished {
+			answer += truncatedNote
+		}
 		return answer, nil
 	}
+	// No content at all — retryable. Include the stream-end cause for logs.
 	if readErr != nil {
-		return "", fmt.Errorf("read dify stream: %w", readErr)
+		return "", fmt.Errorf("%w (stream cut: %v)", ErrEmptyAnswer, readErr)
 	}
-	return "", fmt.Errorf("dify returned an empty answer")
+	return "", ErrEmptyAnswer
 }

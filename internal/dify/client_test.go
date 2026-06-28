@@ -26,7 +26,8 @@ func TestReadStreamConcatenatesParts(t *testing.T) {
 func TestReadStreamMessageReplaceResets(t *testing.T) {
 	sse := "" +
 		"data: {\"event\": \"message\", \"answer\": \"partial bad\"}\n\n" +
-		"data: {\"event\": \"message_replace\", \"answer\": \"cleaned answer\"}\n\n"
+		"data: {\"event\": \"message_replace\", \"answer\": \"cleaned answer\"}\n\n" +
+		"data: {\"event\": \"message_end\"}\n\n"
 	got, err := readStream(strings.NewReader(sse))
 	if err != nil {
 		t.Fatal(err)
@@ -36,16 +37,31 @@ func TestReadStreamMessageReplaceResets(t *testing.T) {
 	}
 }
 
-func TestReadStreamReturnsAnswerOnAbruptEOF(t *testing.T) {
-	// Full answer received, but the stream ends without a trailing newline /
-	// clean close (unexpected EOF). The answer must still be returned.
+func TestReadStreamReturnsPartialOnAbruptEOFWithNotice(t *testing.T) {
+	// Stream cut mid-run (no message_end). The accumulated text must be returned
+	// (not discarded), flagged as truncated.
 	sse := "data: {\"event\": \"message\", \"answer\": \"complete answer\"}\n\n" +
 		"data: {\"event\": \"message\", \"answer\": \" more\"}"
 	got, err := readStream(strings.NewReader(sse))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "complete answer more" {
+	if !strings.HasPrefix(got, "complete answer more") {
+		t.Fatalf("partial answer missing: %q", got)
+	}
+	if !strings.Contains(got, "cut off") {
+		t.Fatalf("truncation notice missing: %q", got)
+	}
+}
+
+func TestReadStreamCleanFinishNoNotice(t *testing.T) {
+	sse := "data: {\"event\": \"message\", \"answer\": \"done answer\"}\n\n" +
+		"data: {\"event\": \"message_end\"}\n\n"
+	got, err := readStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "done answer" {
 		t.Fatalf("got %q", got)
 	}
 }
