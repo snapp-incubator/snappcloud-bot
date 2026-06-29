@@ -92,7 +92,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	if !p.IsDirect() && s.requireMention && !p.Mentioned {
 		return nil
 	}
-	query := strings.TrimSpace(s.stripMentgition(p.Message))
+	query := strings.TrimSpace(s.stripMention(p.Message))
 	if query == "" {
 		return nil
 	}
