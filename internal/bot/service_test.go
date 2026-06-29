@@ -60,8 +60,6 @@ func newSvc(mm *fakeMM, d *fakeDify, r *fakeResolver) *Service {
 		ConversationTTL: time.Hour,
 		BotUsername:     "snappbot",
 		RequireMention:  true,
-		ScopeSecret:     "test-secret",
-		ScopeTokenTTL:   time.Hour,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -103,12 +101,7 @@ func TestAuthorizedForwardsClusterScopedToDify(t *testing.T) {
 	if d.gotNS != want {
 		t.Fatalf("scope not passed correctly:\n got %q\nwant %q", d.gotNS, want)
 	}
-	if !strings.Contains(d.gotQuery, scopeOpen) || !strings.Contains(d.gotQuery, scopeClose) {
-		t.Fatalf("scope token not embedded in query: %q", d.gotQuery)
-	}
-	if !strings.HasPrefix(d.gotQuery, "show dropped flows") {
-		t.Fatalf("user query must lead, token block after: %q", d.gotQuery)
-	}
+
 }
 
 func TestChannelMentionRepliesInThread(t *testing.T) {

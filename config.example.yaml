@@ -21,17 +21,14 @@ dify:
   # Conversation memory: a Mattermost thread (and each DM) keeps its Dify
   # conversation alive this long after the last message. "0" disables memory.
   conversationTTL: 1h
+  # Persist thread/DM -> conversation memory to this file so users can continue
+  # past conversations across bot restarts. Put it on a PVC. Empty = in-memory.
+  memoryPath: /data/conversations.json
 
 authz:
   tokenEnv: MCP_AUTHZ_TOKEN
   cacheTTL: 5m
   timeout: 10s
-  # MCP-layer enforcement: HMAC secret shared with every mcp-gateway. When set,
-  # the bot mints a signed scope token and sends it to Dify as the `scope_token`
-  # input; the gateways verify it and block unauthorized namespace tool calls.
-  # Empty disables (prompt-only scoping). Secret read from this env var.
-  scopeSecretEnv: SCOPE_TOKEN_SECRET
-  scopeTokenTTL: 1h
   # One mcp-authz endpoint per cluster. `name` MUST match the per-cluster MCP
   # tool group in the Dify workflow.
   regions:

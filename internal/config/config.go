@@ -39,6 +39,10 @@ type Dify struct {
 	// ConversationTTL keeps a thread/DM's Dify conversation (memory) alive for
 	// this long after its last message (default 1h). "0" disables memory.
 	ConversationTTL string `yaml:"conversationTTL"`
+	// MemoryPath persists the thread/DM -> Dify-conversation mapping to this file
+	// so users can continue past conversations across bot restarts. Empty =
+	// in-memory only. Put it on a PVC.
+	MemoryPath string `yaml:"memoryPath"`
 }
 
 // Authz configures how the bot reaches the per-region mcp-authz APIs.
@@ -53,14 +57,6 @@ type Authz struct {
 	// Regions are the mcp-authz endpoints, one per cluster. Region name is the
 	// contract with the Dify workflow (per-cluster MCP tool group).
 	Regions []Region `yaml:"regions"`
-
-	// ScopeSecretEnv names the env var with the HMAC secret shared with the
-	// mcp-gateway. When set, the bot mints a signed scope token and sends it to
-	// Dify as the `scope_token` input for the gateways to enforce. Empty disables.
-	ScopeSecretEnv string `yaml:"scopeSecretEnv"`
-	// ScopeTokenTTL is how long a minted token is valid (default 1h, covering a
-	// conversation since Dify fixes inputs at conversation start).
-	ScopeTokenTTL string `yaml:"scopeTokenTTL"`
 }
 
 // Region is one cluster's mcp-authz endpoint.
@@ -104,9 +100,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Authz.Timeout == "" {
 		c.Authz.Timeout = "10s"
-	}
-	if c.Authz.ScopeTokenTTL == "" {
-		c.Authz.ScopeTokenTTL = "1h"
 	}
 }
 

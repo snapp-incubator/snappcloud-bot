@@ -19,7 +19,6 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
-	"github.com/snapp-incubator/snappcloud-bot/internal/scopetoken"
 )
 
 type difyClient interface {
@@ -41,19 +40,16 @@ type Service struct {
 	identityMap    map[string]string
 	botUsername    string
 	requireMention bool
-	scopeSecret    string        // HMAC secret for the mcp-gateway scope token ("" disables)
-	scopeTokenTTL  time.Duration // validity of a minted token
 	log            *slog.Logger
 }
 
 // Options carries the optional settings for New.
 type Options struct {
 	ConversationTTL time.Duration
+	MemoryPath      string // file to persist conversation memory across restarts ("" = in-memory)
 	IdentityMap     map[string]string
 	BotUsername     string
 	RequireMention  bool
-	ScopeSecret     string
-	ScopeTokenTTL   time.Duration
 }
 
 // New builds the orchestration service.
@@ -62,12 +58,10 @@ func New(mm mmClient, d difyClient, resolver authzclient.Resolver, o Options, lo
 		mm:             mm,
 		dify:           d,
 		resolver:       resolver,
-		conv:           newConvStore(o.ConversationTTL),
+		conv:           newConvStore(o.ConversationTTL, o.MemoryPath),
 		identityMap:    o.IdentityMap,
 		botUsername:    o.BotUsername,
 		requireMention: o.RequireMention,
-		scopeSecret:    o.ScopeSecret,
-		scopeTokenTTL:  o.ScopeTokenTTL,
 		log:            log,
 	}
 }
@@ -134,21 +128,10 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 
 	// 3. Forward to Dify, continuing this thread/DM's conversation (memory).
 	// Retry on an empty answer (usually a transient upstream stream cut).
+	// allowed_namespaces scopes the agent advisorily; hard per-namespace
+	// enforcement is not possible through Dify's MCP integration (the agent
+	// cannot reliably carry a token), so it is not attempted here.
 	inputs := map[string]any{"allowed_namespaces": formatScope(scope)}
-
-	// Mint a FRESH scope token each message and embed it in the query. Dify
-	// freezes conversation `inputs` at creation, so a per-message input never
-	// reaches an ongoing conversation (and would expire). The query is sent every
-	// message, so the agent always reads a current token from the latest message.
-	difyQuery := query
-	if s.scopeSecret != "" {
-		tok, terr := scopetoken.Sign(identity, scopetoken.Scope(scope), s.scopeTokenTTL, s.scopeSecret)
-		if terr != nil {
-			s.log.Error("sign scope token", "user", identity, "err", terr)
-		} else {
-			difyQuery = query + "\n\n" + scopeOpen + tok + scopeClose
-		}
-	}
 	convKey := convKeyFor(identity, p)
 	convID := s.conv.get(convKey)
 	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "conversation", convID != "")
@@ -156,7 +139,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	var reply dify.Reply
 	var derr error
 	for attempt := 1; attempt <= maxDifyAttempts; attempt++ {
-		reply, derr = s.dify.Chat(ctx, identity, difyQuery, convID, inputs)
+		reply, derr = s.dify.Chat(ctx, identity, query, convID, inputs)
 		// Remember the conversation id whenever Dify returned one (even on a
 		// retryable empty answer) so the next message continues the thread.
 		if reply.ConversationID != "" {
@@ -189,27 +172,14 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	return nil
 }
 
-// Markers that wrap the per-message scope token embedded in the query. The agent
-// is instructed to read the token between them and never echo it.
-const (
-	scopeOpen  = "<<SCOPE_TOKEN>>"
-	scopeClose = "<<END_SCOPE_TOKEN>>"
-)
-
 // thinkRe matches reasoning blocks some "thinking" models wrap their
-// chain-of-thought in. scopeRe matches a leaked token block (belt and braces, in
-// case the model echoes it despite instructions).
-var (
-	thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
-	scopeRe = regexp.MustCompile(`(?s)` + regexp.QuoteMeta(scopeOpen) + `.*?` + regexp.QuoteMeta(scopeClose))
-)
+// chain-of-thought in. Stripped so they don't reach the user. (Plain-text
+// reasoning with no tags can't be removed here — that needs a non-thinking
+// model.)
+var thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
 
-// sanitize strips model reasoning blocks and any leaked scope-token block from
-// the answer before it reaches the user.
 func sanitize(s string) string {
-	s = thinkRe.ReplaceAllString(s, "")
-	s = scopeRe.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
+	return strings.TrimSpace(thinkRe.ReplaceAllString(s, ""))
 }
 
 // formatScope renders the per-cluster scope as a deterministic, agent-readable
