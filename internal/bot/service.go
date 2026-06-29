@@ -13,14 +13,16 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
+	"github.com/snapp-incubator/snappcloud-bot/internal/scopetoken"
 )
 
 type difyClient interface {
-	Chat(ctx context.Context, user, query string, inputs map[string]any) (string, error)
+	Chat(ctx context.Context, user, query, conversationID string, inputs map[string]any) (dify.Reply, error)
 }
 
 type mmClient interface {
@@ -34,24 +36,43 @@ type Service struct {
 	mm             mmClient
 	dify           difyClient
 	resolver       authzclient.Resolver
+	conv           *convStore
 	identityMap    map[string]string
 	botUsername    string
 	requireMention bool
+	scopeSecret    string        // HMAC secret for the mcp-gateway scope token ("" disables)
+	scopeTokenTTL  time.Duration // validity of a minted token
 	log            *slog.Logger
 }
 
+// Options carries the optional settings for New.
+type Options struct {
+	ConversationTTL time.Duration
+	IdentityMap     map[string]string
+	BotUsername     string
+	RequireMention  bool
+	ScopeSecret     string
+	ScopeTokenTTL   time.Duration
+}
+
 // New builds the orchestration service.
-func New(mm mmClient, d difyClient, resolver authzclient.Resolver, identityMap map[string]string, botUsername string, requireMention bool, log *slog.Logger) *Service {
+func New(mm mmClient, d difyClient, resolver authzclient.Resolver, o Options, log *slog.Logger) *Service {
 	return &Service{
 		mm:             mm,
 		dify:           d,
 		resolver:       resolver,
-		identityMap:    identityMap,
-		botUsername:    botUsername,
-		requireMention: requireMention,
+		conv:           newConvStore(o.ConversationTTL),
+		identityMap:    o.IdentityMap,
+		botUsername:    o.BotUsername,
+		requireMention: o.RequireMention,
+		scopeSecret:    o.ScopeSecret,
+		scopeTokenTTL:  o.ScopeTokenTTL,
 		log:            log,
 	}
 }
+
+// StartSweeper runs the conversation-store eviction loop until ctx is cancelled.
+func (s *Service) StartSweeper(ctx context.Context) { s.conv.StartSweeper(ctx) }
 
 // maxDifyAttempts: how many times to call Dify before giving up on an empty
 // answer (1 retry). A transient upstream stream cut usually succeeds on retry.
@@ -75,14 +96,14 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		return nil
 	}
 
-	// Show a typing indicator for the whole turn (auth + Dify can be slow). In a
-	// channel it appears in the reply thread; in a DM, top-level.
-	typingRoot := ""
-	if !p.IsDirect() {
-		typingRoot = p.ThreadRoot()
-	}
+	// Show a typing indicator for the whole turn (auth + Dify can be slow).
+	// parent_id must be the EXISTING thread root (p.RootID): empty for a
+	// top-level message → channel-level typing (visible in the channel); set when
+	// the user is already in a thread → typing shows in that thread. Using the
+	// post's own id here would make it thread-typing under a not-yet-open thread,
+	// which the channel view never shows.
 	typingCtx, stopTyping := context.WithCancel(ctx)
-	go s.mm.Typing(typingCtx, p.ChannelID, typingRoot)
+	go s.mm.Typing(typingCtx, p.ChannelID, p.RootID)
 	defer stopTyping()
 
 	// 1. Resolve the authenticated SSO identity.
@@ -110,15 +131,32 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
 
-	// 3. Forward to Dify, scoped to the allowed clusters/namespaces. Retry on an
-	// empty answer (usually a transient upstream stream cut on a long run).
+	// 3. Forward to Dify, continuing this thread/DM's conversation (memory).
+	// Retry on an empty answer (usually a transient upstream stream cut).
 	inputs := map[string]any{"allowed_namespaces": formatScope(scope)}
-	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "query", query)
+	// Mint a signed scope token for the mcp-gateways to enforce per-namespace.
+	if s.scopeSecret != "" {
+		tok, terr := scopetoken.Sign(identity, scopetoken.Scope(scope), s.scopeTokenTTL, s.scopeSecret)
+		if terr != nil {
+			s.log.Error("sign scope token", "user", identity, "err", terr)
+		} else {
+			inputs["scope_token"] = tok
+		}
+	}
+	convKey := convKeyFor(identity, p)
+	convID := s.conv.get(convKey)
+	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "conversation", convID != "")
 
-	var answer string
+	var reply dify.Reply
 	var derr error
 	for attempt := 1; attempt <= maxDifyAttempts; attempt++ {
-		answer, derr = s.dify.Chat(ctx, identity, query, inputs)
+		reply, derr = s.dify.Chat(ctx, identity, query, convID, inputs)
+		// Remember the conversation id whenever Dify returned one (even on a
+		// retryable empty answer) so the next message continues the thread.
+		if reply.ConversationID != "" {
+			convID = reply.ConversationID
+			s.conv.put(convKey, convID)
+		}
 		if derr == nil {
 			break
 		}
@@ -130,6 +168,10 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	if derr != nil {
 		s.log.Error("dify", "user", identity, "err", derr)
+		// A stale/invalid conversation id (4xx) — forget it so the next try is fresh.
+		if convID == "" || !errors.Is(derr, dify.ErrEmptyAnswer) {
+			s.conv.drop(convKey)
+		}
 		if errors.Is(derr, dify.ErrEmptyAnswer) {
 			s.replyTo(ctx, p, msgNoAnswer)
 		} else {
@@ -137,7 +179,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		}
 		return nil
 	}
-	s.replyTo(ctx, p, answer)
+	s.replyTo(ctx, p, reply.Answer)
 	return nil
 }
 

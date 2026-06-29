@@ -73,6 +73,21 @@ func run(configPath, addr string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("parse authz.cacheTTL: %w", err)
 	}
+	convTTL, err := time.ParseDuration(cfg.Dify.ConversationTTL)
+	if err != nil {
+		return fmt.Errorf("parse dify.conversationTTL: %w", err)
+	}
+	scopeTokenTTL, err := time.ParseDuration(cfg.Authz.ScopeTokenTTL)
+	if err != nil {
+		return fmt.Errorf("parse authz.scopeTokenTTL: %w", err)
+	}
+	var scopeSecret string
+	if cfg.Authz.ScopeSecretEnv != "" {
+		scopeSecret = os.Getenv(cfg.Authz.ScopeSecretEnv)
+		if scopeSecret == "" {
+			return fmt.Errorf("scope secret env %q is empty", cfg.Authz.ScopeSecretEnv)
+		}
+	}
 
 	regions := make([]authzclient.Region, 0, len(cfg.Authz.Regions))
 	names := make([]string, 0, len(cfg.Authz.Regions))
@@ -99,7 +114,18 @@ func run(configPath, addr string, log *slog.Logger) error {
 	}
 	log.Info("connected to mattermost", "bot", me.Username, "id", me.ID)
 
-	svc := bot.New(mm, difyClient, resolver, cfg.Mattermost.IdentityMap, me.Username, cfg.RequireMention(), log)
+	svc := bot.New(mm, difyClient, resolver, bot.Options{
+		ConversationTTL: convTTL,
+		IdentityMap:     cfg.Mattermost.IdentityMap,
+		BotUsername:     me.Username,
+		RequireMention:  cfg.RequireMention(),
+		ScopeSecret:     scopeSecret,
+		ScopeTokenTTL:   scopeTokenTTL,
+	}, log)
+	go svc.StartSweeper(ctx)
+	if scopeSecret != "" {
+		log.Info("mcp-gateway scope enforcement enabled", "tokenTTL", scopeTokenTTL)
+	}
 
 	go serveHealth(ctx, addr, log)
 

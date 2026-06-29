@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
+	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
@@ -28,15 +30,19 @@ func (f *fakeMM) CreatePost(_ context.Context, _, msg, rootID string) error {
 func (f *fakeMM) Typing(_ context.Context, _, _ string) {}
 
 type fakeDify struct {
-	called bool
-	gotNS  any
-	answer string
+	called   bool
+	gotNS    any
+	gotToken string
+	gotConv  string
+	answer   string
 }
 
-func (f *fakeDify) Chat(_ context.Context, _, _ string, inputs map[string]any) (string, error) {
+func (f *fakeDify) Chat(_ context.Context, _, _, conversationID string, inputs map[string]any) (dify.Reply, error) {
 	f.called = true
 	f.gotNS = inputs["allowed_namespaces"]
-	return f.answer, nil
+	f.gotToken, _ = inputs["scope_token"].(string)
+	f.gotConv = conversationID
+	return dify.Reply{Answer: f.answer, ConversationID: "conv-1"}, nil
 }
 
 type fakeResolver struct {
@@ -49,7 +55,13 @@ func (f *fakeResolver) Resolve(_ context.Context, _ string) (authzclient.Scope, 
 }
 
 func newSvc(mm *fakeMM, d *fakeDify, r *fakeResolver) *Service {
-	return New(mm, d, r, nil, "snappbot", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(mm, d, r, Options{
+		ConversationTTL: time.Hour,
+		BotUsername:     "snappbot",
+		RequireMention:  true,
+		ScopeSecret:     "test-secret",
+		ScopeTokenTTL:   time.Hour,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func post() mattermost.Post {
@@ -90,6 +102,9 @@ func TestAuthorizedForwardsClusterScopedToDify(t *testing.T) {
 	if d.gotNS != want {
 		t.Fatalf("scope not passed correctly:\n got %q\nwant %q", d.gotNS, want)
 	}
+	if d.gotToken == "" {
+		t.Fatal("scope_token not minted/passed to Dify")
+	}
 }
 
 func TestChannelMentionRepliesInThread(t *testing.T) {
@@ -121,6 +136,28 @@ func TestDirectMessageNotThreaded(t *testing.T) {
 	}
 	if mm.lastRoot != "" {
 		t.Fatalf("DM should not be threaded: root=%q", mm.lastRoot)
+	}
+}
+
+func TestConversationMemoryReusedInThread(t *testing.T) {
+	mm := &fakeMM{email: "saman@snapp.cab"}
+	d := &fakeDify{answer: "ok"}
+	svc := newSvc(mm, d, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+
+	p := post() // DM, stable channel id "c1"
+	// First message: no prior conversation.
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if d.gotConv != "" {
+		t.Fatalf("first call should have no conversation id, got %q", d.gotConv)
+	}
+	// Second message in the same DM: must continue conv-1 from the first reply.
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if d.gotConv != "conv-1" {
+		t.Fatalf("second call should reuse conversation id, got %q", d.gotConv)
 	}
 }
 
