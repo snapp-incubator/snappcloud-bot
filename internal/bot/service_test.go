@@ -33,15 +33,15 @@ func (f *fakeMM) Typing(_ context.Context, _, _ string) {}
 type fakeDify struct {
 	called   bool
 	gotNS    any
-	gotToken string
+	gotQuery string
 	gotConv  string
 	answer   string
 }
 
-func (f *fakeDify) Chat(_ context.Context, _, _, conversationID string, inputs map[string]any) (dify.Reply, error) {
+func (f *fakeDify) Chat(_ context.Context, _, query, conversationID string, inputs map[string]any) (dify.Reply, error) {
 	f.called = true
 	f.gotNS = inputs["allowed_namespaces"]
-	f.gotToken, _ = inputs["scope_token"].(string)
+	f.gotQuery = query
 	f.gotConv = conversationID
 	return dify.Reply{Answer: f.answer, ConversationID: "conv-1"}, nil
 }
@@ -103,8 +103,11 @@ func TestAuthorizedForwardsClusterScopedToDify(t *testing.T) {
 	if d.gotNS != want {
 		t.Fatalf("scope not passed correctly:\n got %q\nwant %q", d.gotNS, want)
 	}
-	if d.gotToken == "" {
-		t.Fatal("scope_token not minted/passed to Dify")
+	if !strings.Contains(d.gotQuery, scopeOpen) || !strings.Contains(d.gotQuery, scopeClose) {
+		t.Fatalf("scope token not embedded in query: %q", d.gotQuery)
+	}
+	if !strings.HasPrefix(d.gotQuery, "show dropped flows") {
+		t.Fatalf("user query must lead, token block after: %q", d.gotQuery)
 	}
 }
 

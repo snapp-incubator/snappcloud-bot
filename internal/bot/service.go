@@ -135,13 +135,18 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// 3. Forward to Dify, continuing this thread/DM's conversation (memory).
 	// Retry on an empty answer (usually a transient upstream stream cut).
 	inputs := map[string]any{"allowed_namespaces": formatScope(scope)}
-	// Mint a signed scope token for the mcp-gateways to enforce per-namespace.
+
+	// Mint a FRESH scope token each message and embed it in the query. Dify
+	// freezes conversation `inputs` at creation, so a per-message input never
+	// reaches an ongoing conversation (and would expire). The query is sent every
+	// message, so the agent always reads a current token from the latest message.
+	difyQuery := query
 	if s.scopeSecret != "" {
 		tok, terr := scopetoken.Sign(identity, scopetoken.Scope(scope), s.scopeTokenTTL, s.scopeSecret)
 		if terr != nil {
 			s.log.Error("sign scope token", "user", identity, "err", terr)
 		} else {
-			inputs["scope_token"] = tok
+			difyQuery = query + "\n\n" + scopeOpen + tok + scopeClose
 		}
 	}
 	convKey := convKeyFor(identity, p)
@@ -151,7 +156,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	var reply dify.Reply
 	var derr error
 	for attempt := 1; attempt <= maxDifyAttempts; attempt++ {
-		reply, derr = s.dify.Chat(ctx, identity, query, convID, inputs)
+		reply, derr = s.dify.Chat(ctx, identity, difyQuery, convID, inputs)
 		// Remember the conversation id whenever Dify returned one (even on a
 		// retryable empty answer) so the next message continues the thread.
 		if reply.ConversationID != "" {
@@ -180,18 +185,31 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		}
 		return nil
 	}
-	s.replyTo(ctx, p, stripThinking(reply.Answer))
+	s.replyTo(ctx, p, sanitize(reply.Answer))
 	return nil
 }
 
-// thinkRe matches reasoning blocks some "thinking" models wrap their
-// chain-of-thought in. Stripped so they don't reach the user. (Plain-text
-// reasoning with no tags can't be removed here — that needs a non-thinking
-// model or a stronger prompt.)
-var thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
+// Markers that wrap the per-message scope token embedded in the query. The agent
+// is instructed to read the token between them and never echo it.
+const (
+	scopeOpen  = "<<SCOPE_TOKEN>>"
+	scopeClose = "<<END_SCOPE_TOKEN>>"
+)
 
-func stripThinking(s string) string {
-	return strings.TrimSpace(thinkRe.ReplaceAllString(s, ""))
+// thinkRe matches reasoning blocks some "thinking" models wrap their
+// chain-of-thought in. scopeRe matches a leaked token block (belt and braces, in
+// case the model echoes it despite instructions).
+var (
+	thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
+	scopeRe = regexp.MustCompile(`(?s)` + regexp.QuoteMeta(scopeOpen) + `.*?` + regexp.QuoteMeta(scopeClose))
+)
+
+// sanitize strips model reasoning blocks and any leaked scope-token block from
+// the answer before it reaches the user.
+func sanitize(s string) string {
+	s = thinkRe.ReplaceAllString(s, "")
+	s = scopeRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // formatScope renders the per-cluster scope as a deterministic, agent-readable
