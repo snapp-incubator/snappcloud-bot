@@ -76,7 +76,7 @@ func (s *Service) StartSweeper(ctx context.Context) { s.conv.StartSweeper(ctx) }
 
 // maxDifyAttempts: how many times to call Dify before giving up on an empty
 // answer (1 retry). A transient upstream stream cut usually succeeds on retry.
-const maxDifyAttempts = 2
+const maxDifyAttempts = 3
 
 const (
 	msgUnauthorized = "🔒 You have no namespaces you can query on any cluster. If that's unexpected, ask your cluster admin to grant access."

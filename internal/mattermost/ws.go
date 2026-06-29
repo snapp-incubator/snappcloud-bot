@@ -80,6 +80,11 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 	defer c.setConn(nil)
 	log.Info("websocket connected", "url", wsURL)
 
+	// done closes when this connection's read loop returns, so the keepalive
+	// goroutines exit with it (no leak across reconnects).
+	done := make(chan struct{})
+	defer close(done)
+
 	// Keepalive: without it an idle connection is dropped by the LB/proxy with a
 	// 1006 abnormal closure roughly every minute.
 	const pongWait = 90 * time.Second
@@ -90,8 +95,11 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 	})
 
 	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
 	}()
 
 	go func() {
@@ -101,6 +109,8 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 			select {
 			case <-ctx.Done():
 				return
+			case <-done:
+				return
 			case <-ticker.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 					_ = conn.Close()
@@ -109,6 +119,11 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 			}
 		}
 	}()
+
+	// Bounded worker pool: handle posts in goroutines so a slow turn (auth + a
+	// long Dify agent run, tens of seconds) never blocks the read loop. Blocking
+	// the loop starves pong handling and drops the connection.
+	sem := make(chan struct{}, maxConcurrentHandlers)
 
 	for {
 		var ev struct {
@@ -136,11 +151,20 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 		}
 		p.ChannelType = ev.Data.ChannelType
 		p.Mentioned = mentions(ev.Data.Mentions, botUserID)
-		if err := h(ctx, p); err != nil {
-			log.Error("handle post", "post", p.ID, "user", p.UserID, "err", err)
-		}
+
+		sem <- struct{}{}
+		go func(p Post) {
+			defer func() { <-sem }()
+			if err := h(ctx, p); err != nil {
+				log.Error("handle post", "post", p.ID, "user", p.UserID, "err", err)
+			}
+		}(p)
 	}
 }
+
+// maxConcurrentHandlers bounds in-flight message handlers so a flood can't spawn
+// unbounded goroutines.
+const maxConcurrentHandlers = 16
 
 func (c *Client) setConn(conn *websocket.Conn) {
 	c.wsMu.Lock()
