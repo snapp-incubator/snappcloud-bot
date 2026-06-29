@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -91,7 +92,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	if !p.IsDirect() && s.requireMention && !p.Mentioned {
 		return nil
 	}
-	query := strings.TrimSpace(s.stripMention(p.Message))
+	query := strings.TrimSpace(s.stripMentgition(p.Message))
 	if query == "" {
 		return nil
 	}
@@ -179,8 +180,18 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		}
 		return nil
 	}
-	s.replyTo(ctx, p, reply.Answer)
+	s.replyTo(ctx, p, stripThinking(reply.Answer))
 	return nil
+}
+
+// thinkRe matches reasoning blocks some "thinking" models wrap their
+// chain-of-thought in. Stripped so they don't reach the user. (Plain-text
+// reasoning with no tags can't be removed here — that needs a non-thinking
+// model or a stronger prompt.)
+var thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
+
+func stripThinking(s string) string {
+	return strings.TrimSpace(thinkRe.ReplaceAllString(s, ""))
 }
 
 // formatScope renders the per-cluster scope as a deterministic, agent-readable
@@ -214,14 +225,69 @@ func (s *Service) resolveIdentity(email string) string {
 	return email
 }
 
+// Mattermost rejects posts longer than its MaxPostSize (default 16383 chars).
+// Split safely below that. maxPostParts is a flood guard only — the whole answer
+// is delivered across posts; nothing is shown to the user about splitting.
+const (
+	maxPostRunes = 16000
+	maxPostParts = 40
+)
+
 // replyTo answers a post. In channels it threads the reply under the original
-// (mentioned) message; in direct messages it posts plainly.
+// (mentioned) message; in direct messages it posts plainly. Long answers are
+// split transparently into multiple posts (Mattermost caps post length); the
+// user sees no truncation notice — the full answer is delivered.
 func (s *Service) replyTo(ctx context.Context, p mattermost.Post, msg string) {
 	root := ""
 	if !p.IsDirect() {
 		root = p.ThreadRoot()
 	}
-	if err := s.mm.CreatePost(ctx, p.ChannelID, msg, root); err != nil {
-		s.log.Error("post reply", "channel", p.ChannelID, "err", err)
+	parts := splitMessage(msg, maxPostRunes)
+	if len(parts) > maxPostParts {
+		s.log.Warn("answer exceeded post-part guard, dropping tail", "channel", p.ChannelID, "parts", len(parts))
+		parts = parts[:maxPostParts]
 	}
+	for _, part := range parts {
+		if err := s.mm.CreatePost(ctx, p.ChannelID, part, root); err != nil {
+			s.log.Error("post reply", "channel", p.ChannelID, "err", err)
+			return
+		}
+	}
+}
+
+// splitMessage breaks msg into chunks of at most max runes, preferring line
+// boundaries. The whole message is returned across chunks (no truncation).
+func splitMessage(msg string, max int) []string {
+	if len([]rune(msg)) <= max {
+		return []string{msg}
+	}
+	var parts []string
+	var b strings.Builder
+	bn := 0 // rune count in b
+	flush := func() {
+		if bn > 0 {
+			parts = append(parts, b.String())
+			b.Reset()
+			bn = 0
+		}
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		lr := []rune(line)
+		for len(lr) > max { // a single over-long line: hard-split
+			flush()
+			parts = append(parts, string(lr[:max]))
+			lr = lr[max:]
+		}
+		if bn+len(lr)+1 > max {
+			flush()
+		}
+		if bn > 0 {
+			b.WriteByte('\n')
+			bn++
+		}
+		b.WriteString(string(lr))
+		bn += len(lr)
+	}
+	flush()
+	return parts
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,5 +191,33 @@ func TestBackendErrorFailsClosed(t *testing.T) {
 	}
 	if len(mm.posted) != 1 || mm.posted[0] != msgBackendError {
 		t.Fatalf("expected backend-error reply, got %v", mm.posted)
+	}
+}
+
+func TestSplitMessageRespectsLimitAndKeepsAll(t *testing.T) {
+	long := strings.Repeat("line of text\n", 5000) // ~60k chars
+	parts := splitMessage(long, 16000)
+	if len(parts) < 2 {
+		t.Fatalf("expected split, got %d", len(parts))
+	}
+	total := 0
+	for i, p := range parts {
+		if len([]rune(p)) > 16000 {
+			t.Fatalf("part %d over limit: %d runes", i, len([]rune(p)))
+		}
+		total += len([]rune(p))
+	}
+	// No truncation notice; nothing dropped (allow for stripped trailing newlines).
+	if strings.Contains(strings.Join(parts, ""), "truncated") {
+		t.Fatal("user-facing truncation notice must not appear")
+	}
+	if total < len([]rune(strings.TrimRight(long, "\n")))-len(parts) {
+		t.Fatalf("content lost: total=%d", total)
+	}
+}
+
+func TestSplitMessageShortUnchanged(t *testing.T) {
+	if got := splitMessage("hello", 16000); len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("short message altered: %v", got)
 	}
 }
