@@ -1,75 +1,102 @@
 # snappcloud-bot
 
-The SnappCloud Mattermost bot. An authenticated Mattermost user chats with it;
-the bot checks the user's authorization and, if allowed, forwards the query to a
-[Dify](https://dify.ai) workflow whose agent drives per-cluster MCP servers.
+The SnappCloud Mattermost bot. An authenticated user chats with it; the bot
+resolves the user's authorization and then runs an **in-process MCP agent** that
+drives the per-cluster MCP servers (Cilium/Hubble, Envoy/Contour, docs) with a
+reasoning model — enforcing namespace scope on every tool result. There is no
+Dify: the bot does the tool-calling and the authorization itself, and answers
+cross-cluster questions in a single loop.
 
 Authorization is delegated to [mcp-authz](../mcp-authz) — one instance per
-cluster. The bot holds **no cluster credentials**: it calls every region's
-mcp-authz API, aggregates the per-cluster namespace scope, and passes it to Dify.
+cluster. The bot holds **no cluster credentials**.
 
 ```
-Mattermost user
-   │  message (WebSocket)
-   ▼
+Mattermost user ── message (WebSocket)
+        ▼
 snappcloud-bot ── resolve SSO email
-   │  GET /v1/namespaces?user=<email>  (bearer) ─▶ mcp-authz (every region, concurrent)
-   │  aggregate Scope{cluster: [namespaces]}; cache 5m per user
-   ▼  if non-empty
-Dify workflow  (inputs.allowed_namespaces = cluster-qualified scope)
-   ▼
-answer ─▶ Mattermost
+        │  scope = mcp-authz(every region): cluster -> [namespaces]   (groups-aware, cached 5m)
+        ▼  if authorized somewhere
+   agent loop (reasoning model, all authorized clusters at once):
+        │  model proposes a cluster-tagged tool call
+        │  ── MCP call (streamable-http; per-cluster mux: cilium/envoy/docs/…)
+        │  ── FILTER result vs that cluster's namespaces        ← hard enforcement
+        │       drop records in unauthorized namespaces; resolve bare IPs via
+        │       mcp-authz /v1/resolve (fail-closed); block docs naming forbidden ns
+        │  ── feed only authorized data back
+        ▼
+   answer ── Mattermost (threaded in channels, split if long)
 ```
+
+## Enforcement (why the model can't leak)
+
+MCP tools take pods/IPs/services, not namespaces — the namespace lives in the
+**result data**. So the bot filters every tool result before the model sees it:
+a record referencing a namespace the user can't access is dropped; a bare IP is
+resolved to its namespace via mcp-authz and gated; if resolution is unavailable
+the result is withheld (**fail-closed**). The model never receives another team's
+data, so it cannot leak it — authorization is not the model's job.
 
 ## Behavior
 
-- **Identity.** Resolves the sender's OpenShift/SSO **email** via the Mattermost
-  API (`/api/v4/users/{id}`). `identityMap` can override email → username.
-- **Authorization.** Calls every `authz.regions[]` mcp-authz endpoint. A user
-  with no namespaces on any cluster never reaches Dify (hard gate). Per-region
-  fail-closed: a region that errors is omitted; only if **all** error does the
-  bot report "temporarily unavailable".
-- **Scope to Dify.** `allowed_namespaces` is a cluster-qualified block the agent
-  must obey:
-  ```
-  okd4-teh-1: team-a, team-b
-  okd4-ts-2: team-c
-  ```
-- **Caching.** Each user's aggregated scope is cached (default 5m, singleflight
-  collapse + background sweep).
-- **Where it answers.** Direct messages always; channels only when @-mentioned
-  (`requireMention`, default true). The bot must be a channel member.
-- **Singleton.** A WebSocket bot is one listener per Mattermost — run a single
-  replica on a single cluster.
+- **Identity.** Sender's SSO **email** via the Mattermost API; `identityMap` can
+  override email → username.
+- **Authorization.** A user with no namespaces on any cluster never reaches the
+  MCP servers (hard gate). Per-region fail-closed.
+- **Multi-cluster.** Every authorized cluster's tools are exposed at once, tagged
+  `[cluster X]`; the agent calls the right cluster and combines across clusters.
+- **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
+  replayed for context; persisted to a file (`dify.memoryPath`, a PVC) so it
+  survives restarts.
+- **Replies.** Channels: in-thread, only when @-mentioned. DMs: always. Typing
+  indicator while working; long answers split transparently.
+- **Singleton.** One WebSocket listener — a single replica on a single cluster.
 
 ## Configuration
 
-See [`config.example.yaml`](config.example.yaml): `mattermost`, `dify`, and
-`authz` (the per-region mcp-authz endpoints + cache TTL). Secrets are read from
-the environment, never YAML:
+See [`config.example.yaml`](config.example.yaml). Secrets are read from the
+environment (never YAML):
 
 | Env | Purpose |
 |-----|---------|
 | `MATTERMOST_TOKEN` | bot account token |
-| `DIFY_API_KEY`     | Dify app API key |
-| `MCP_AUTHZ_TOKEN`  | bearer presented to every mcp-authz (shared secret) |
+| `LLM_API_KEY`      | `x-api-key` for the Anthropic-style endpoint |
+| `MCP_AUTHZ_TOKEN`  | bearer to every mcp-authz |
+| `<per-server>`     | Authorization header for an authed MCP server (e.g. `CILIUM_TEH1_AUTH`) |
 
-Each region name in `authz.regions[]` must match the per-cluster MCP tool group
-in the Dify workflow.
+Key sections: `agent.llm` (endpoint/model), `agent.clusters[].servers[]` (the MCP
+servers per cluster), `authz.regions[]` (mcp-authz endpoints). A cluster's
+`name` must match an `authz.regions[].name`.
+
+### Adding a new MCP server (e.g. Hubble)
+
+Append one entry under the cluster — no code change:
+
+```yaml
+agent:
+  clusters:
+    - name: okd4-teh-1
+      servers:
+        - url: https://hubble-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+          authHeaderEnv: HUBBLE_TEH1_AUTH   # only if it needs auth
+```
+
+If it needs auth, add `HUBBLE_TEH1_AUTH` to the `mcpAuth` secret map (full
+`Authorization` header value). Its tools appear automatically, tagged with the
+cluster, and are enforced like the rest.
 
 ## Develop
 
 ```bash
 make build   # binary -> bin/snappcloud-bot
-make test    # unit tests
-make run     # run with config.example.yaml
-make docker  # multi-arch image via build/package/docker-bake.json
+make test
+make run      # config.example.yaml
+make docker   # multi-arch via build/package/docker-bake.json
 ```
 
 ## Deploy
 
 Helm chart: `core/helm/apps/snappcloud-bot`. Singleton (`replicas: 1`,
-`Recreate`), no inbound Service/ingress, no cluster RBAC. Registered in the
-bootstrap `primary_apps` so it runs on one cluster. Ships Deployment, ConfigMap,
-ServiceAccount, and a Secret with the three tokens (from the encrypted
-`secrets-<region>.yaml`).
+`Recreate`), no inbound Service, no cluster RBAC. Ships Deployment, ConfigMap
+(the `config` values → `config.yaml`), ServiceAccount, a Secret (all keys exposed
+as env via `envFrom` — including arbitrary `mcpAuth` entries), and a **PVC** for
+conversation memory.

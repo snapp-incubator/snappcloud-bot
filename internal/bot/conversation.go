@@ -10,12 +10,11 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
-// convStore maps a conversation key to a Dify conversation id so follow-up
-// messages continue the same Dify conversation (memory). Keyed per user AND
-// per context: a Mattermost thread is one conversation; a direct-message channel
-// is one conversation. Including the user keeps each Dify conversation tied to
-// its owner (Dify conversations are per-user) even when several users post in
-// the same thread.
+// convStore maps a conversation key to that thread/DM's memory transcript so
+// follow-up messages carry prior context. Keyed per user AND per context: a
+// Mattermost thread is one conversation; a direct-message channel is one
+// conversation. Including the user keeps each transcript tied to its owner even
+// when several users post in the same thread.
 //
 // Persistence: when path is set, the map is loaded on startup and saved
 // periodically + on shutdown, so users can continue past conversations across
@@ -74,15 +73,6 @@ func (c *convStore) put(key, id string) {
 	}
 	c.mu.Lock()
 	c.m[key] = convEntry{id: id, expires: time.Now().Add(c.ttl)}
-	c.dirty = true
-	c.mu.Unlock()
-}
-
-// drop forgets a key (e.g. after a stale-conversation error so the next message
-// starts fresh).
-func (c *convStore) drop(key string) {
-	c.mu.Lock()
-	delete(c.m, key)
 	c.dirty = true
 	c.mu.Unlock()
 }

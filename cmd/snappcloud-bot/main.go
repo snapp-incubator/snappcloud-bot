@@ -1,7 +1,8 @@
 // Command snappcloud-bot is the SnappCloud Mattermost bot. It listens on the
 // Mattermost WebSocket, resolves the user's SSO identity, authorizes the query
-// by calling the per-region mcp-authz APIs (it holds no cluster credentials),
-// and forwards authorized queries to the Dify workflow.
+// via the per-region mcp-authz APIs (it holds no cluster credentials), and runs
+// the in-bot MCP agent that drives the per-cluster MCP servers under namespace
+// enforcement.
 package main
 
 import (
@@ -16,10 +17,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bot"
+	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"github.com/snapp-incubator/snappcloud-bot/internal/config"
-	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
+	"github.com/snapp-incubator/snappcloud-bot/internal/llm"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
@@ -59,9 +62,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 	if mmToken == "" {
 		return fmt.Errorf("mattermost token env %q is empty", cfg.Mattermost.TokenEnv)
 	}
-	difyKey := os.Getenv(cfg.Dify.APIKeyEnv)
-	if difyKey == "" {
-		return fmt.Errorf("dify api key env %q is empty", cfg.Dify.APIKeyEnv)
+	llmKey := os.Getenv(cfg.Agent.LLM.APIKeyEnv)
+	if llmKey == "" {
+		return fmt.Errorf("llm api key env %q is empty", cfg.Agent.LLM.APIKeyEnv)
 	}
 	authzToken := os.Getenv(cfg.Authz.TokenEnv)
 
@@ -73,9 +76,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("parse authz.cacheTTL: %w", err)
 	}
-	convTTL, err := time.ParseDuration(cfg.Dify.ConversationTTL)
+	convTTL, err := time.ParseDuration(cfg.Memory.ConversationTTL)
 	if err != nil {
-		return fmt.Errorf("parse dify.conversationTTL: %w", err)
+		return fmt.Errorf("parse memory.conversationTTL: %w", err)
 	}
 
 	regions := make([]authzclient.Region, 0, len(cfg.Authz.Regions))
@@ -84,11 +87,16 @@ func run(configPath, addr string, log *slog.Logger) error {
 		regions = append(regions, authzclient.Region{Name: r.Name, URL: r.URL})
 		names = append(names, r.Name)
 	}
-	resolver := authzclient.NewCachedResolver(authzclient.New(regions, authzToken, timeout), ttl)
+	authzBase := authzclient.New(regions, authzToken, timeout)
+	resolver := authzclient.NewCachedResolver(authzBase, ttl)
 	log.Info("authz ready", "regions", names, "cacheTTL", ttl)
 
+	theBrain, err := buildBrain(cfg, llmKey, authzBase, log)
+	if err != nil {
+		return err
+	}
+
 	mm := mattermost.NewClient(cfg.Mattermost.URL, mmToken)
-	difyClient := dify.NewClient(cfg.Dify.URL, difyKey)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -103,9 +111,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 	}
 	log.Info("connected to mattermost", "bot", me.Username, "id", me.ID)
 
-	svc := bot.New(mm, difyClient, resolver, bot.Options{
+	svc := bot.New(mm, theBrain, resolver, bot.Options{
 		ConversationTTL: convTTL,
-		MemoryPath:      cfg.Dify.MemoryPath,
+		MemoryPath:      cfg.Memory.MemoryPath,
 		IdentityMap:     cfg.Mattermost.IdentityMap,
 		BotUsername:     me.Username,
 		RequireMention:  cfg.RequireMention(),
@@ -115,10 +123,63 @@ func run(configPath, addr string, log *slog.Logger) error {
 	go serveHealth(ctx, addr, log)
 
 	log.Info("starting SnappCloud bot",
-		"version", version.Version, "mattermost", cfg.Mattermost.URL, "dify", cfg.Dify.URL)
+		"version", version.Version, "mattermost", cfg.Mattermost.URL)
 	mm.Listen(ctx, me.ID, svc.OnPost, log)
 	log.Info("shut down")
 	return nil
+}
+
+// buildBrain constructs the in-bot agent orchestrator from config.
+func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log *slog.Logger) (*brain.Brain, error) {
+	llmTimeout := 10 * time.Minute
+	if cfg.Agent.LLM.Timeout != "" {
+		d, err := time.ParseDuration(cfg.Agent.LLM.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("parse agent.llm.timeout: %w", err)
+		}
+		llmTimeout = d
+	}
+
+	clusters := make([]brain.Cluster, 0, len(cfg.Agent.Clusters))
+	for _, c := range cfg.Agent.Clusters {
+		servers := make([]brain.Server, 0, len(c.Servers))
+		for _, s := range c.Servers {
+			auth := ""
+			if s.AuthHeaderEnv != "" {
+				auth = os.Getenv(s.AuthHeaderEnv)
+			}
+			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth})
+		}
+		clusters = append(clusters, brain.Cluster{Name: c.Name, Alias: c.Alias, Servers: servers})
+	}
+
+	rules := make(map[string]agent.ToolRule, len(cfg.Agent.ToolRules))
+	for name, r := range cfg.Agent.ToolRules {
+		f := agent.NSPlain
+		if r.Format == "slash" {
+			f = agent.NSSlash
+		}
+		rules[name] = agent.ToolRule{NamespaceArgs: r.NamespaceArgs, Format: f, RequireNamespace: r.RequireNamespace}
+	}
+
+	b := brain.New(brain.Options{
+		LLM: llm.Options{
+			BaseURL:   cfg.Agent.LLM.BaseURL,
+			APIKey:    llmKey,
+			Model:     cfg.Agent.LLM.Model,
+			MaxTokens: cfg.Agent.LLM.MaxTokens,
+			Version:   cfg.Agent.LLM.Version,
+			Timeout:   llmTimeout,
+		},
+		MaxIter:      cfg.Agent.MaxIterations,
+		SystemPrompt: cfg.Agent.SystemPrompt,
+		Clusters:     clusters,
+		Rules:        rules,
+		MCPTimeout:   5 * time.Minute,
+		Resolver:     resolver,
+	}, log)
+	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "maxIter", cfg.Agent.MaxIterations)
+	return b, nil
 }
 
 func serveHealth(ctx context.Context, addr string, log *slog.Logger) {

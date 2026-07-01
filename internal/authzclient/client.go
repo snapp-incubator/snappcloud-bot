@@ -17,7 +17,7 @@ import (
 )
 
 // Scope is the set of namespaces a subject may query, per cluster. Clusters the
-// subject cannot access are omitted. Cluster names match the Dify per-cluster
+// subject cannot access are omitted. Cluster names match the agent per-cluster
 // MCP tool groups.
 type Scope map[string][]string
 
@@ -80,6 +80,58 @@ func (c *Client) namespaces(ctx context.Context, region Region, user string) ([]
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("region %s: decode: %w", region.Name, err)
+	}
+	return out.Namespaces, nil
+}
+
+// ResolveIPs maps each IP to its namespace(s) on the given cluster, via that
+// region's mcp-authz /v1/resolve. Used to gate MCP results that name only an IP.
+func (c *Client) ResolveIPs(ctx context.Context, cluster string, ips []string) (map[string][]string, error) {
+	var region Region
+	found := false
+	for _, r := range c.regions {
+		if r.Name == cluster {
+			region, found = r, true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("unknown cluster %q", cluster)
+	}
+
+	type ref struct {
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	refs := make([]ref, 0, len(ips))
+	for _, ip := range ips {
+		refs = append(refs, ref{Kind: "ip", Value: ip})
+	}
+	body, _ := json.Marshal(map[string]any{"refs": refs})
+
+	u := strings.TrimRight(region.URL, "/") + "/v1/resolve"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return nil, fmt.Errorf("region %s resolve: %s: %s", region.Name, resp.Status, strings.TrimSpace(string(msg)))
+	}
+	var out struct {
+		Namespaces map[string][]string `json:"namespaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("region %s resolve decode: %w", region.Name, err)
 	}
 	return out.Namespaces, nil
 }

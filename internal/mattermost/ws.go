@@ -121,7 +121,7 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 	}()
 
 	// Bounded worker pool: handle posts in goroutines so a slow turn (auth + a
-	// long Dify agent run, tens of seconds) never blocks the read loop. Blocking
+	// long agent run, tens of seconds) never blocks the read loop. Blocking
 	// the loop starves pong handling and drops the connection.
 	sem := make(chan struct{}, maxConcurrentHandlers)
 

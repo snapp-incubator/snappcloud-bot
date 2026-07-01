@@ -1,28 +1,26 @@
 // Package bot is the orchestration core of the SnappCloud bot. For each incoming
 // Mattermost message it resolves the user's SSO identity, asks the per-region
 // mcp-authz APIs which namespaces the user may access on each cluster, and — only
-// if the user is authorized somewhere — forwards the query to Dify with that
-// per-cluster scope, then posts the answer. An unauthorized user never reaches
-// Dify.
+// if the user is authorized somewhere — runs the in-bot agent (which drives the
+// per-cluster MCP servers and enforces namespace scope), then posts the answer.
+// An unauthorized user never reaches the MCP servers.
 package bot
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
-	"github.com/snapp-incubator/snappcloud-bot/internal/dify"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
-type difyClient interface {
-	Chat(ctx context.Context, user, query, conversationID string, inputs map[string]any) (dify.Reply, error)
+// answerer runs the enforced agent loop and returns the answer text. history is
+// the prior thread transcript for memory.
+type answerer interface {
+	Answer(ctx context.Context, scope authzclient.Scope, query, history string) (string, error)
 }
 
 type mmClient interface {
@@ -31,10 +29,10 @@ type mmClient interface {
 	Typing(ctx context.Context, channelID, parentID string)
 }
 
-// Service ties identity, authorization, and the Dify workflow together.
+// Service ties identity, authorization, and the agent together.
 type Service struct {
 	mm             mmClient
-	dify           difyClient
+	brain          answerer
 	resolver       authzclient.Resolver
 	conv           *convStore
 	identityMap    map[string]string
@@ -53,10 +51,10 @@ type Options struct {
 }
 
 // New builds the orchestration service.
-func New(mm mmClient, d difyClient, resolver authzclient.Resolver, o Options, log *slog.Logger) *Service {
+func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, log *slog.Logger) *Service {
 	return &Service{
 		mm:             mm,
-		dify:           d,
+		brain:          brain,
 		resolver:       resolver,
 		conv:           newConvStore(o.ConversationTTL, o.MemoryPath),
 		identityMap:    o.IdentityMap,
@@ -69,16 +67,14 @@ func New(mm mmClient, d difyClient, resolver authzclient.Resolver, o Options, lo
 // StartSweeper runs the conversation-store eviction loop until ctx is cancelled.
 func (s *Service) StartSweeper(ctx context.Context) { s.conv.StartSweeper(ctx) }
 
-// maxDifyAttempts: how many times to call Dify before giving up on an empty
-// answer (1 retry). A transient upstream stream cut usually succeeds on retry.
-const maxDifyAttempts = 3
-
 const (
 	msgUnauthorized = "🔒 You have no namespaces you can query on any cluster. If that's unexpected, ask your cluster admin to grant access."
 	msgBackendError = "⚙️ Authorization is temporarily unavailable. Please try again in a moment."
-	msgDifyError    = "⚠️ I hit an error talking to the workflow. Please try again shortly."
-	msgNoAnswer     = "⌛ I couldn't get a complete answer in time (the lookup may have run long). Please try again, ideally narrowing to one cluster or namespace."
+	msgAgentError   = "⚠️ I hit an error answering that. Please try again shortly."
 )
+
+// maxTranscriptRunes caps the stored per-thread memory transcript.
+const maxTranscriptRunes = 6000
 
 // OnPost handles one incoming Mattermost post.
 func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
@@ -91,7 +87,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		return nil
 	}
 
-	// Show a typing indicator for the whole turn (auth + Dify can be slow).
+	// Show a typing indicator for the whole turn (auth + agent can be slow).
 	// parent_id must be the EXISTING thread root (p.RootID): empty for a
 	// top-level message → channel-level typing (visible in the channel); set when
 	// the user is already in a thread → typing shows in that thread. Using the
@@ -126,50 +122,35 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
 
-	// 3. Forward to Dify, continuing this thread/DM's conversation (memory).
-	// Retry on an empty answer (usually a transient upstream stream cut).
-	// allowed_namespaces scopes the agent advisorily; hard per-namespace
-	// enforcement is not possible through Dify's MCP integration (the agent
-	// cannot reliably carry a token), so it is not attempted here.
-	inputs := map[string]any{"allowed_namespaces": formatScope(scope)}
+	// 3. Run the in-bot agent over the user's authorized clusters, with this
+	// thread/DM's transcript for memory. The agent drives the MCP servers and
+	// enforces namespace scope on every result.
 	convKey := convKeyFor(identity, p)
-	convID := s.conv.get(convKey)
-	s.log.Debug("dify request", "user", identity, "queryLen", len(query), "conversation", convID != "")
+	history := s.conv.get(convKey)
+	s.log.Debug("agent request", "user", identity, "queryLen", len(query), "hasHistory", history != "")
 
-	var reply dify.Reply
-	var derr error
-	for attempt := 1; attempt <= maxDifyAttempts; attempt++ {
-		reply, derr = s.dify.Chat(ctx, identity, query, convID, inputs)
-		// Remember the conversation id whenever Dify returned one (even on a
-		// retryable empty answer) so the next message continues the thread.
-		if reply.ConversationID != "" {
-			convID = reply.ConversationID
-			s.conv.put(convKey, convID)
-		}
-		if derr == nil {
-			break
-		}
-		if errors.Is(derr, dify.ErrEmptyAnswer) && attempt < maxDifyAttempts {
-			s.log.Warn("dify empty answer, retrying", "user", identity, "attempt", attempt, "err", derr)
-			continue
-		}
-		break
-	}
-	if derr != nil {
-		s.log.Error("dify", "user", identity, "err", derr)
-		// A stale/invalid conversation id (4xx) — forget it so the next try is fresh.
-		if convID == "" || !errors.Is(derr, dify.ErrEmptyAnswer) {
-			s.conv.drop(convKey)
-		}
-		if errors.Is(derr, dify.ErrEmptyAnswer) {
-			s.replyTo(ctx, p, msgNoAnswer)
-		} else {
-			s.replyTo(ctx, p, msgDifyError)
-		}
+	answer, aerr := s.brain.Answer(ctx, scope, query, history)
+	if aerr != nil {
+		s.log.Error("agent", "user", identity, "err", aerr)
+		s.replyTo(ctx, p, msgAgentError)
 		return nil
 	}
-	s.replyTo(ctx, p, sanitize(reply.Answer))
+	clean := sanitize(answer)
+	s.conv.put(convKey, appendTranscript(history, query, clean))
+	s.replyTo(ctx, p, clean)
 	return nil
+}
+
+// appendTranscript grows the per-thread memory transcript, trimmed to the last
+// maxTranscriptRunes runes so it stays bounded.
+func appendTranscript(history, query, answer string) string {
+	t := history + "\nUser: " + query + "\nAssistant: " + answer
+	t = strings.TrimSpace(t)
+	r := []rune(t)
+	if len(r) > maxTranscriptRunes {
+		r = r[len(r)-maxTranscriptRunes:]
+	}
+	return string(r)
 }
 
 // thinkRe matches reasoning blocks some "thinking" models wrap their
@@ -180,22 +161,6 @@ var thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
 
 func sanitize(s string) string {
 	return strings.TrimSpace(thinkRe.ReplaceAllString(s, ""))
-}
-
-// formatScope renders the per-cluster scope as a deterministic, agent-readable
-// block, e.g.:
-//
-//	okd4-teh-1: team-a, team-b
-//	okd4-ts-2: team-c
-func formatScope(scope authzclient.Scope) string {
-	clusters := scope.Clusters()
-	lines := make([]string, 0, len(clusters))
-	for _, c := range clusters {
-		ns := append([]string(nil), scope[c]...)
-		sort.Strings(ns)
-		lines = append(lines, fmt.Sprintf("%s: %s", c, strings.Join(ns, ", ")))
-	}
-	return strings.Join(lines, "\n")
 }
 
 func (s *Service) stripMention(msg string) string {

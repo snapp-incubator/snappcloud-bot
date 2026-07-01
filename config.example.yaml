@@ -1,10 +1,12 @@
 # snappcloud-bot — SnappCloud Mattermost bot.
 #
-# Connects to Mattermost (WebSocket) and Dify. Authorization is delegated to the
-# per-region mcp-authz API — the bot holds no cluster credentials.
+# Connects to Mattermost (WebSocket). It runs the MCP tool-calling agent
+# in-process (no Dify): a reasoning model drives the per-cluster MCP servers and
+# the bot enforces namespace scope on every tool result. Authorization is
+# delegated to the per-region mcp-authz API — the bot holds no cluster creds.
 #
 # Secrets are read from the environment (never in YAML):
-#   MATTERMOST_TOKEN, DIFY_API_KEY, MCP_AUTHZ_TOKEN.
+#   MATTERMOST_TOKEN, LLM_API_KEY, MCP_AUTHZ_TOKEN, and any MCP server auth vars.
 
 mattermost:
   url: https://chat.snapp.services
@@ -13,26 +15,58 @@ mattermost:
   # Channels: answer only when @-mentioned. DMs: always answered. Default true.
   requireMention: true
 
-dify:
-  # In-cluster Dify API service — bypasses the Contour ingress (no SSE-cutting
-  # response/idle timeout, no TLS). Format: http://<api-svc>.<ns>.svc:5001/v1.
-  url: http://spcld-user-docs-chatbot-api-svc.snappcloud-docs-chatbot.svc:5001/v1
-  apiKeyEnv: DIFY_API_KEY
-  # Conversation memory: a Mattermost thread (and each DM) keeps its Dify
-  # conversation alive this long after the last message. "0" disables memory.
+memory:
+  # Per-thread conversation memory.
   conversationTTL: 1h
-  # Persist thread/DM -> conversation memory to this file so users can continue
-  # past conversations across bot restarts. Put it on a PVC. Empty = in-memory.
+  # Persist thread/DM -> memory transcript to this file so users can continue past
+  # conversations across bot restarts. Put it on a PVC. Empty = in-memory.
   memoryPath: /data/conversations.json
 
 authz:
   tokenEnv: MCP_AUTHZ_TOKEN
   cacheTTL: 5m
-  timeout: 10s
-  # One mcp-authz endpoint per cluster. `name` MUST match the per-cluster MCP
-  # tool group in the Dify workflow.
+  timeout: 30s
+  # One mcp-authz endpoint per cluster. `name` MUST match an agent.clusters[].name.
   regions:
     - name: okd4-teh-1
       url: https://mcp-authz.apps.private.okd4.teh-1.snappcloud.io
-    - name: okd4-ts-2
-      url: https://mcp-authz.apps.private.okd4.ts-2.staging-snappcloud.io
+    - name: okd4-ts-3
+      url: https://mcp-authz.apps.private.okd4.ts-3.staging-snappcloud.io
+
+agent:
+  llm:
+    baseURL: https://llm.snapp.tech/anthropic
+    apiKeyEnv: LLM_API_KEY
+    model: zai/glm-5.2
+    maxTokens: 8192
+    version: "2023-06-01"
+    timeout: 10m
+  maxIterations: 8
+  # systemPrompt: |   # optional; a built-in default is used when omitted
+
+  # Per-cluster MCP servers. `name` MUST match an authz.regions[].name. `alias`
+  # prefixes the cluster's tool names for the model (short = shorter tool names).
+  # authHeaderEnv names an env var holding the full Authorization header value
+  # (e.g. "Basic ...") — omit for no auth.
+  clusters:
+    - name: okd4-teh-1
+      alias: teh1
+      servers:
+        - url: https://cilium-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+          authHeaderEnv: CILIUM_TEH1_AUTH
+        - url: https://contour-envoy-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+        - url: https://chatbot-services.apps.private.okd4.teh-1.snappcloud.io/mcp/server/Akksh5w2yAKrPzou/mcp
+    - name: okd4-ts-3
+      alias: ts3
+      servers:
+        - url: https://cilium-mcp.apps.private.okd4.ts-3.staging-snappcloud.io/mcp
+        - url: https://contour-envoy-mcp.apps.private.okd4.ts-3.staging-snappcloud.io/mcp
+
+  # Optional: override where a tool's namespace argument lives (default: arg
+  # "namespace", plain). Most tools take no namespace arg — enforcement is on the
+  # RESULT data — so this is usually empty.
+  toolRules: {}
+    # get_pod:
+    #   namespaceArgs: [pod]
+    #   format: slash          # value is "namespace/name"
+    #   requireNamespace: true
