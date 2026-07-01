@@ -42,6 +42,10 @@ agent:
     version: "2023-06-01"
     timeout: 10m
   maxIterations: 8
+  # systemPrompt: |    # optional; OVERRIDES the built-in default entirely
+  # MCP tool-usage skills appended to the prompt (synthesized from each server's
+  # own skill file). See the deployed values for the full text.
+  toolGuidance: ""
   # systemPrompt: |   # optional; a built-in default is used when omitted
 
   # Per-cluster MCP servers. `name` MUST match an authz.regions[].name. `alias`

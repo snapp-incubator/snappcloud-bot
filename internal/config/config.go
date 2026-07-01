@@ -25,10 +25,13 @@ type Config struct {
 // Anthropic-style reasoning model drives the per-cluster MCP servers, and the
 // bot enforces namespace scope on every tool result.
 type Agent struct {
-	LLM           LLM            `yaml:"llm"`
-	MaxIterations int            `yaml:"maxIterations"` // default 8
-	SystemPrompt  string         `yaml:"systemPrompt"`  // optional; built-in default
-	Clusters      []AgentCluster `yaml:"clusters"`
+	LLM           LLM    `yaml:"llm"`
+	MaxIterations int    `yaml:"maxIterations"` // default 8
+	SystemPrompt  string `yaml:"systemPrompt"`  // optional; overrides the built-in default
+	// ToolGuidance is extra MCP tool-usage instructions ("skills") appended to the
+	// system prompt — how to use each server well and which tools to combine.
+	ToolGuidance string         `yaml:"toolGuidance"`
+	Clusters     []AgentCluster `yaml:"clusters"`
 	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
 	// available to every authorized user, not tied to a cluster or scope-filtered.
 	GlobalServers []MCPServer         `yaml:"globalServers"`

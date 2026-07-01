@@ -182,6 +182,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		},
 		MaxIter:       cfg.Agent.MaxIterations,
 		SystemPrompt:  cfg.Agent.SystemPrompt,
+		ToolGuidance:  cfg.Agent.ToolGuidance,
 		Clusters:      clusters,
 		GlobalServers: globalServers,
 		Rules:         rules,

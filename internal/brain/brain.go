@@ -30,6 +30,7 @@ type Brain struct {
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   agent.MCP              // namespace-agnostic tools (docs); nil if none
 	system   string
+	guidance string // extra MCP tool-usage instructions ("skills")
 	log      *slog.Logger
 }
 
@@ -56,6 +57,9 @@ type Options struct {
 	LLM          llm.Options
 	MaxIter      int
 	SystemPrompt string // optional; a sensible default is used when empty
+	// ToolGuidance is extra MCP tool-usage instructions ("skills") appended to
+	// the system prompt — how to use the servers well, which tools to combine.
+	ToolGuidance string
 	Clusters     []Cluster
 	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
 	// available to every authorized user regardless of cluster, and NOT
@@ -97,7 +101,7 @@ func New(o Options, log *slog.Logger) *Brain {
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem
 	}
-	return &Brain{agent: ag, clusters: clusters, global: global, system: system, log: log}
+	return &Brain{agent: ag, clusters: clusters, global: global, system: system, guidance: o.ToolGuidance, log: log}
 }
 
 // Answer runs the agent over every authorized cluster that has MCP tools and
@@ -137,6 +141,10 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	var sb strings.Builder
 	sb.WriteString(b.system)
+	if strings.TrimSpace(b.guidance) != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(b.guidance)
+	}
 	sb.WriteString("\n\nThe user is authorized on these clusters and namespaces:\n")
 	for _, c := range scope.Clusters() {
 		ns := append([]string(nil), scope[c]...)
@@ -153,7 +161,16 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	return sb.String()
 }
 
-const defaultSystem = `You are the SnappCloud network assistant. You answer questions about cluster networking, ingress, and traffic using the provided MCP tools (Cilium/Hubble flows, Envoy/Contour config). Investigate with the tools — resolve the resources a question is about even when the user does not name a namespace. Be concise and factual; do not narrate your reasoning or restate the question. If a result is withheld for authorization, tell the user which namespaces they may query instead.`
+const defaultSystem = `You are the SnappCloud network assistant. You answer questions about cluster networking, connectivity, ingress, and traffic using the provided MCP tools: Cilium/Hubble (observed flows, drops, network policy, endpoints), Envoy/Contour (ingress, routes, upstream clusters), and the docs.
+
+Be thorough and accurate — a single tool rarely gives the full picture:
+- Investigate before answering. For a connectivity or packet-drop question, look at the actual flows (Hubble), the relevant network policies and endpoints (Cilium), and the ingress/route config (Envoy) as applicable, then reconcile them into one answer.
+- Call every tool that could be relevant, in parallel when you can. Do not stop at the first result if another tool would confirm, explain the cause, or complete the picture.
+- Resolve the resources a question is about even when the user does not name a namespace or exact object: find the pod/service/IP, then query around it.
+- If tools disagree or data is missing, gather more rather than guessing; state any uncertainty.
+- Each tool is tagged [cluster X]; use the correct cluster's tools. For a cross-cluster question, query each cluster and combine.
+
+Answer concisely and factually. Do not narrate your reasoning or restate the question. If a result is withheld for authorization, tell the user which namespaces they may query instead.`
 
 // muxAdapter converts an *mcp.Mux (returning mcp.Tool) to agent.MCP.
 type muxAdapter struct{ mux *mcp.Mux }
