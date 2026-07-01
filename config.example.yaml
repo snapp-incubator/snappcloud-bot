@@ -43,8 +43,8 @@ agent:
     timeout: 10m
   maxIterations: 8
   # systemPrompt: |    # optional; OVERRIDES the built-in default entirely
-  # MCP tool-usage skills appended to the prompt (synthesized from each server's
-  # own skill file). See the deployed values for the full text.
+  # MCP tool-usage skills appended to every prompt. See the deployed helm values
+  # for the full text (synthesized from each server's skill file).
   toolGuidance: ""
   # systemPrompt: |   # optional; a built-in default is used when omitted
 

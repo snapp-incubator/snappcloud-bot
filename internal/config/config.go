@@ -28,8 +28,7 @@ type Agent struct {
 	LLM           LLM    `yaml:"llm"`
 	MaxIterations int    `yaml:"maxIterations"` // default 8
 	SystemPrompt  string `yaml:"systemPrompt"`  // optional; overrides the built-in default
-	// ToolGuidance is extra MCP tool-usage instructions ("skills") appended to the
-	// system prompt — how to use each server well and which tools to combine.
+	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
 	ToolGuidance string         `yaml:"toolGuidance"`
 	Clusters     []AgentCluster `yaml:"clusters"`
 	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
@@ -57,7 +56,8 @@ type AgentCluster struct {
 }
 
 // MCPServer is one MCP endpoint. AuthHeaderEnv names an env var holding the full
-// Authorization header value (e.g. "Basic ...") — empty for no auth.
+// Authorization header value (e.g. "Basic ...") — empty for no auth. Name is an
+// optional label.
 type MCPServer struct {
 	Name          string `yaml:"name"`
 	URL           string `yaml:"url"`

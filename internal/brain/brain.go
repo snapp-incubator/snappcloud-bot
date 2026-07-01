@@ -30,7 +30,7 @@ type Brain struct {
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   agent.MCP              // namespace-agnostic tools (docs); nil if none
 	system   string
-	guidance string // extra MCP tool-usage instructions ("skills")
+	guidance string // MCP tool-usage guidance ("skills"), appended to every prompt
 	log      *slog.Logger
 }
 
@@ -57,8 +57,7 @@ type Options struct {
 	LLM          llm.Options
 	MaxIter      int
 	SystemPrompt string // optional; a sensible default is used when empty
-	// ToolGuidance is extra MCP tool-usage instructions ("skills") appended to
-	// the system prompt — how to use the servers well, which tools to combine.
+	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
 	ToolGuidance string
 	Clusters     []Cluster
 	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
@@ -136,8 +135,8 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 	})
 }
 
-// systemPrompt appends the caller's per-cluster scope (so the model knows which
-// clusters/namespaces it may reason about) and any prior transcript (memory).
+// systemPrompt appends the tool guidance, the caller's per-cluster scope, and
+// any prior transcript (memory).
 func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	var sb strings.Builder
 	sb.WriteString(b.system)
@@ -167,10 +166,12 @@ Be thorough and accurate — a single tool rarely gives the full picture:
 - Investigate before answering. For a connectivity or packet-drop question, look at the actual flows (Hubble), the relevant network policies and endpoints (Cilium), and the ingress/route config (Envoy) as applicable, then reconcile them into one answer.
 - Call every tool that could be relevant, in parallel when you can. Do not stop at the first result if another tool would confirm, explain the cause, or complete the picture.
 - Resolve the resources a question is about even when the user does not name a namespace or exact object: find the pod/service/IP, then query around it.
+- Do not ask the user for something you can obtain yourself. When a node- or agent-scoped tool needs a pod to resolve the node (e.g. Cilium BGP/status/datapath tools), pick any pod from a namespace the user is authorized for and use it — do not ask the user to supply one.
+- Do not refuse based on assumptions about access. Call the tool; the platform enforces authorization and automatically withholds anything the user may not see. Only report an authorization limit AFTER a tool actually returns a withheld/denied result — then say which namespaces they may query.
 - If tools disagree or data is missing, gather more rather than guessing; state any uncertainty.
 - Each tool is tagged [cluster X]; use the correct cluster's tools. For a cross-cluster question, query each cluster and combine.
 
-Answer concisely and factually. Do not narrate your reasoning or restate the question. If a result is withheld for authorization, tell the user which namespaces they may query instead.`
+Answer concisely and factually. Do not narrate your reasoning or restate the question.`
 
 // muxAdapter converts an *mcp.Mux (returning mcp.Tool) to agent.MCP.
 type muxAdapter struct{ mux *mcp.Mux }
