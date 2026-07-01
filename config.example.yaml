@@ -55,12 +55,16 @@ agent:
         - url: https://cilium-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
           authHeaderEnv: CILIUM_TEH1_AUTH
         - url: https://contour-envoy-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
-        - url: https://chatbot-services.apps.private.okd4.teh-1.snappcloud.io/mcp/server/Akksh5w2yAKrPzou/mcp
     - name: okd4-ts-3
       alias: ts3
       servers:
         - url: https://cilium-mcp.apps.private.okd4.ts-3.staging-snappcloud.io/mcp
         - url: https://contour-envoy-mcp.apps.private.okd4.ts-3.staging-snappcloud.io/mcp
+
+  # Global MCP servers — namespace-agnostic, available to every authorized user
+  # regardless of cluster, not scope-filtered (e.g. the general SnappCloud docs).
+  globalServers:
+    - url: https://chatbot-services.apps.private.okd4.teh-1.snappcloud.io/mcp/server/Akksh5w2yAKrPzou/mcp
 
   # Optional: override where a tool's namespace argument lives (default: arg
   # "namespace", plain). Most tools take no namespace arg — enforcement is on the

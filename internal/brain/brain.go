@@ -28,6 +28,7 @@ var ErrNoClusterTools = errors.New("no MCP tools available for the user's author
 type Brain struct {
 	agent    *agent.Agent
 	clusters map[string]*clusterMCP // cluster name -> its tools
+	global   agent.MCP              // namespace-agnostic tools (docs); nil if none
 	system   string
 	log      *slog.Logger
 }
@@ -56,8 +57,12 @@ type Options struct {
 	MaxIter      int
 	SystemPrompt string // optional; a sensible default is used when empty
 	Clusters     []Cluster
-	Rules        map[string]agent.ToolRule
-	MCPTimeout   time.Duration
+	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
+	// available to every authorized user regardless of cluster, and NOT
+	// scope-filtered.
+	GlobalServers []Server
+	Rules         map[string]agent.ToolRule
+	MCPTimeout    time.Duration
 	// Resolver maps IPs -> namespaces for result filtering (the authz client).
 	Resolver agent.Resolver
 }
@@ -78,12 +83,21 @@ func New(o Options, log *slog.Logger) *Brain {
 		clusters[c.Name] = &clusterMCP{alias: alias, mcp: muxAdapter{mux}}
 	}
 
+	var global agent.MCP
+	if len(o.GlobalServers) > 0 {
+		mux := mcp.NewMux()
+		for i, s := range o.GlobalServers {
+			mux.Add(fmt.Sprintf("global-%d", i), mcp.New(s.URL, s.AuthHeader, o.MCPTimeout))
+		}
+		global = muxAdapter{mux}
+	}
+
 	ag := agent.New(llm.New(o.LLM), agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, log)
 	system := o.SystemPrompt
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem
 	}
-	return &Brain{agent: ag, clusters: clusters, system: system, log: log}
+	return &Brain{agent: ag, clusters: clusters, global: global, system: system, log: log}
 }
 
 // Answer runs the agent over every authorized cluster that has MCP tools and
@@ -103,6 +117,10 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 			Allowed: scope[c],
 			MCP:     cm.mcp,
 		})
+	}
+	// Global (docs) tools are available to any authorized user, unfiltered.
+	if b.global != nil {
+		cts = append(cts, agent.ClusterTools{Cluster: "docs", Alias: "docs", MCP: b.global, NoEnforce: true})
 	}
 	if len(cts) == 0 {
 		return "", ErrNoClusterTools

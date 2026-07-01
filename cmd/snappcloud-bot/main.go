@@ -162,6 +162,15 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		rules[name] = agent.ToolRule{NamespaceArgs: r.NamespaceArgs, Format: f, RequireNamespace: r.RequireNamespace}
 	}
 
+	globalServers := make([]brain.Server, 0, len(cfg.Agent.GlobalServers))
+	for _, s := range cfg.Agent.GlobalServers {
+		auth := ""
+		if s.AuthHeaderEnv != "" {
+			auth = os.Getenv(s.AuthHeaderEnv)
+		}
+		globalServers = append(globalServers, brain.Server{URL: s.URL, AuthHeader: auth})
+	}
+
 	b := brain.New(brain.Options{
 		LLM: llm.Options{
 			BaseURL:   cfg.Agent.LLM.BaseURL,
@@ -171,14 +180,15 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			Version:   cfg.Agent.LLM.Version,
 			Timeout:   llmTimeout,
 		},
-		MaxIter:      cfg.Agent.MaxIterations,
-		SystemPrompt: cfg.Agent.SystemPrompt,
-		Clusters:     clusters,
-		Rules:        rules,
-		MCPTimeout:   5 * time.Minute,
-		Resolver:     resolver,
+		MaxIter:       cfg.Agent.MaxIterations,
+		SystemPrompt:  cfg.Agent.SystemPrompt,
+		Clusters:      clusters,
+		GlobalServers: globalServers,
+		Rules:         rules,
+		MCPTimeout:    5 * time.Minute,
+		Resolver:      resolver,
 	}, log)
-	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "maxIter", cfg.Agent.MaxIterations)
+	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "globalServers", len(globalServers), "maxIter", cfg.Agent.MaxIterations)
 	return b, nil
 }
 

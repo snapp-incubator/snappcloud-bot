@@ -97,6 +97,10 @@ type ClusterTools struct {
 	Alias   string   // short tool-name prefix (defaults to Cluster)
 	Allowed []string // namespaces the user may access on this cluster
 	MCP     MCP      // executor for this cluster's tools
+	// NoEnforce marks a namespace-agnostic, non-cluster tool source (e.g. general
+	// docs): its results are passed through unfiltered and it is not tied to any
+	// region's scope. Use only for trusted, tenant-independent content.
+	NoEnforce bool
 }
 
 // Input is one user query, evaluated across every cluster the user can access.
@@ -139,10 +143,12 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, errResult(call.ID, "unknown tool "+call.Name))
 				continue
 			}
-			if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
-				a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "err", err)
-				results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
-				continue
+			if !b.ct.NoEnforce {
+				if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
+					a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "err", err)
+					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
+					continue
+				}
 			}
 			out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
 			if cerr != nil {
@@ -150,7 +156,12 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 				continue
 			}
-			results = append(results, a.filtered(ctx, b, call.ID, out))
+			if b.ct.NoEnforce {
+				// Trusted namespace-agnostic source (docs) — no filtering.
+				results = append(results, ToolResult{CallID: call.ID, Content: out})
+			} else {
+				results = append(results, a.filtered(ctx, b, call.ID, out))
+			}
 		}
 		msgs = append(msgs, Turn{Role: "user", Results: results})
 	}
