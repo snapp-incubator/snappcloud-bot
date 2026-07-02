@@ -25,9 +25,11 @@ type Config struct {
 // Anthropic-style reasoning model drives the per-cluster MCP servers, and the
 // bot enforces namespace scope on every tool result.
 type Agent struct {
-	LLM           LLM    `yaml:"llm"`
-	MaxIterations int    `yaml:"maxIterations"` // default 8
-	SystemPrompt  string `yaml:"systemPrompt"`  // optional; overrides the built-in default
+	LLM           LLM `yaml:"llm"`
+	MaxIterations int `yaml:"maxIterations"` // default 8
+	// Persona is the bot's identity + greeting/help behavior (SnappCloud default).
+	Persona      string `yaml:"persona"`
+	SystemPrompt string `yaml:"systemPrompt"` // optional; overrides the built-in default
 	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
 	ToolGuidance string         `yaml:"toolGuidance"`
 	Clusters     []AgentCluster `yaml:"clusters"`

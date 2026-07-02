@@ -42,6 +42,8 @@ agent:
     version: "2023-06-01"
     timeout: 10m
   maxIterations: 8
+  # Bot identity + greeting/help behavior (SnappCloud default if omitted).
+  # persona: |
   # systemPrompt: |    # optional; OVERRIDES the built-in default entirely
   # MCP tool-usage skills appended to every prompt. See the deployed helm values
   # for the full text (synthesized from each server's skill file).

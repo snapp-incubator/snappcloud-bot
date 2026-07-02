@@ -181,6 +181,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			Timeout:   llmTimeout,
 		},
 		MaxIter:       cfg.Agent.MaxIterations,
+		Persona:       cfg.Agent.Persona,
 		SystemPrompt:  cfg.Agent.SystemPrompt,
 		ToolGuidance:  cfg.Agent.ToolGuidance,
 		Clusters:      clusters,

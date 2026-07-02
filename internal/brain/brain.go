@@ -29,6 +29,7 @@ type Brain struct {
 	agent    *agent.Agent
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   agent.MCP              // namespace-agnostic tools (docs); nil if none
+	persona  string                 // who the bot is + how to greet/help (leads the prompt)
 	system   string
 	guidance string // MCP tool-usage guidance ("skills"), appended to every prompt
 	log      *slog.Logger
@@ -54,8 +55,11 @@ type Cluster struct {
 
 // Options builds a Brain.
 type Options struct {
-	LLM          llm.Options
-	MaxIter      int
+	LLM     llm.Options
+	MaxIter int
+	// Persona is the bot's identity + greeting/help behavior, leading the prompt.
+	// A SnappCloud default is used when empty.
+	Persona      string
 	SystemPrompt string // optional; a sensible default is used when empty
 	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
 	ToolGuidance string
@@ -100,7 +104,11 @@ func New(o Options, log *slog.Logger) *Brain {
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem
 	}
-	return &Brain{agent: ag, clusters: clusters, global: global, system: system, guidance: o.ToolGuidance, log: log}
+	persona := o.Persona
+	if strings.TrimSpace(persona) == "" {
+		persona = defaultPersona
+	}
+	return &Brain{agent: ag, clusters: clusters, global: global, persona: persona, system: system, guidance: o.ToolGuidance, log: log}
 }
 
 // Answer runs the agent over every authorized cluster that has MCP tools and
@@ -139,6 +147,8 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 // any prior transcript (memory).
 func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	var sb strings.Builder
+	sb.WriteString(b.persona)
+	sb.WriteString("\n\n")
 	sb.WriteString(b.system)
 	if strings.TrimSpace(b.guidance) != "" {
 		sb.WriteString("\n\n")
@@ -159,6 +169,14 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	}
 	return sb.String()
 }
+
+const defaultPersona = `You are SnappCloud Bot — the assistant for SnappCloud, Snapp's internal cloud platform (OpenShift/OKD across several clusters). You help engineers on Mattermost investigate cluster networking: connectivity, traffic and packet drops, ingress and routing, and network policy — scoped to the namespaces and clusters they are authorized for.
+
+When a user greets you (e.g. "hi"), thanks you, or asks what you can do, respond briefly and warmly: introduce yourself in one line, say what you can help with, and offer a few concrete example questions tailored to what they can access, e.g.:
+- "Why are packets dropping for <a pod/namespace you can access> on <cluster>?"
+- "Is <service> reachable / why is its route returning 503 on <cluster>?"
+- "Show BGP peer status / network policy for <namespace> on <cluster>."
+Do not run tools for a plain greeting — just introduce yourself and invite a question. Keep it short.`
 
 const defaultSystem = `You are the SnappCloud network assistant. You answer questions about cluster networking, connectivity, ingress, and traffic using the provided MCP tools: Cilium/Hubble (observed flows, drops, network policy, endpoints), Envoy/Contour (ingress, routes, upstream clusters), and the docs.
 
