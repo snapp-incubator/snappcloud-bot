@@ -87,8 +87,8 @@ func TestAuthorizedPassesScopeToAgent(t *testing.T) {
 	mm := &fakeMM{email: "saman@snapp.cab"}
 	b := &fakeBrain{answer: "here are the flows"}
 	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{
-		"okd4-teh-1": {"team-b", "team-a"},
-		"okd4-ts-2":  {"team-c"},
+		"okd4-teh-1": {Namespaces: []string{"team-b", "team-a"}},
+		"okd4-ts-2":  {Namespaces: []string{"team-c"}},
 	}})
 
 	if err := svc.OnPost(context.Background(), post()); err != nil {
@@ -97,7 +97,7 @@ func TestAuthorizedPassesScopeToAgent(t *testing.T) {
 	if !b.called {
 		t.Fatal("agent was not called for an authorized user")
 	}
-	if len(b.gotScope["okd4-teh-1"]) != 2 || len(b.gotScope["okd4-ts-2"]) != 1 {
+	if len(b.gotScope["okd4-teh-1"].Namespaces) != 2 || len(b.gotScope["okd4-ts-2"].Namespaces) != 1 {
 		t.Fatalf("scope not passed correctly: %v", b.gotScope)
 	}
 	if len(mm.posted) != 1 || mm.posted[0] != "here are the flows" {
@@ -108,7 +108,7 @@ func TestAuthorizedPassesScopeToAgent(t *testing.T) {
 func TestChannelMentionRepliesInThread(t *testing.T) {
 	mm := &fakeMM{email: "saman@snapp.cab"}
 	b := &fakeBrain{answer: "ok"}
-	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
 
 	p := post()
 	p.ID = "post123"
@@ -125,7 +125,7 @@ func TestChannelMentionRepliesInThread(t *testing.T) {
 func TestDirectMessageNotThreaded(t *testing.T) {
 	mm := &fakeMM{email: "saman@snapp.cab"}
 	b := &fakeBrain{answer: "ok"}
-	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
 
 	p := post() // ChannelType "D"
 	p.ID = "post123"
@@ -140,7 +140,7 @@ func TestDirectMessageNotThreaded(t *testing.T) {
 func TestConversationMemoryCarriesTranscript(t *testing.T) {
 	mm := &fakeMM{email: "saman@snapp.cab"}
 	b := &fakeBrain{answer: "first answer"}
-	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
 
 	p := post() // DM, stable channel id "c1"
 	if err := svc.OnPost(context.Background(), p); err != nil {
@@ -162,7 +162,7 @@ func TestConversationMemoryCarriesTranscript(t *testing.T) {
 func TestChannelWithoutMentionIgnored(t *testing.T) {
 	mm := &fakeMM{email: "saman@snapp.cab"}
 	b := &fakeBrain{}
-	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {"team-a"}}})
+	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
 
 	p := post()
 	p.ChannelType = "O"

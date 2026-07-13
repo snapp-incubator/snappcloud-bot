@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +82,7 @@ func (f *fakeLLM) Complete(_ context.Context, req Request) (Response, error) {
 type fakeMCP struct {
 	tools  []string
 	called []string
+	output string
 }
 
 func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
@@ -91,6 +94,9 @@ func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
 }
 func (f *fakeMCP) CallTool(_ context.Context, name string, _ map[string]any) (string, error) {
 	f.called = append(f.called, name)
+	if f.output != "" {
+		return f.output, nil
+	}
 	return "flows: 3 dropped", nil
 }
 
@@ -163,5 +169,88 @@ func TestRunMultiClusterRoutesToCorrectCluster(t *testing.T) {
 	}
 	if len(ts3.called) != 1 {
 		t.Fatalf("target cluster ts-3 not called: %v", ts3.called)
+	}
+}
+
+type failingResolver struct{}
+
+func (failingResolver) ResolveIPs(context.Context, string, []string) (map[string][]string, error) {
+	return nil, errors.New("resolve endpoint unavailable")
+}
+
+// Cluster-admins get infra-tool output raw — even when it contains external IPs
+// and the resolver is down (BGP peer data is infrastructure, not tenant data).
+func TestClusterAdminGetsInfraToolUnfiltered(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__bgp_peers", Args: map[string]any{"node": "cilium-1"}}}},
+		{Text: "done"},
+	}}
+	mcp := &fakeMCP{tools: []string{"bgp_peers"}}
+	mcp.output = `{"peers":[{"peer-address":"10.15.10.10","session-state":"established"}]}`
+
+	enforcer := NewEnforcer(map[string]ToolRule{"bgp_peers": {ClusterAdminOnly: true}})
+	ag := New(llm, enforcer, failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := ag.Run(context.Background(), Input{
+		Query:    "bgp?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, ClusterAdmin: true, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := llm.seen[len(llm.seen)-1].Messages[2].Results[0]
+	if res.IsError {
+		t.Fatalf("admin infra result was withheld: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "10.15.10.10") {
+		t.Fatalf("raw BGP output lost: %s", res.Content)
+	}
+}
+
+// Non-admins are denied infra tools outright — the call never executes.
+func TestNonAdminDeniedInfraTool(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__bgp_peers", Args: map[string]any{"node": "cilium-1"}}}},
+		{Text: "done"},
+	}}
+	mcp := &fakeMCP{tools: []string{"bgp_peers"}}
+
+	enforcer := NewEnforcer(map[string]ToolRule{"bgp_peers": {ClusterAdminOnly: true}})
+	ag := New(llm, enforcer, failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := ag.Run(context.Background(), Input{
+		Query:    "bgp?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcp.called) != 0 {
+		t.Fatalf("infra tool executed for non-admin: %v", mcp.called)
+	}
+	res := llm.seen[len(llm.seen)-1].Messages[2].Results[0]
+	if !res.IsError || !strings.Contains(res.Content, "cluster-admin") {
+		t.Fatalf("expected cluster-admin denial, got: %+v", res)
+	}
+}
+
+// Non-exempt tools keep the fail-closed behavior when resolution is down.
+func TestNormalToolStillWithheldOnResolverFailure(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__get_flows", Args: map[string]any{"namespace": "argocd"}}}},
+		{Text: "done"},
+	}}
+	mcp := &fakeMCP{tools: []string{"get_flows"}}
+	mcp.output = `[{"src_ip":"10.0.0.9","bytes":10}]`
+
+	ag := New(llm, NewEnforcer(nil), failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := ag.Run(context.Background(), Input{
+		Query:    "flows?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := llm.seen[len(llm.seen)-1].Messages[2].Results[0]
+	if !res.IsError {
+		t.Fatal("tenant-data tool must stay fail-closed when resolution is unavailable")
 	}
 }

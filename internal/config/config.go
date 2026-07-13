@@ -72,6 +72,10 @@ type ToolRule struct {
 	NamespaceArgs    []string `yaml:"namespaceArgs"`
 	Format           string   `yaml:"format"`
 	RequireNamespace bool     `yaml:"requireNamespace"`
+	// ClusterAdminOnly gates a cluster-infrastructure tool (nodes, BGP, agent
+	// status) to callers with cluster-wide access; their results are returned
+	// unfiltered.
+	ClusterAdminOnly bool `yaml:"clusterAdminOnly"`
 }
 
 // Mattermost configures the bot's Mattermost connection.

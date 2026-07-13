@@ -32,6 +32,11 @@ type ToolRule struct {
 	// RequireNamespace denies the call when none of NamespaceArgs is present
 	// (prevents an unscoped cluster-wide query slipping through).
 	RequireNamespace bool
+	// ClusterAdminOnly gates a cluster-infrastructure tool (BGP peers, node and
+	// agent status): only callers with cluster-wide access may use it, and for
+	// them the result is returned unfiltered (it is infrastructure data, and
+	// filtering it destroys correct answers via fail-closed IP resolution).
+	ClusterAdminOnly bool
 }
 
 // Enforcer decides whether a proposed tool call is allowed for a user whose
@@ -83,6 +88,13 @@ func (e *Enforcer) Namespaces(tool string, args map[string]any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ClusterAdminOnly reports whether the tool is gated to cluster-admins
+// (cluster-infrastructure tools).
+func (e *Enforcer) ClusterAdminOnly(tool string) bool {
+	rule, explicit := e.ruleFor(tool)
+	return explicit && rule.ClusterAdminOnly
 }
 
 // Check returns nil if the tool call is allowed for `allowed` namespaces on the

@@ -16,10 +16,17 @@ import (
 	"time"
 )
 
-// Scope is the set of namespaces a subject may query, per cluster. Clusters the
-// subject cannot access are omitted. Cluster names match the agent per-cluster
-// MCP tool groups.
-type Scope map[string][]string
+// ClusterScope is one cluster's grant: the namespaces the subject may query,
+// and whether they hold cluster-wide access (cluster-admin) — which gates
+// cluster-infrastructure tools (nodes, BGP state).
+type ClusterScope struct {
+	Namespaces  []string
+	ClusterWide bool
+}
+
+// Scope is the per-cluster grant set. Clusters the subject cannot access are
+// omitted. Cluster names match the agent per-cluster MCP tool groups.
+type Scope map[string]ClusterScope
 
 // Clusters returns the scope's cluster names, sorted.
 func (s Scope) Clusters() []string {
@@ -57,31 +64,32 @@ func New(regions []Region, token string, timeout time.Duration) *Client {
 }
 
 // namespaces calls one region's /v1/namespaces for the user.
-func (c *Client) namespaces(ctx context.Context, region Region, user string) ([]string, error) {
+func (c *Client) namespaces(ctx context.Context, region Region, user string) (ClusterScope, error) {
 	u := strings.TrimRight(region.URL, "/") + "/v1/namespaces?user=" + url.QueryEscape(user)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return ClusterScope{}, err
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return ClusterScope{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return nil, fmt.Errorf("region %s: %s: %s", region.Name, resp.Status, strings.TrimSpace(string(msg)))
+		return ClusterScope{}, fmt.Errorf("region %s: %s: %s", region.Name, resp.Status, strings.TrimSpace(string(msg)))
 	}
 	var out struct {
-		Namespaces []string `json:"namespaces"`
+		Namespaces  []string `json:"namespaces"`
+		ClusterWide bool     `json:"clusterWide"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("region %s: decode: %w", region.Name, err)
+		return ClusterScope{}, fmt.Errorf("region %s: decode: %w", region.Name, err)
 	}
-	return out.Namespaces, nil
+	return ClusterScope{Namespaces: out.Namespaces, ClusterWide: out.ClusterWide}, nil
 }
 
 // ResolveIPs maps each IP to its namespace(s) on the given cluster, via that
@@ -144,15 +152,15 @@ func (c *Client) ResolveIPs(ctx context.Context, cluster string, ips []string) (
 func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 	type result struct {
 		name string
-		ns   []string
+		cs   ClusterScope
 		err  error
 	}
 	ch := make(chan result, len(c.regions))
 	for _, r := range c.regions {
 		r := r
 		go func() {
-			ns, err := c.namespaces(ctx, r, user)
-			ch <- result{name: r.Name, ns: ns, err: err}
+			cs, err := c.namespaces(ctx, r, user)
+			ch <- result{name: r.Name, cs: cs, err: err}
 		}()
 	}
 
@@ -168,9 +176,9 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 			}
 			continue
 		}
-		if len(res.ns) > 0 {
-			sort.Strings(res.ns)
-			scope[res.name] = res.ns
+		if len(res.cs.Namespaces) > 0 {
+			sort.Strings(res.cs.Namespaces)
+			scope[res.name] = res.cs
 		}
 	}
 	if errCount == len(c.regions) && len(c.regions) > 0 {

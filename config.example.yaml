@@ -72,8 +72,9 @@ agent:
   globalServers:
     - url: https://chatbot-services.apps.private.okd4.teh-1.snappcloud.io/mcp/server/Akksh5w2yAKrPzou/mcp
 
-  # Optional: override where a tool's namespace argument lives (default: arg
-  # "namespace", plain). Most tools take no namespace arg — enforcement is on the
+  # Optional per-tool rules: namespace-arg overrides (default: arg "namespace",
+  # plain) and clusterAdminOnly for cluster-infrastructure tools whose output is
+  # admin-gated infrastructure data (see the deployed helm values for the list). Most tools take no namespace arg — enforcement is on the
   # RESULT data — so this is usually empty.
   toolRules: {}
     # get_pod:

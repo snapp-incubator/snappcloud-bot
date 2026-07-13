@@ -122,10 +122,11 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 			continue
 		}
 		cts = append(cts, agent.ClusterTools{
-			Cluster: c,
-			Alias:   cm.alias,
-			Allowed: scope[c],
-			MCP:     cm.mcp,
+			Cluster:      c,
+			Alias:        cm.alias,
+			Allowed:      scope[c].Namespaces,
+			ClusterAdmin: scope[c].ClusterWide,
+			MCP:          cm.mcp,
 		})
 	}
 	// Global (docs) tools are available to any authorized user, unfiltered.
@@ -155,7 +156,7 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	}
 	sb.WriteString("\n\nThe user is authorized on these clusters and namespaces:\n")
 	for _, c := range scope.Clusters() {
-		ns := append([]string(nil), scope[c]...)
+		ns := append([]string(nil), scope[c].Namespaces...)
 		sort.Strings(ns)
 		fmt.Fprintf(&sb, "- %s: %s\n", c, strings.Join(ns, ", "))
 	}
@@ -186,6 +187,8 @@ Be thorough and accurate — a single tool rarely gives the full picture:
 - Do not ask the user for something you can obtain yourself. When a node- or agent-scoped tool needs a pod to resolve the node (e.g. Cilium BGP/status/datapath tools), pick any pod from a namespace the user is authorized for and use it — do not ask the user to supply one.
 - Do not refuse based on assumptions about access. Call the tool; the platform enforces authorization and automatically withholds anything the user may not see. Only report an authorization limit AFTER a tool actually returns a withheld/denied result — then say which namespaces they may query.
 - If tools disagree or data is missing, gather more rather than guessing; state any uncertainty.
+- When a result is withheld or a call is denied for authorization, report that as an access limitation on that specific data — NEVER conclude that the thing does not exist or is not configured. Absence of evidence you were not allowed to see is not evidence of absence.
+- Cluster-infrastructure tools (nodes, BGP state, agent status) require cluster-admin access; if denied, tell the user those need cluster-admin rather than trying workarounds.
 - Each tool is tagged [cluster X]; use the correct cluster's tools. For a cross-cluster question, query each cluster and combine.
 
 Answer concisely and factually. Do not narrate your reasoning or restate the question.`

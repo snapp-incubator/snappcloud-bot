@@ -159,7 +159,12 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		if r.Format == "slash" {
 			f = agent.NSSlash
 		}
-		rules[name] = agent.ToolRule{NamespaceArgs: r.NamespaceArgs, Format: f, RequireNamespace: r.RequireNamespace}
+		rules[name] = agent.ToolRule{
+			NamespaceArgs:    r.NamespaceArgs,
+			Format:           f,
+			RequireNamespace: r.RequireNamespace,
+			ClusterAdminOnly: r.ClusterAdminOnly,
+		}
 	}
 
 	globalServers := make([]brain.Server, 0, len(cfg.Agent.GlobalServers))

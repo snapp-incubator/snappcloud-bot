@@ -96,7 +96,10 @@ type ClusterTools struct {
 	Cluster string   // full cluster name (resolver + logs)
 	Alias   string   // short tool-name prefix (defaults to Cluster)
 	Allowed []string // namespaces the user may access on this cluster
-	MCP     MCP      // executor for this cluster's tools
+	// ClusterAdmin marks callers with cluster-wide access; required for
+	// cluster-infrastructure tools (ToolRule.ClusterAdminOnly).
+	ClusterAdmin bool
+	MCP          MCP // executor for this cluster's tools
 	// NoEnforce marks a namespace-agnostic, non-cluster tool source (e.g. general
 	// docs): its results are passed through unfiltered and it is not tied to any
 	// region's scope. Use only for trusted, tenant-independent content.
@@ -144,6 +147,23 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				continue
 			}
 			if !b.ct.NoEnforce {
+				if a.enforcer.ClusterAdminOnly(b.real) {
+					if !b.ct.ClusterAdmin {
+						a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "reason", "cluster-admin required")
+						results = append(results, errResult(call.ID,
+							"authorization denied: this tool exposes cluster infrastructure and requires cluster-admin access on "+b.ct.Cluster))
+						continue
+					}
+					out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
+					if cerr != nil {
+						a.log.Error("tool call failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
+						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
+						continue
+					}
+					// Cluster-admin caller: infrastructure output, returned unfiltered.
+					results = append(results, ToolResult{CallID: call.ID, Content: out})
+					continue
+				}
 				if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
 					a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "err", err)
 					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
