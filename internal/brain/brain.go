@@ -1,8 +1,7 @@
 // Package brain wires the reasoning model, the per-cluster MCP servers, and the
-// namespace enforcer into one thing the bot can call: Answer(scope, query). It
-// replaces the Dify workflow — the agent loop, tool calling, and authorization
-// filtering all run in-process, so the bot does the hard work itself and can
-// answer cross-cluster queries in a single loop.
+// namespace enforcer into one thing the bot can call: Answer. The agent loop,
+// tool calling, and authorization filtering all run in-process, so the bot can
+// investigate across clusters in a single loop.
 package brain
 
 import (

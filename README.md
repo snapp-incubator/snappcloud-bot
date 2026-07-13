@@ -2,10 +2,9 @@
 
 The SnappCloud Mattermost bot. An authenticated user chats with it; the bot
 resolves the user's authorization and runs an **in-process MCP agent** that
-drives the per-cluster MCP servers (Cilium/Hubble, Envoy/Contour, docs) with a
-reasoning model — enforcing namespace scope on every tool result. There is no
-Dify: the bot does the tool-calling and the authorization itself, and answers
-cross-cluster questions in a single loop.
+drives the per-cluster MCP servers (Kubernetes/OpenShift, Cilium/Hubble,
+Envoy/Contour, docs) with a reasoning model — enforcing namespace scope on
+every tool result and answering cross-cluster questions in a single loop.
 
 Authorization is delegated to [mcp-authz](../mcp-authz) — one instance per
 cluster. The bot holds **no cluster credentials**.
