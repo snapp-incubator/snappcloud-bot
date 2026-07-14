@@ -3,8 +3,10 @@
 The SnappCloud Mattermost bot. An authenticated user chats with it; the bot
 resolves the user's authorization and runs an **in-process MCP agent** that
 drives the per-cluster MCP servers (Kubernetes/OpenShift, Cilium/Hubble,
-Envoy/Contour, docs) with a reasoning model — enforcing namespace scope on
-every tool result and answering cross-cluster questions in a single loop.
+Envoy/Contour, docs) with a reasoning model — investigating workloads (pods,
+crashes, rollouts, quotas, logs, events) and networking (flows, drops, ingress,
+policy) across clusters in a single loop, while enforcing namespace scope on
+every tool result.
 
 Authorization is delegated to [mcp-authz](../mcp-authz) — one instance per
 cluster. The bot holds **no cluster credentials**.
@@ -13,14 +15,17 @@ cluster. The bot holds **no cluster credentials**.
 Mattermost user ── message (WebSocket)
         ▼
 snappcloud-bot ── resolve SSO email
-        │  scope = mcp-authz(every region): cluster -> [namespaces]   (groups-aware, cached 5m)
+        │  scope = mcp-authz(every region): cluster -> {namespaces, clusterWide}
+        │          (groups-aware SAR, admin fast-path, cached 5m)
         ▼  if authorized somewhere
    agent loop (streaming reasoning model, all authorized clusters at once):
         │  model proposes cluster-tagged tool calls (in parallel)
-        │  ── MCP call (streamable-http; per-cluster mux: cilium/hubble/envoy/…)
-        │  ── FILTER result vs that cluster's namespaces        ← hard enforcement
-        │       drop records in unauthorized namespaces; resolve bare IPs via
-        │       mcp-authz /v1/resolve (fail-closed); block docs naming forbidden ns
+        │  ── infra tool (nodes/BGP/agent status)?
+        │        cluster-admin → run, return unfiltered
+        │        otherwise    → denied ("requires cluster-admin")
+        │  ── tenant tool → MCP call → FILTER result vs the cluster's namespaces
+        │        drop records in unauthorized namespaces; resolve bare IPs via
+        │        mcp-authz /v1/resolve (fail-closed); cap oversized output
         │  ── feed only authorized data back
         ▼
    answer ── Mattermost (threaded in channels, split if long)
@@ -29,14 +34,21 @@ snappcloud-bot ── resolve SSO email
 ## Enforcement (why the model can't leak)
 
 MCP tools take pods/IPs/services, not namespaces — the namespace lives in the
-**result data**. So the bot filters every tool result before the model sees it:
-a record referencing a namespace the user can't access is dropped; a bare IP is
-resolved to its namespace via mcp-authz and gated; if resolution is unavailable
-the result is withheld (**fail-closed**). The model only ever receives
-authorized data, so it cannot leak it — authorization is not the model's job.
+**result data**. So the bot filters every tenant-data tool result before the
+model sees it: a record referencing a namespace the user can't access is
+dropped; a bare IP is resolved to its namespace via mcp-authz and gated; if
+resolution is unavailable the result is withheld (**fail-closed**). The model
+only ever receives authorized data — authorization is not the model's job, and
+the prompt requires withheld data to be reported as an access limitation, never
+as "does not exist".
 
-Namespace-agnostic **global servers** (the general docs) are exempt: available to
-any authorized user, not scope-filtered.
+Two exemption classes:
+- **Cluster-infrastructure tools** (`toolRules.<tool>.clusterAdminOnly`): nodes,
+  BGP state, agent status. Denied outright for non-admins; returned unfiltered
+  for callers whose cluster-wide SAR passed (`clusterWide` in the mcp-authz
+  scope response). Deterministic RBAC, per cluster.
+- **Global servers** (the general docs): namespace-agnostic, available to any
+  authorized user, not scope-filtered.
 
 ## Behavior
 
@@ -47,8 +59,8 @@ any authorized user, not scope-filtered.
 - **Multi-cluster.** Every authorized cluster's tools are exposed at once, tagged
   `[cluster X]`; the agent calls the right cluster and combines across clusters.
 - **Thorough tool use.** The system prompt pushes the model to investigate with
-  every relevant tool (flows + policy + ingress) and reconcile them, not answer
-  from one call. Extend it with your own MCP "skills" via `agent.toolGuidance`.
+  every relevant tool (pods + logs + events + flows + policy + ingress) and
+  reconcile them. Extend with your own MCP "skills" via `agent.toolGuidance`.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
   replayed for context; persisted to a file (`memory.memoryPath`, a PVC) so it
   survives restarts.
@@ -61,10 +73,13 @@ any authorized user, not scope-filtered.
 - **Streaming LLM (SSE)** with retries: every text/tool-use delta is accumulated,
   so no part of a long answer is lost; if the stream ends before completion it is
   **retried** (never returns partial). Transient failures (network, `429`, `5xx`)
-  retry with backoff+jitter; `4xx` do not. Falls back to a non-streaming JSON body
-  if the endpoint ignores `stream:true`. HTTP/2 keep-alive transport.
+  retry with backoff+jitter; `4xx` do not. Falls back to a non-streaming JSON
+  body if the endpoint ignores `stream:true`. HTTP/2 keep-alive transport.
+- **Bounded prompts.** A single tool result is capped (~100k chars, applied after
+  filtering) so a verbose dump cannot blow the model's request budget; empty
+  content blocks are normalized (the API rejects them).
 - **MCP mux** skips a dead server (best-effort tool listing); a cluster with no
-  reachable servers is dropped, not fatal.
+  reachable servers is dropped, not fatal. SSE responses up to 32 MiB per line.
 
 ## Configuration
 
@@ -80,10 +95,12 @@ environment (never YAML):
 
 Key config sections: `agent.llm` (endpoint/model), `agent.clusters[].servers[]`
 (MCP servers per cluster), `agent.globalServers[]` (namespace-agnostic servers
-like docs), `agent.toolGuidance` (extra tool-usage skills), `authz.regions[]`
-(mcp-authz endpoints). A cluster's `name` must match an `authz.regions[].name`.
+like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
+(per-tool namespace-arg overrides + `clusterAdminOnly` infra gating),
+`authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
+`authz.regions[].name`.
 
-### Adding a new MCP server (e.g. Hubble)
+### Adding a new MCP server
 
 Append one entry under the cluster — no code change:
 
@@ -96,10 +113,11 @@ agent:
           authHeaderEnv: HUBBLE_TEH1_AUTH   # only if it needs auth (per region)
 ```
 
-If authed, add `HUBBLE_TEH1_AUTH` to the `snappcloud_bot.mcpAuth` secret (the
-full `Authorization` header). MCP Basic auth is **per region** — one key each.
+If authed, add the key to the `snappcloud_bot.mcpAuth` secret (the full
+`Authorization` header). MCP Basic auth is **per region** — one key each.
 Its tools appear automatically, cluster-tagged and enforced. A namespace-agnostic
-server (docs) goes under `agent.globalServers` instead.
+server (docs) goes under `agent.globalServers`; cluster-infrastructure tools it
+exposes should be listed in `agent.toolRules` with `clusterAdminOnly: true`.
 
 ## Develop
 
