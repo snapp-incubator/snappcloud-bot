@@ -134,7 +134,9 @@ func (c *Client) Complete(ctx context.Context, req agent.Request) (agent.Respons
 	}
 
 	var lastErr error
+	attempts := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attempts = attempt
 		resp, err := c.stream(ctx, body)
 		if err == nil {
 			return resp, nil
@@ -153,7 +155,7 @@ func (c *Client) Complete(ctx context.Context, req agent.Request) (agent.Respons
 		case <-time.After(wait):
 		}
 	}
-	return agent.Response{}, fmt.Errorf("llm after %d attempts: %w", maxAttempts, lastErr)
+	return agent.Response{}, fmt.Errorf("llm after %d attempt(s): %w", attempts, lastErr)
 }
 
 // stream performs one request and accumulates the full streamed response.
@@ -351,15 +353,24 @@ func toMessages(turns []agent.Turn) []message {
 				in, _ := json.Marshal(call.Args)
 				blocks = append(blocks, block{Type: "tool_use", ID: call.ID, Name: call.Name, Input: in})
 			}
+			if len(blocks) == 0 {
+				// The API rejects messages with empty content.
+				continue
+			}
 			msgs = append(msgs, message{Role: "assistant", Content: blocks})
 		default: // user
 			if len(t.Results) > 0 {
 				blocks := make([]block, 0, len(t.Results))
 				for _, res := range t.Results {
+					content := res.Content
+					if content == "" {
+						// The API rejects empty content blocks.
+						content = "(empty result)"
+					}
 					blocks = append(blocks, block{
 						Type:      "tool_result",
 						ToolUseID: res.CallID,
-						Content:   res.Content,
+						Content:   content,
 						IsError:   res.IsError,
 					})
 				}

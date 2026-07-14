@@ -227,7 +227,9 @@ func decodeResponse(resp *http.Response, id int) (*rpcResponse, error) {
 // decodeSSE scans `data:` events for the JSON-RPC response with the given id.
 func decodeSSE(r io.Reader, id int) (*rpcResponse, error) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	// A single SSE data line carries the whole JSON-RPC response; verbose tools
+	// (BPF map listings) can exceed 8 MiB on large clusters.
+	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {

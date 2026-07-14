@@ -120,6 +120,21 @@ type binding struct {
 	allowed map[string]bool
 }
 
+// maxResultRunes caps a single tool result fed back to the model. Oversized
+// payloads (a verbose BPF map dump) blow the prompt budget and get the whole
+// request rejected by the LLM endpoint.
+const maxResultRunes = 100_000
+
+// capResult truncates an oversized tool result, telling the model to narrow
+// the query. Applied AFTER namespace filtering so truncation can never turn
+// filterable JSON into an unfilterable fragment.
+func capResult(s string) string {
+	if len(s) <= maxResultRunes {
+		return s
+	}
+	return s[:maxResultRunes] + "\n[output truncated — narrow the query (a namespace, a node, or a filter)]"
+}
+
 // Run drives the LLM ↔ MCP loop across every authorized cluster, enforcing each
 // tool call against that cluster's scope, and returns the final answer text.
 func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
@@ -268,7 +283,7 @@ func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) Too
 		a.log.Info("filtered tool result", "cluster", b.ct.Cluster, "removed", removed)
 		body += fmt.Sprintf("\n\n[authorization: %d record(s) in namespaces you cannot access were withheld]", removed)
 	}
-	return ToolResult{CallID: callID, Content: body}
+	return ToolResult{CallID: callID, Content: capResult(body)}
 }
 
 func (a *Agent) withheld(callID string, b binding, why string) ToolResult {
