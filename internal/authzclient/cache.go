@@ -14,6 +14,12 @@ type Resolver interface {
 	Resolve(ctx context.Context, user string) (Scope, error)
 }
 
+// Invalidator drops a user's cached scope. CachedResolver implements it; the
+// bare Client does not (nothing to invalidate).
+type Invalidator interface {
+	Invalidate(user string)
+}
+
 // CachedResolver caches a user's aggregated Scope for a TTL so the bot does not
 // re-query every region's mcp-authz API on each chat message.
 //
@@ -72,6 +78,14 @@ func (c *CachedResolver) Resolve(ctx context.Context, user string) (Scope, error
 		return nil, err
 	}
 	return v.(Scope), nil
+}
+
+// Invalidate drops a user's cached scope so the next Resolve re-queries every
+// region. Used to pick up an authorization change without waiting out the TTL.
+func (c *CachedResolver) Invalidate(user string) {
+	c.mu.Lock()
+	delete(c.entries, user)
+	c.mu.Unlock()
 }
 
 // StartSweeper periodically evicts expired entries until ctx is cancelled.

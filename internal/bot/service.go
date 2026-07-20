@@ -8,8 +8,10 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -105,6 +107,22 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	identity := s.resolveIdentity(user.Email)
 	if identity == "" {
 		s.replyTo(ctx, p, msgUnauthorized)
+		return nil
+	}
+
+	// Refresh command: flush the caller's cached scope and report live access.
+	// Lets a user pick up an authorization change without waiting out the cache.
+	if isRefreshCommand(query) {
+		if inv, ok := s.resolver.(authzclient.Invalidator); ok {
+			inv.Invalidate(identity)
+		}
+		scope, err := s.resolver.Resolve(ctx, identity)
+		if err != nil {
+			s.replyTo(ctx, p, msgBackendError)
+			return nil
+		}
+		s.log.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
+		s.replyTo(ctx, p, refreshSummary(scope))
 		return nil
 	}
 
@@ -243,4 +261,35 @@ func splitMessage(msg string, max int) []string {
 	}
 	flush()
 	return parts
+}
+
+// refreshVerbs are the message texts that trigger a scope-cache refresh.
+var refreshVerbs = map[string]bool{
+	"refresh": true, "reload": true, "refresh access": true,
+	"reload access": true, "refresh my access": true, "sync access": true,
+}
+
+// isRefreshCommand reports whether the message is a request to re-check access.
+func isRefreshCommand(query string) bool {
+	return refreshVerbs[strings.ToLower(strings.TrimSpace(query))]
+}
+
+// refreshSummary renders the caller's live access after a cache flush.
+func refreshSummary(scope authzclient.Scope) string {
+	if scope.Empty() {
+		return "🔄 Access refreshed. You currently have no namespaces on any cluster."
+	}
+	var sb strings.Builder
+	sb.WriteString("🔄 Access refreshed. You can now query:\n")
+	for _, c := range scope.Clusters() {
+		cs := scope[c]
+		ns := append([]string(nil), cs.Namespaces...)
+		sort.Strings(ns)
+		admin := ""
+		if cs.ClusterWide {
+			admin = " _(cluster-admin)_"
+		}
+		fmt.Fprintf(&sb, "• **%s**%s: %s\n", c, admin, strings.Join(ns, ", "))
+	}
+	return sb.String()
 }

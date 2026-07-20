@@ -61,6 +61,10 @@ Two exemption classes:
 - **Thorough tool use.** The system prompt pushes the model to investigate with
   every relevant tool (pods + logs + events + flows + policy + ingress) and
   reconcile them. Extend with your own MCP "skills" via `agent.toolGuidance`.
+- **Access refresh.** Scope is cached per user (`authz.cacheTTL`, default 5m). A
+  user whose authorization just changed can say **"refresh"** to flush their own
+  cache and get their live cluster/namespace list immediately — no wait, no
+  restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
   replayed for context; persisted to a file (`memory.memoryPath`, a PVC) so it
   survives restarts.

@@ -218,3 +218,45 @@ func TestSplitMessageShortUnchanged(t *testing.T) {
 		t.Fatalf("short message altered: %v", got)
 	}
 }
+
+type invResolver struct {
+	fakeResolver
+	invalidated []string
+}
+
+func (r *invResolver) Invalidate(user string) { r.invalidated = append(r.invalidated, user) }
+
+func TestRefreshCommandFlushesAndReportsAccess(t *testing.T) {
+	mm := &fakeMM{email: "saman@snapp.cab"}
+	b := &fakeBrain{}
+	r := &invResolver{fakeResolver: fakeResolver{scope: authzclient.Scope{
+		"okd4-teh-1": {Namespaces: []string{"team-a"}, ClusterWide: true},
+	}}}
+	svc := New(mm, b, r, Options{ConversationTTL: time.Hour, BotUsername: "snappbot", RequireMention: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	p := post()
+	p.Message = "refresh"
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.invalidated) != 1 || r.invalidated[0] != "saman@snapp.cab" {
+		t.Fatalf("cache not invalidated for caller: %v", r.invalidated)
+	}
+	if b.called {
+		t.Fatal("refresh must not run the agent")
+	}
+	if len(mm.posted) != 1 || !strings.Contains(mm.posted[0], "okd4-teh-1") || !strings.Contains(mm.posted[0], "cluster-admin") {
+		t.Fatalf("refresh summary wrong: %v", mm.posted)
+	}
+}
+
+func TestIsRefreshCommand(t *testing.T) {
+	for _, q := range []string{"refresh", "Reload Access", " refresh my access "} {
+		if !isRefreshCommand(q) {
+			t.Errorf("%q should be a refresh command", q)
+		}
+	}
+	if isRefreshCommand("why is my pod crashing") {
+		t.Error("normal query misread as refresh")
+	}
+}
