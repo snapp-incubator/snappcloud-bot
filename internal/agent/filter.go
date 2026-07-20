@@ -81,6 +81,11 @@ func filterArray(arr []any, allowed map[string]bool, resolved map[string][]strin
 // explicit namespace keys plus the namespaces its IPs resolve to.
 func recordNamespaces(el any, resolved map[string][]string) []string {
 	ns := collectNamespaces(el)
+	// A Namespace object's identity IS a namespace: gate it by its own name so
+	// listing namespaces can never return ones outside the caller's scope.
+	if n := namespaceSelfName(el); n != "" {
+		ns = append(ns, n)
+	}
 	if len(resolved) > 0 {
 		blob, _ := json.Marshal(el)
 		for _, ip := range extractIPs(string(blob)) {
@@ -88,6 +93,29 @@ func recordNamespaces(el any, resolved map[string][]string) []string {
 		}
 	}
 	return ns
+}
+
+// namespaceSelfName returns the record's own name when the record represents a
+// Namespace (its name is the namespace to gate on). Recognizes both a raw
+// Kubernetes object (kind: Namespace) and a summarized record that carries a
+// "kind":"Namespace" field.
+func namespaceSelfName(el any) string {
+	m, ok := el.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if kind, _ := m["kind"].(string); !strings.EqualFold(kind, "Namespace") {
+		return ""
+	}
+	if name, ok := m["name"].(string); ok && name != "" {
+		return name
+	}
+	if meta, ok := m["metadata"].(map[string]any); ok {
+		if name, ok := meta["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // unauthorized reports whether any named namespace is outside `allowed`. A

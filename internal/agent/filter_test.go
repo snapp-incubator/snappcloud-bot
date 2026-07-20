@@ -89,3 +89,35 @@ func TestFilteredArrayStaysValidJSON(t *testing.T) {
 		t.Fatalf("filtered result is not valid JSON: %v", err)
 	}
 }
+
+// Listing namespaces must return only the caller's own namespaces. A Namespace
+// object's identity is its name (no "namespace" field), so gate on the name.
+func TestFilterGatesNamespaceObjectsByName(t *testing.T) {
+	result := `{"items":[
+	  {"kind":"Namespace","name":"team-a","namespace":""},
+	  {"kind":"Namespace","name":"team-b","namespace":""},
+	  {"kind":"Namespace","name":"kube-system","namespace":""}
+	]}`
+	out, removed, blocked := FilterResult(result, allowedSet("team-a"), nil)
+	if blocked {
+		t.Fatal("array doc should filter, not block whole")
+	}
+	if removed != 2 {
+		t.Fatalf("removed=%d, want 2 (team-b, kube-system)", removed)
+	}
+	if strings.Contains(out, "team-b") || strings.Contains(out, "kube-system") {
+		t.Fatalf("leaked unauthorized namespace: %s", out)
+	}
+	if !strings.Contains(out, "team-a") {
+		t.Fatalf("dropped authorized namespace: %s", out)
+	}
+}
+
+// Raw Kubernetes Namespace object (metadata.name form) is gated too.
+func TestFilterGatesRawNamespaceObject(t *testing.T) {
+	result := `{"kind":"Namespace","metadata":{"name":"kube-system"}}`
+	_, _, blocked := FilterResult(result, allowedSet("team-a"), nil)
+	if !blocked {
+		t.Fatal("unauthorized namespace object must be blocked")
+	}
+}

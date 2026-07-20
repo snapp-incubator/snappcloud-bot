@@ -162,7 +162,8 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	}
 	sb.WriteString("\nEach tool is tagged [cluster X]; call tools on the correct cluster. " +
 		"For a cross-cluster question, call the relevant tools on each cluster and combine the results. " +
-		"Results for namespaces the user cannot access are withheld automatically — do not mention other namespaces.")
+		"Results for namespaces the user cannot access are withheld automatically — do not mention other namespaces. " +
+		"The namespaces listed above are the complete set the user may access; if asked which namespaces they have, answer from this list directly — never call a tool to enumerate namespaces, and never imply the cluster has only these namespaces.")
 	if strings.TrimSpace(history) != "" {
 		sb.WriteString("\n\nConversation so far (for context):\n")
 		sb.WriteString(history)
