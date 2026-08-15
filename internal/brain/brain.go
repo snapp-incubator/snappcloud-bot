@@ -27,7 +27,7 @@ var ErrNoClusterTools = errors.New("no MCP tools available for the user's author
 type Brain struct {
 	agent    *agent.Agent
 	clusters map[string]*clusterMCP // cluster name -> its tools
-	global   agent.MCP              // namespace-agnostic tools (docs); nil if none
+	global   map[string]agent.MCP   // alias -> namespace-agnostic tools (e.g. docs); empty if none
 	persona  string                 // who the bot is + how to greet/help (leads the prompt)
 	system   string
 	guidance string // MCP tool-usage guidance ("skills"), appended to every prompt
@@ -39,10 +39,13 @@ type clusterMCP struct {
 	mcp   agent.MCP
 }
 
-// Server describes one MCP endpoint for a cluster.
+// Server describes one MCP endpoint for a cluster or a global group.
 type Server struct {
 	URL        string
 	AuthHeader string
+	// Alias groups global servers under a tool tag (default "docs"). Ignored for
+	// per-cluster servers.
+	Alias string
 }
 
 // Cluster describes one cluster's MCP servers.
@@ -89,13 +92,24 @@ func New(o Options, log *slog.Logger) *Brain {
 		clusters[c.Name] = &clusterMCP{alias: alias, mcp: muxAdapter{mux}}
 	}
 
-	var global agent.MCP
-	if len(o.GlobalServers) > 0 {
-		mux := mcp.NewMux()
-		for i, s := range o.GlobalServers {
-			mux.Add(fmt.Sprintf("global-%d", i), mcp.New(s.URL, s.AuthHeader, o.MCPTimeout))
+	// Group global servers by alias (default "docs"): each alias becomes its own
+	// namespace-agnostic tool group tagged [alias].
+	muxes := make(map[string]*mcp.Mux)
+	for i, s := range o.GlobalServers {
+		alias := s.Alias
+		if alias == "" {
+			alias = "docs"
 		}
-		global = muxAdapter{mux}
+		m, ok := muxes[alias]
+		if !ok {
+			m = mcp.NewMux()
+			muxes[alias] = m
+		}
+		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, o.MCPTimeout))
+	}
+	global := make(map[string]agent.MCP, len(muxes))
+	for alias, m := range muxes {
+		global[alias] = muxAdapter{m}
 	}
 
 	ag := agent.New(llm.New(o.LLM), agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, log)
@@ -108,6 +122,16 @@ func New(o Options, log *slog.Logger) *Brain {
 		persona = defaultPersona
 	}
 	return &Brain{agent: ag, clusters: clusters, global: global, persona: persona, system: system, guidance: o.ToolGuidance, log: log}
+}
+
+// sortedKeys returns a map's keys sorted, for stable ordering.
+func sortedKeys(m map[string]agent.MCP) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Answer runs the agent over every authorized cluster that has MCP tools and
@@ -129,9 +153,10 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 			MCP:          cm.mcp,
 		})
 	}
-	// Global (docs) tools are available to any authorized user, unfiltered.
-	if b.global != nil {
-		cts = append(cts, agent.ClusterTools{Cluster: "docs", Alias: "docs", MCP: b.global, NoEnforce: true})
+	// Global tools are available to any authorized user, unfiltered, grouped by
+	// alias (e.g. docs). Sorted for stable tool ordering.
+	for _, alias := range sortedKeys(b.global) {
+		cts = append(cts, agent.ClusterTools{Cluster: alias, Alias: alias, MCP: b.global[alias], NoEnforce: true})
 	}
 	if len(cts) == 0 {
 		return "", ErrNoClusterTools
@@ -165,8 +190,12 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 		"Each cluster tool is tagged [cluster X]; call tools on the correct cluster. " +
 		"For a cross-cluster question, call the relevant tools on each cluster and combine the results. " +
 		"Results for namespaces the user cannot access are withheld automatically; never imply a cluster has only these namespaces.")
-	if b.global != nil {
-		sb.WriteString("\n\nDocumentation tools are tagged [docs] and are NOT tied to any cluster. Use them for general SnappCloud/platform how-to and concept questions (how to do X, what is Y, where to configure Z) — questions that are not about a specific running workload. They are available to you regardless of cluster access; prefer them over guessing when the user asks a general platform question.")
+	if len(b.global) > 0 {
+		tags := sortedKeys(b.global)
+		for i := range tags {
+			tags[i] = "[" + tags[i] + "]"
+		}
+		fmt.Fprintf(&sb, "\n\nGlobal tools tagged %s are NOT tied to any cluster. Use them for general SnappCloud/platform how-to and concept questions (how to do X, what is Y, where to configure Z) — questions not about a specific running workload. Available regardless of cluster access; prefer them over guessing when the user asks a general platform question.", strings.Join(tags, ", "))
 	}
 	if strings.TrimSpace(history) != "" {
 		sb.WriteString("\n\nConversation so far (for context):\n")

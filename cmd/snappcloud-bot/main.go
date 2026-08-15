@@ -173,7 +173,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		if s.AuthHeaderEnv != "" {
 			auth = os.Getenv(s.AuthHeaderEnv)
 		}
-		globalServers = append(globalServers, brain.Server{URL: s.URL, AuthHeader: auth})
+		globalServers = append(globalServers, brain.Server{URL: s.URL, AuthHeader: auth, Alias: s.Alias})
 	}
 
 	b := brain.New(brain.Options{

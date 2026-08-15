@@ -64,6 +64,10 @@ type MCPServer struct {
 	Name          string `yaml:"name"`
 	URL           string `yaml:"url"`
 	AuthHeaderEnv string `yaml:"authHeaderEnv"`
+	// Alias groups a globalServer's tools under a tool-name tag (default "docs").
+	// Global servers sharing an alias are merged; distinct aliases are exposed as
+	// separate [alias] tool groups. Ignored for per-cluster servers.
+	Alias string `yaml:"alias"`
 }
 
 // ToolRule overrides where a tool's namespace(s) live (default: arg "namespace",

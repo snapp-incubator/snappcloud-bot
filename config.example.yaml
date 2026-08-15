@@ -70,7 +70,10 @@ agent:
   # Global MCP servers — namespace-agnostic, available to every authorized user
   # regardless of cluster, not scope-filtered (e.g. the general SnappCloud docs).
   globalServers:
+    # alias groups a global server's tools under a [alias] tag (default "docs").
+    # Servers sharing an alias merge; distinct aliases are separate tool groups.
     - url: https://chatbot-services.apps.private.okd4.teh-1.snappcloud.io/mcp/server/Akksh5w2yAKrPzou/mcp
+      alias: docs
 
   # Optional per-tool rules: namespace-arg overrides (default: arg "namespace",
   # plain) and clusterAdminOnly for cluster-infrastructure tools whose output is
