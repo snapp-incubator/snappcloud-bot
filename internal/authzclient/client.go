@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -52,14 +53,19 @@ type Client struct {
 	regions []Region
 	token   string
 	http    *http.Client
+	log     *slog.Logger
 }
 
 // New builds a client over the region endpoints, presenting token as a bearer.
-func New(regions []Region, token string, timeout time.Duration) *Client {
+func New(regions []Region, token string, timeout time.Duration, log *slog.Logger) *Client {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Client{
 		regions: regions,
 		token:   token,
 		http:    &http.Client{Timeout: timeout},
+		log:     log,
 	}
 }
 
@@ -170,6 +176,11 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 	for range c.regions {
 		res := <-ch
 		if res.err != nil {
+			// A region that errors is dropped (the user just can't query it this
+			// time). Log it so a broken/unreachable region is not invisible —
+			// otherwise it is indistinguishable from "user has no namespaces here".
+			c.log.Warn("region authorization failed; region dropped for this user",
+				"region", res.name, "user", user, "err", res.err)
 			errCount++
 			if firstErr == nil {
 				firstErr = res.err
@@ -179,6 +190,8 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 		if len(res.cs.Namespaces) > 0 {
 			sort.Strings(res.cs.Namespaces)
 			scope[res.name] = res.cs
+		} else {
+			c.log.Debug("region returned no namespaces for user", "region", res.name, "user", user)
 		}
 	}
 	if errCount == len(c.regions) && len(c.regions) > 0 {

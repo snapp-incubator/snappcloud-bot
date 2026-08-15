@@ -87,7 +87,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		regions = append(regions, authzclient.Region{Name: r.Name, URL: r.URL})
 		names = append(names, r.Name)
 	}
-	authzBase := authzclient.New(regions, authzToken, timeout)
+	authzBase := authzclient.New(regions, authzToken, timeout, log)
 	resolver := authzclient.NewCachedResolver(authzBase, ttl)
 	log.Info("authz ready", "regions", names, "cacheTTL", ttl)
 

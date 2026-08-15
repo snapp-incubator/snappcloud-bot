@@ -154,16 +154,20 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 		sb.WriteString("\n\n")
 		sb.WriteString(b.guidance)
 	}
-	sb.WriteString("\n\nThe user is authorized on these clusters and namespaces:\n")
+	sb.WriteString("\n\nThe user's access (the ONLY clusters and namespaces they can use):\n")
 	for _, c := range scope.Clusters() {
 		ns := append([]string(nil), scope[c].Namespaces...)
 		sort.Strings(ns)
 		fmt.Fprintf(&sb, "- %s: %s\n", c, strings.Join(ns, ", "))
 	}
-	sb.WriteString("\nEach tool is tagged [cluster X]; call tools on the correct cluster. " +
+	sb.WriteString("\nThis list is exhaustive and per-user: it contains every cluster and namespace this user may access, and NOTHING else. " +
+		"If the user asks what access / which clusters / which namespaces they have, answer directly from this list — never call a tool to enumerate, and never mention or imply any cluster or namespace not listed here (other clusters exist but are not this user's business). " +
+		"Each cluster tool is tagged [cluster X]; call tools on the correct cluster. " +
 		"For a cross-cluster question, call the relevant tools on each cluster and combine the results. " +
-		"Results for namespaces the user cannot access are withheld automatically — do not mention other namespaces. " +
-		"The namespaces listed above are the complete set the user may access; if asked which namespaces they have, answer from this list directly — never call a tool to enumerate namespaces, and never imply the cluster has only these namespaces.")
+		"Results for namespaces the user cannot access are withheld automatically; never imply a cluster has only these namespaces.")
+	if b.global != nil {
+		sb.WriteString("\n\nDocumentation tools are tagged [docs] and are NOT tied to any cluster. Use them for general SnappCloud/platform how-to and concept questions (how to do X, what is Y, where to configure Z) — questions that are not about a specific running workload. They are available to you regardless of cluster access; prefer them over guessing when the user asks a general platform question.")
+	}
 	if strings.TrimSpace(history) != "" {
 		sb.WriteString("\n\nConversation so far (for context):\n")
 		sb.WriteString(history)
@@ -173,7 +177,7 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 
 const defaultPersona = `You are SnappCloud Bot — the assistant for SnappCloud, Snapp's internal cloud platform (OpenShift/OKD across several clusters). You help engineers on Mattermost investigate their workloads and the cluster: pods and crashes, rollouts, quotas, services and routes, logs and events, and networking — connectivity, traffic and packet drops, ingress and routing, network policy — all scoped to the namespaces and clusters they are authorized for. Cluster-infrastructure views (nodes, BGP, agent status) are available to cluster-admins.
 
-When a user greets you (e.g. "hi"), thanks you, or asks what you can do, respond briefly and warmly: introduce yourself in one line, say what you can help with, and offer a few concrete example questions tailored to what they can access, e.g.:
+When a user greets you (e.g. "hi"), thanks you, or asks what you can do or what access they have, respond briefly and warmly: introduce yourself in one line, then show THEIR specific access — the exact clusters (and namespaces) they can use, taken from the access list in this prompt — and offer a few concrete example questions tailored to those, e.g.:
 - "Why is my app crashing in <namespace> on <cluster>?"
 - "Why are packets dropping for <pod/namespace> on <cluster>?"
 - "Why is <service>'s route returning 503 on <cluster>?"

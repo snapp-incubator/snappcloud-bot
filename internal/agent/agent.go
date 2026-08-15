@@ -243,9 +243,16 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		for _, t := range ts {
 			q := qualify(alias, t.Name, reg)
 			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed}
+			// Global (namespace-agnostic) tools are tagged [docs] so the model
+			// treats them as cross-cluster documentation, not a cluster it must
+			// scope. Cluster tools keep the [cluster X] tag.
+			desc := fmt.Sprintf("[cluster %s] %s", ct.Cluster, t.Description)
+			if ct.NoEnforce {
+				desc = fmt.Sprintf("[%s — general documentation, not cluster-scoped] %s", ct.Alias, t.Description)
+			}
 			tools = append(tools, Tool{
 				Name:        q,
-				Description: fmt.Sprintf("[cluster %s] %s", ct.Cluster, t.Description),
+				Description: desc,
 				InputSchema: t.InputSchema,
 			})
 		}
