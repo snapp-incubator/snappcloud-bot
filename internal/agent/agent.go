@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Tool is an MCP tool exposed to the model.
@@ -111,6 +112,8 @@ type Input struct {
 	System   string
 	Query    string
 	Clusters []ClusterTools
+	// ReqID correlates all log lines for one user message (empty = none).
+	ReqID string
 }
 
 // binding maps a cluster-qualified tool name back to its cluster + real name.
@@ -138,24 +141,43 @@ func capResult(s string) string {
 // Run drives the LLM ↔ MCP loop across every authorized cluster, enforcing each
 // tool call against that cluster's scope, and returns the final answer text.
 func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
+	lg := a.log.With("req", in.ReqID)
+	start := time.Now()
+	var toolCalls, toolErrs, denied, filtered int
+	iters := 0
+	// summary logs one line per user message — the anchor for troubleshooting.
+	summary := func(outcome string, extra ...any) {
+		args := append([]any{
+			"outcome", outcome, "iters", iters, "toolCalls", toolCalls,
+			"toolErrs", toolErrs, "denied", denied, "filtered", filtered,
+			"dur", time.Since(start).Round(time.Millisecond),
+		}, extra...)
+		lg.Info("turn done", args...)
+	}
+
 	tools, reg, err := a.buildTools(ctx, in.Clusters)
 	if err != nil {
+		summary("build-tools-failed", "err", err)
 		return "", fmt.Errorf("list tools: %w", err)
 	}
 	msgs := []Turn{{Role: "user", Text: in.Query}}
 
 	for iter := 0; iter < a.maxIter; iter++ {
+		iters = iter + 1
 		resp, err := a.llm.Complete(ctx, Request{System: in.System, Messages: msgs, Tools: tools})
 		if err != nil {
+			summary("llm-error", "err", err)
 			return "", fmt.Errorf("llm: %w", err)
 		}
 		msgs = append(msgs, Turn{Role: "assistant", Text: resp.Text, Calls: resp.Calls})
 		if len(resp.Calls) == 0 {
+			summary("answered")
 			return resp.Text, nil // final answer
 		}
 
 		results := make([]ToolResult, 0, len(resp.Calls))
 		for _, call := range resp.Calls {
+			toolCalls++
 			b, ok := reg[call.Name]
 			if !ok {
 				results = append(results, errResult(call.ID, "unknown tool "+call.Name))
@@ -164,14 +186,15 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			if !b.ct.NoEnforce {
 				if a.enforcer.ClusterAdminOnly(b.real) {
 					if !b.ct.ClusterAdmin {
-						a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "reason", "cluster-admin required")
+						denied++
 						results = append(results, errResult(call.ID,
 							"authorization denied: this tool exposes cluster infrastructure and requires cluster-admin access on "+b.ct.Cluster))
 						continue
 					}
 					out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
 					if cerr != nil {
-						a.log.Error("tool call failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
+						toolErrs++
+						lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
 						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 						continue
 					}
@@ -180,14 +203,15 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 					continue
 				}
 				if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
-					a.log.Warn("tool call denied", "cluster", b.ct.Cluster, "tool", b.real, "err", err)
+					denied++
 					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
 					continue
 				}
 			}
 			out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
 			if cerr != nil {
-				a.log.Error("tool call failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
+				toolErrs++
+				lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
 				results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 				continue
 			}
@@ -195,11 +219,16 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				// Trusted namespace-agnostic source (docs) — no filtering.
 				results = append(results, ToolResult{CallID: call.ID, Content: out})
 			} else {
-				results = append(results, a.filtered(ctx, b, call.ID, out))
+				r, dropped := a.filtered(ctx, b, call.ID, out)
+				if dropped {
+					filtered++
+				}
+				results = append(results, r)
 			}
 		}
 		msgs = append(msgs, Turn{Role: "user", Results: results})
 	}
+	summary("max-iters")
 
 	// Ran out of iterations — ask the model for a final answer with no tools.
 	resp, err := a.llm.Complete(ctx, Request{
@@ -267,30 +296,34 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 // it. Resolves any IPs to namespaces (fail-closed: if IPs are present and
 // resolution fails, the whole result is withheld), then drops records touching
 // namespaces outside the tool's cluster scope.
-func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) ToolResult {
+// filtered returns the scoped result and whether any data was dropped/withheld
+// (for the turn summary). Per-call detail is intentionally not logged here —
+// the summary aggregates it; a dropped result is normal enforcement, not an
+// error worth a line each.
+func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (ToolResult, bool) {
 	_, ips := ExtractRefs(out)
 	var resolved map[string][]string
 	if len(ips) > 0 {
 		if a.resolver == nil {
-			return a.withheld(callID, b, "cannot verify IP ownership")
+			return a.withheld(callID, b, "cannot verify IP ownership"), true
 		}
 		r, err := a.resolver.ResolveIPs(ctx, b.ct.Cluster, ips)
 		if err != nil {
-			a.log.Error("resolve ips", "cluster", b.ct.Cluster, "err", err)
-			return a.withheld(callID, b, "resource resolution unavailable")
+			// Resolver down = fail-closed withholding: WARN (handled), not ERROR.
+			a.log.Warn("ip resolve failed; withholding", "cluster", b.ct.Cluster, "err", err)
+			return a.withheld(callID, b, "resource resolution unavailable"), true
 		}
 		resolved = r
 	}
 
 	body, removed, blocked := FilterResult(out, b.allowed, resolved)
 	if blocked {
-		return a.withheld(callID, b, "result references namespaces you cannot access")
+		return a.withheld(callID, b, "result references namespaces you cannot access"), true
 	}
 	if removed > 0 {
-		a.log.Info("filtered tool result", "cluster", b.ct.Cluster, "removed", removed)
 		body += fmt.Sprintf("\n\n[authorization: %d record(s) in namespaces you cannot access were withheld]", removed)
 	}
-	return ToolResult{CallID: callID, Content: capResult(body)}
+	return ToolResult{CallID: callID, Content: capResult(body)}, removed > 0
 }
 
 func (a *Agent) withheld(callID string, b binding, why string) ToolResult {

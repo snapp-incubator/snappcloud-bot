@@ -137,7 +137,7 @@ func sortedKeys(m map[string]agent.MCP) []string {
 // Answer runs the agent over every authorized cluster that has MCP tools and
 // returns the final text. history is a prior-conversation transcript ("" for a
 // fresh thread) used for memory.
-func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, history string) (string, error) {
+func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, history, reqID string) (string, error) {
 	var cts []agent.ClusterTools
 	for _, c := range scope.Clusters() {
 		cm, ok := b.clusters[c]
@@ -165,6 +165,7 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 		System:   b.systemPrompt(scope, history),
 		Query:    query,
 		Clusters: cts,
+		ReqID:    reqID,
 	})
 }
 

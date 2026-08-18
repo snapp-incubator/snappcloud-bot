@@ -8,6 +8,8 @@ package bot
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -19,10 +21,19 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
+// newReqID returns a short random hex id correlating one message's log lines.
+func newReqID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req"
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // answerer runs the enforced agent loop and returns the answer text. history is
 // the prior thread transcript for memory.
 type answerer interface {
-	Answer(ctx context.Context, scope authzclient.Scope, query, history string) (string, error)
+	Answer(ctx context.Context, scope authzclient.Scope, query, history, reqID string) (string, error)
 }
 
 type mmClient interface {
@@ -88,6 +99,9 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	if query == "" {
 		return nil
 	}
+	// reqID correlates every log line for this message (identity, auth, agent).
+	reqID := newReqID()
+	lg := s.log.With("req", reqID)
 
 	// Show a typing indicator for the whole turn (auth + agent can be slow).
 	// parent_id must be the EXISTING thread root (p.RootID): empty for a
@@ -121,7 +135,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 			s.replyTo(ctx, p, msgBackendError)
 			return nil
 		}
-		s.log.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
+		lg.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
 		s.replyTo(ctx, p, refreshSummary(scope))
 		return nil
 	}
@@ -129,27 +143,26 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// 2. Authorize across all regions (via the per-region mcp-authz APIs).
 	scope, err := s.resolver.Resolve(ctx, identity)
 	if err != nil {
-		s.log.Error("authorize", "user", identity, "err", err)
+		lg.Error("authorize failed", "user", identity, "err", err)
 		s.replyTo(ctx, p, msgBackendError)
 		return nil
 	}
 	if scope.Empty() {
-		s.log.Info("denied", "user", identity, "reason", "no allowed namespaces on any cluster")
+		lg.Info("denied", "user", identity, "reason", "no namespaces on any cluster")
 		s.replyTo(ctx, p, msgUnauthorized)
 		return nil
 	}
-	s.log.Info("authorized", "user", identity, "clusters", scope.Clusters())
 
 	// 3. Run the in-bot agent over the user's authorized clusters, with this
 	// thread/DM's transcript for memory. The agent drives the MCP servers and
 	// enforces namespace scope on every result.
 	convKey := convKeyFor(identity, p)
 	history := s.conv.get(convKey)
-	s.log.Debug("agent request", "user", identity, "queryLen", len(query), "hasHistory", history != "")
+	lg.Info("request", "user", identity, "clusters", scope.Clusters(), "thread", history != "")
 
-	answer, aerr := s.brain.Answer(ctx, scope, query, history)
+	answer, aerr := s.brain.Answer(ctx, scope, query, history, reqID)
 	if aerr != nil {
-		s.log.Error("agent", "user", identity, "err", aerr)
+		lg.Error("agent failed", "user", identity, "err", aerr)
 		s.replyTo(ctx, p, msgAgentError)
 		return nil
 	}

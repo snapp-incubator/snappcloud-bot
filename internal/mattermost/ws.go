@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -155,6 +156,15 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 		sem <- struct{}{}
 		go func(p Post) {
 			defer func() { <-sem }()
+			// Recover: a panic while handling one message must not crash the whole
+			// singleton bot (which drops the WebSocket and restarts, failing the
+			// readiness probe). Log with stack and move on.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("handle post panicked", "post", p.ID, "user", p.UserID,
+						"panic", r, "stack", string(debug.Stack()))
+				}
+			}()
 			if err := h(ctx, p); err != nil {
 				log.Error("handle post", "post", p.ID, "user", p.UserID, "err", err)
 			}

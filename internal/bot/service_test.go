@@ -38,7 +38,7 @@ type fakeBrain struct {
 	err        error
 }
 
-func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, query, history string) (string, error) {
+func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, query, history, _ string) (string, error) {
 	f.called = true
 	f.gotScope = scope
 	f.gotQuery = query
