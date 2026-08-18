@@ -54,6 +54,9 @@ agent:
   # prefixes the cluster's tool names for the model (short = shorter tool names).
   # authHeaderEnv names an env var holding the full Authorization header value
   # (e.g. "Basic ...") — omit for no auth.
+  # selfAuthorized: true marks a trusted, identity-aware server (e.g. argocd-mcp):
+  # the caller's identity is forwarded as X-Remote-User and the server scopes its
+  # own results, so the bot skips namespace filtering for its tools. Off by default.
   clusters:
     - name: okd4-teh-1
       alias: teh1
@@ -61,6 +64,8 @@ agent:
         - url: https://cilium-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
           authHeaderEnv: CILIUM_TEH1_AUTH
         - url: https://contour-envoy-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+        # - url: https://argocd-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+        #   selfAuthorized: true
     - name: okd4-ts-3
       alias: ts3
       servers:

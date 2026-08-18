@@ -83,12 +83,15 @@ type fakeMCP struct {
 	tools  []string
 	called []string
 	output string
+	// selfAuthorized marks this server identity-aware: its tools skip namespace
+	// enforcement and their results are returned unfiltered (like argocd-mcp).
+	selfAuthorized bool
 }
 
 func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
 	ts := make([]Tool, 0, len(f.tools))
 	for _, n := range f.tools {
-		ts = append(ts, Tool{Name: n})
+		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized})
 	}
 	return ts, nil
 }
@@ -144,6 +147,68 @@ func TestRunDeniesUnauthorizedToolAndNeverExecutes(t *testing.T) {
 	if len(res) != 1 || !res[0].IsError {
 		t.Fatalf("denial not fed back as error result: %+v", res)
 	}
+}
+
+func TestRunSelfAuthorizedReturnsUnfilteredWithIdentity(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__argocd_my_projects", Args: map[string]any{}}}},
+		{Text: "done"},
+	}}
+	// Output references a namespace the caller is NOT authorized for; a
+	// self-authorized server's tool must be returned UNFILTERED (the server
+	// already scoped it to the caller).
+	mcp := &fakeMCP{tools: []string{"argocd_my_projects"}, selfAuthorized: true,
+		output: `{"projects":[{"project":"other-team","namespace":"other-team","capability":"admin"}]}`}
+	ag := newAgent(llm)
+	_, err := ag.Run(context.Background(), Input{
+		User: "alice@example.com", Query: "which projects can I admin?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcp.called) != 1 {
+		t.Fatalf("self-authorized tool not executed: %v", mcp.called)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || res[0].IsError {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !strings.Contains(res[0].Content, "other-team") {
+		t.Fatalf("self-authorized result was filtered: %q", res[0].Content)
+	}
+	if strings.Contains(res[0].Content, "withheld") {
+		t.Fatalf("self-authorized result should not be gated: %q", res[0].Content)
+	}
+}
+
+func TestRunSelfAuthorizedDeniedWithoutIdentity(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__argocd_my_projects", Args: map[string]any{}}}},
+		{Text: "ok"},
+	}}
+	mcp := &fakeMCP{tools: []string{"argocd_my_projects"}, selfAuthorized: true, output: "{}"}
+	ag := newAgent(llm)
+	_, err := ag.Run(context.Background(), Input{ // no User
+		Query:    "which projects can I admin?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcp.called) != 0 {
+		t.Fatalf("self-authorized tool executed without identity: %v", mcp.called)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || !res[0].IsError {
+		t.Fatalf("expected an error result without identity: %+v", res)
+	}
+}
+
+// lastResults returns the tool results from the most recent LLM request.
+func lastResults(llm *fakeLLM) []ToolResult {
+	last := llm.seen[len(llm.seen)-1]
+	return last.Messages[len(last.Messages)-1].Results
 }
 
 func TestRunMultiClusterRoutesToCorrectCluster(t *testing.T) {

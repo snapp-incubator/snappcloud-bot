@@ -68,6 +68,12 @@ type MCPServer struct {
 	// Global servers sharing an alias are merged; distinct aliases are exposed as
 	// separate [alias] tool groups. Ignored for per-cluster servers.
 	Alias string `yaml:"alias"`
+	// SelfAuthorized marks a trusted, identity-aware server (e.g. argocd-mcp): the
+	// caller's identity is forwarded as the X-Remote-User header AND all of the
+	// server's tools authorize the caller themselves, so the bot skips its
+	// namespace enforcement/filtering and returns their results unfiltered
+	// (trusting the server the same way it trusts mcp-authz). Off by default.
+	SelfAuthorized bool `yaml:"selfAuthorized"`
 }
 
 // ToolRule overrides where a tool's namespace(s) live (default: arg "namespace",

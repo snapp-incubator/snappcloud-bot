@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/identity"
 )
 
 // Tool is an MCP tool exposed to the model.
@@ -14,6 +16,10 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema map[string]any // JSON Schema object
+	// SelfAuthorized marks a tool from an identity-aware server (e.g. argocd-mcp):
+	// the server authorizes the caller itself from the forwarded identity, so the
+	// agent skips namespace enforcement and returns the result unfiltered.
+	SelfAuthorized bool
 }
 
 // ToolCall is the model's request to invoke a tool.
@@ -109,7 +115,10 @@ type ClusterTools struct {
 
 // Input is one user query, evaluated across every cluster the user can access.
 type Input struct {
-	System   string
+	System string
+	// User is the caller's identity, forwarded to identity-aware MCP servers so
+	// self-authorized tools can resolve the caller's own access.
+	User     string
 	Query    string
 	Clusters []ClusterTools
 	// ReqID correlates all log lines for one user message (empty = none).
@@ -121,6 +130,9 @@ type binding struct {
 	ct      ClusterTools
 	real    string
 	allowed map[string]bool
+	// selfAuthorized: the tool's server authorizes the caller itself (identity-
+	// aware), so the agent skips namespace enforcement and returns it unfiltered.
+	selfAuthorized bool
 }
 
 // maxResultRunes caps a single tool result fed back to the model. Oversized
@@ -155,6 +167,10 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 		lg.Info("turn done", args...)
 	}
 
+	// Carry the caller identity on the context; identity-aware MCP clients
+	// forward it as X-Remote-User. Never sourced from a tool argument.
+	ctx = identity.WithUser(ctx, in.User)
+
 	tools, reg, err := a.buildTools(ctx, in.Clusters)
 	if err != nil {
 		summary("build-tools-failed", "err", err)
@@ -184,6 +200,29 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				continue
 			}
 			if !b.ct.NoEnforce {
+				if b.selfAuthorized {
+					// Identity-aware server: it authorizes the caller itself from
+					// the forwarded identity (X-Remote-User), so we skip namespace
+					// enforcement and return its result unfiltered (trusting the
+					// server the same way we trust mcp-authz). The same per-server
+					// flag drives the identity forwarding, so this path is reached
+					// only when the identity is actually sent.
+					if in.User == "" {
+						denied++
+						results = append(results, errResult(call.ID,
+							"authorization denied: this tool needs your identity, which is unavailable"))
+						continue
+					}
+					out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
+					if cerr != nil {
+						toolErrs++
+						lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
+						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
+						continue
+					}
+					results = append(results, ToolResult{CallID: call.ID, Content: capResult(out)})
+					continue
+				}
 				if a.enforcer.ClusterAdminOnly(b.real) {
 					if !b.ct.ClusterAdmin {
 						denied++
@@ -271,7 +310,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		for _, t := range ts {
 			q := qualify(alias, t.Name, reg)
-			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed}
+			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed, selfAuthorized: t.SelfAuthorized}
 			// Global (namespace-agnostic) tools are tagged [docs] so the model
 			// treats them as cross-cluster documentation, not a cluster it must
 			// scope. Cluster tools keep the [cluster X] tag.

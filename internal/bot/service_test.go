@@ -32,15 +32,17 @@ func (f *fakeMM) Typing(_ context.Context, _, _ string) {}
 type fakeBrain struct {
 	called     bool
 	gotScope   authzclient.Scope
+	gotUser    string
 	gotQuery   string
 	gotHistory string
 	answer     string
 	err        error
 }
 
-func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, query, history, _ string) (string, error) {
+func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, user, query, history, _ string) (string, error) {
 	f.called = true
 	f.gotScope = scope
+	f.gotUser = user
 	f.gotQuery = query
 	f.gotHistory = history
 	return f.answer, f.err
