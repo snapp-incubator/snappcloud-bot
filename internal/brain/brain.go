@@ -203,7 +203,9 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 		for i := range tags {
 			tags[i] = "[" + tags[i] + "]"
 		}
-		fmt.Fprintf(&sb, "\n\nGlobal tools tagged %s are NOT tied to any cluster. Use them for general SnappCloud/platform how-to and concept questions (how to do X, what is Y, where to configure Z) — questions not about a specific running workload. Available regardless of cluster access; prefer them over guessing when the user asks a general platform question.", strings.Join(tags, ", "))
+		fmt.Fprintf(&sb, "\n\nGlobal tools tagged %s are NOT tied to any cluster; they cover general SnappCloud/platform how-to and concepts (how to do X, what is Y, where to configure Z). "+
+			"ANSWER PRECEDENCE — follow strictly: (1) for a question about a specific running workload, use the cluster tools; (2) if the cluster tools can't answer, or the question is general SnappCloud/platform knowledge, CALL these global %s tools; (3) only if the global tools also have nothing relevant, say you don't have that information and suggest where to look. "+
+			"NEVER answer a SnappCloud/platform question from your own training data or general internet knowledge — SnappCloud is internal and your training is stale/wrong about it. If it's about SnappCloud and not covered by cluster data, the global docs tools are the source of truth; consult them before answering, and do not invent an answer when they lack it.", strings.Join(tags, ", "), strings.Join(tags, ", "))
 	}
 	if strings.TrimSpace(history) != "" {
 		sb.WriteString("\n\nConversation so far (for context):\n")
@@ -234,7 +236,9 @@ Be thorough and accurate — a single tool rarely gives the full picture:
 - Cluster-infrastructure tools (nodes, BGP state, agent status) require cluster-admin access; if denied, tell the user those need cluster-admin rather than trying workarounds.
 - Each tool is tagged [cluster X]; use the correct cluster's tools. For a cross-cluster question, query each cluster and combine.
 
-Answer concisely and factually. Do not narrate your reasoning or restate the question.`
+Answer concisely and factually. Do not narrate your reasoning or restate the question.
+
+OUTPUT FORMAT — always: reply with the final answer for the user as plain, human-readable Markdown (short paragraphs, bullet lists, or a small table when it helps). Never output your chain-of-thought, tool-call syntax, function names, raw tool JSON, or control tokens — the user sees your message verbatim in chat. Do NOT wrap the whole reply in a code block; use code fences only for actual commands, code, or log snippets. Every reply must contain a real answer or a clear statement that you couldn't find the information — never send an empty or markup-only message.`
 
 // muxAdapter converts an *mcp.Mux (returning mcp.Tool) to agent.MCP.
 type muxAdapter struct{ mux *mcp.Mux }

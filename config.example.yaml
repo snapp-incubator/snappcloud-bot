@@ -15,6 +15,12 @@ mattermost:
   # Channels: answer only when @-mentioned. DMs: always answered. Default true.
   requireMention: true
 
+# Abuse guards for client access.
+limits:
+  ratePerMin: 20
+  rateBurst: 5
+  maxQueryRunes: 4000
+
 memory:
   # Per-thread conversation memory.
   conversationTTL: 1h

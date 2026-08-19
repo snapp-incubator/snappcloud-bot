@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 	"os"
 	"sync"
 	"time"
@@ -74,7 +75,9 @@ func (c *convStore) put(key, id string) {
 	c.mu.Lock()
 	c.m[key] = convEntry{id: id, expires: time.Now().Add(c.ttl)}
 	c.dirty = true
+	n := len(c.m)
 	c.mu.Unlock()
+	metrics.ActiveConversations.Set(float64(n))
 }
 
 // StartSweeper evicts expired entries and flushes the store to disk until ctx is
@@ -103,7 +106,9 @@ func (c *convStore) StartSweeper(ctx context.Context) {
 					c.dirty = true
 				}
 			}
+			n := len(c.m)
 			c.mu.Unlock()
+			metrics.ActiveConversations.Set(float64(n))
 			c.flush()
 		}
 	}

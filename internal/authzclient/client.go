@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // ClusterScope is one cluster's grant: the namespaces the subject may query,
@@ -156,6 +158,8 @@ func (c *Client) ResolveIPs(ctx context.Context, cluster string, ips []string) (
 // region errors is an error returned, so the bot can say "temporarily
 // unavailable" instead of "unauthorized".
 func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
+	start := time.Now()
+	defer func() { metrics.AuthzDuration.Observe(time.Since(start).Seconds()) }()
 	type result struct {
 		name string
 		cs   ClusterScope
@@ -176,6 +180,7 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 	for range c.regions {
 		res := <-ch
 		if res.err != nil {
+			metrics.AuthzRequests.WithLabelValues(res.name, "error").Inc()
 			// A region that errors is dropped (the user just can't query it this
 			// time). Log it so a broken/unreachable region is not invisible —
 			// otherwise it is indistinguishable from "user has no namespaces here".
@@ -187,6 +192,7 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 			}
 			continue
 		}
+		metrics.AuthzRequests.WithLabelValues(res.name, "ok").Inc()
 		if len(res.cs.Namespaces) > 0 {
 			sort.Strings(res.cs.Namespaces)
 			scope[res.name] = res.cs

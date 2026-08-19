@@ -262,3 +262,31 @@ func TestIsRefreshCommand(t *testing.T) {
 		t.Error("normal query misread as refresh")
 	}
 }
+
+func TestSanitizeStripsReasoningAndMarkup(t *testing.T) {
+	cases := map[string]string{
+		"<think>plan</think>Hello":             "Hello",
+		"<tool_call>{\"x\":1}</tool_call>Done": "Done",
+		"answer <|special|> here":              "answer  here",
+		"```\nBGP is healthy on 5 nodes.\n```": "BGP is healthy on 5 nodes.", // prose fence unwrapped
+		"plain answer":                         "plain answer",
+	}
+	for in, want := range cases {
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSanitizeKeepsRealCodeFence(t *testing.T) {
+	in := "```\noc get pods -n foo;\nkubectl scale --replicas=3;\n```"
+	if got := sanitize(in); !strings.Contains(got, "```") {
+		t.Fatalf("real code fence should be preserved: %q", got)
+	}
+}
+
+func TestSanitizeEmptyWhenOnlyMarkup(t *testing.T) {
+	if got := sanitize("<think>only reasoning</think>"); got != "" {
+		t.Fatalf("markup-only should sanitize to empty, got %q", got)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/config"
 	"github.com/snapp-incubator/snappcloud-bot/internal/llm"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
 
@@ -117,6 +118,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 		IdentityMap:     cfg.Mattermost.IdentityMap,
 		BotUsername:     me.Username,
 		RequireMention:  cfg.RequireMention(),
+		RatePerMin:      cfg.Limits.RatePerMin,
+		RateBurst:       cfg.Limits.RateBurst,
+		MaxQueryRunes:   cfg.Limits.MaxQueryRunes,
 	}, log)
 	go svc.StartSweeper(ctx)
 
@@ -203,6 +207,7 @@ func serveHealth(ctx context.Context, addr string, log *slog.Logger) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.Handle("GET /metrics", metrics.Handler())
 	hs := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()

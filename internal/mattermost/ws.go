@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // Post is the subset of a Mattermost post the bot acts on, enriched with two
@@ -161,6 +163,7 @@ func (c *Client) listenOnce(ctx context.Context, botUserID string, h PostHandler
 			// readiness probe). Log with stack and move on.
 			defer func() {
 				if r := recover(); r != nil {
+					metrics.Panics.Inc()
 					log.Error("handle post panicked", "post", p.ID, "user", p.UserID,
 						"panic", r, "stack", string(debug.Stack()))
 				}

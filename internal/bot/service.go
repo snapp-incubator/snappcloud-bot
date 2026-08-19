@@ -19,6 +19,7 @@ import (
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // newReqID returns a short random hex id correlating one message's log lines.
@@ -51,6 +52,8 @@ type Service struct {
 	identityMap    map[string]string
 	botUsername    string
 	requireMention bool
+	limiter        *rateLimiter
+	maxQueryRunes  int
 	log            *slog.Logger
 }
 
@@ -61,10 +64,20 @@ type Options struct {
 	IdentityMap     map[string]string
 	BotUsername     string
 	RequireMention  bool
+	// RatePerMin limits messages per minute per user (0 = unlimited). RateBurst
+	// is the allowed short burst (defaults to RatePerMin).
+	RatePerMin int
+	RateBurst  int
+	// MaxQueryRunes rejects overly long messages (0 = a sane default).
+	MaxQueryRunes int
 }
 
 // New builds the orchestration service.
 func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, log *slog.Logger) *Service {
+	maxQ := o.MaxQueryRunes
+	if maxQ <= 0 {
+		maxQ = 4000
+	}
 	return &Service{
 		mm:             mm,
 		brain:          brain,
@@ -73,17 +86,36 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		identityMap:    o.IdentityMap,
 		botUsername:    o.BotUsername,
 		requireMention: o.RequireMention,
+		limiter:        newRateLimiter(o.RatePerMin, o.RateBurst),
+		maxQueryRunes:  maxQ,
 		log:            log,
 	}
 }
 
 // StartSweeper runs the conversation-store eviction loop until ctx is cancelled.
-func (s *Service) StartSweeper(ctx context.Context) { s.conv.StartSweeper(ctx) }
+func (s *Service) StartSweeper(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.limiter.sweep()
+			}
+		}
+	}()
+	s.conv.StartSweeper(ctx)
+}
 
 const (
 	msgUnauthorized = "🔒 You have no namespaces you can query on any cluster. If that's unexpected, ask your cluster admin to grant access."
 	msgBackendError = "⚙️ Authorization is temporarily unavailable. Please try again in a moment."
 	msgAgentError   = "⚠️ I hit an error answering that. Please try again shortly."
+	msgRateLimited  = "🐢 You're sending requests too fast. Give me a few seconds and try again."
+	msgEmptyAnswer  = "🤔 I couldn't put together an answer for that. Try rephrasing, or narrow it to a specific namespace/cluster."
+	msgTooLong      = "✂️ That message is too long for me to process. Please shorten it and ask again."
 )
 
 // maxTranscriptRunes caps the stored per-thread memory transcript.
@@ -99,9 +131,24 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	if query == "" {
 		return nil
 	}
+	if len([]rune(query)) > s.maxQueryRunes {
+		s.replyTo(ctx, p, msgTooLong)
+		metrics.Messages.WithLabelValues("too_long").Inc()
+		return nil
+	}
 	// reqID correlates every log line for this message (identity, auth, agent).
 	reqID := newReqID()
 	lg := s.log.With("req", reqID)
+
+	// Metrics: record terminal outcome + latency for every message we act on.
+	outcome := "answered"
+	start := time.Now()
+	metrics.InFlight.Inc()
+	defer func() {
+		metrics.InFlight.Dec()
+		metrics.Messages.WithLabelValues(outcome).Inc()
+		metrics.MessageDuration.Observe(time.Since(start).Seconds())
+	}()
 
 	// Show a typing indicator for the whole turn (auth + agent can be slow).
 	// parent_id must be the EXISTING thread root (p.RootID): empty for a
@@ -120,7 +167,16 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	identity := s.resolveIdentity(user.Email)
 	if identity == "" {
+		outcome = "unauthorized"
 		s.replyTo(ctx, p, msgUnauthorized)
+		return nil
+	}
+
+	// Per-user rate limit: protects the bot, LLM budget, and downstream MCP
+	// servers from one client flooding requests.
+	if !s.limiter.allow(identity) {
+		outcome = "rate_limited"
+		s.replyTo(ctx, p, msgRateLimited)
 		return nil
 	}
 
@@ -132,9 +188,11 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		}
 		scope, err := s.resolver.Resolve(ctx, identity)
 		if err != nil {
+			outcome = "backend_error"
 			s.replyTo(ctx, p, msgBackendError)
 			return nil
 		}
+		outcome = "refreshed"
 		lg.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
 		s.replyTo(ctx, p, refreshSummary(scope))
 		return nil
@@ -143,11 +201,13 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// 2. Authorize across all regions (via the per-region mcp-authz APIs).
 	scope, err := s.resolver.Resolve(ctx, identity)
 	if err != nil {
+		outcome = "backend_error"
 		lg.Error("authorize failed", "user", identity, "err", err)
 		s.replyTo(ctx, p, msgBackendError)
 		return nil
 	}
 	if scope.Empty() {
+		outcome = "denied"
 		lg.Info("denied", "user", identity, "reason", "no namespaces on any cluster")
 		s.replyTo(ctx, p, msgUnauthorized)
 		return nil
@@ -162,11 +222,20 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 
 	answer, aerr := s.brain.Answer(ctx, scope, identity, query, history, reqID)
 	if aerr != nil {
+		outcome = "agent_error"
 		lg.Error("agent failed", "user", identity, "err", aerr)
 		s.replyTo(ctx, p, msgAgentError)
 		return nil
 	}
 	clean := sanitize(answer)
+	if clean == "" {
+		// Model produced no usable text (empty, or all reasoning/markup that
+		// sanitize stripped). Never post a blank message; give a clear fallback.
+		outcome = "empty_answer"
+		lg.Warn("empty answer after sanitize", "user", identity, "rawLen", len(answer))
+		s.replyTo(ctx, p, msgEmptyAnswer)
+		return nil
+	}
 	s.conv.put(convKey, appendTranscript(history, query, clean))
 	s.replyTo(ctx, p, clean)
 	return nil
@@ -188,10 +257,45 @@ func appendTranscript(history, query, answer string) string {
 // chain-of-thought in. Stripped so they don't reach the user. (Plain-text
 // reasoning with no tags can't be removed here — that needs a non-thinking
 // model.)
-var thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
+var (
+	thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
+	// Some models leak tool-call / function-call markup or special control
+	// tokens into the visible text; strip them so the user never sees them.
+	toolCallRe = regexp.MustCompile(`(?is)<(tool_call|function_call|tool_use|antml:[^>]+)>.*?</(tool_call|function_call|tool_use|antml:[^>]+)>`)
+	ctrlTokRe  = regexp.MustCompile(`<\|[^|>]*\|>`)
+	// A whole answer wrapped in a single fenced block (```...```), which renders
+	// as a code box instead of readable text.
+	wholeFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9_-]*\n(.*)\n```$")
+)
 
 func sanitize(s string) string {
-	return strings.TrimSpace(thinkRe.ReplaceAllString(s, ""))
+	s = thinkRe.ReplaceAllString(s, "")
+	s = toolCallRe.ReplaceAllString(s, "")
+	s = ctrlTokRe.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	// Unwrap an answer that is entirely one code fence (not real code) so it's
+	// human-readable markdown, not a monospace block.
+	if m := wholeFenceRe.FindStringSubmatch(s); m != nil {
+		inner := strings.TrimSpace(m[1])
+		// Only unwrap when the content clearly isn't code (has prose sentences).
+		if !looksLikeCode(inner) {
+			s = inner
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// codeSignal matches tokens that indicate the fenced content is real code /
+// commands / logs (so its fence must be kept), not prose the model wrongly
+// wrapped. Conservative: unwrap ONLY when none of these appear.
+var codeSignal = regexp.MustCompile(`(?m)(^\s*[-$#>]|[;{}$|=]|--[a-z]|\b(oc|kubectl|cilium|curl|helm|sudo|apiVersion|kind)\b)`)
+
+// looksLikeCode reports whether fenced content should keep its code fence.
+func looksLikeCode(s string) bool {
+	if strings.Contains(s, "```") {
+		return true // nested fences → leave as-is
+	}
+	return codeSignal.MatchString(s)
 }
 
 func (s *Service) stripMention(msg string) string {
@@ -232,6 +336,9 @@ func (s *Service) replyTo(ctx context.Context, p mattermost.Post, msg string) {
 		parts = parts[:maxPostParts]
 	}
 	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
 		if err := s.mm.CreatePost(ctx, p.ChannelID, part, root); err != nil {
 			s.log.Error("post reply", "channel", p.ChannelID, "err", err)
 			return

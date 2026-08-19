@@ -19,6 +19,17 @@ type Config struct {
 	Memory     Memory     `yaml:"memory"`
 	Authz      Authz      `yaml:"authz"`
 	Agent      Agent      `yaml:"agent"`
+	Limits     Limits     `yaml:"limits"`
+}
+
+// Limits guards the bot against abuse from clients (rate + input size).
+type Limits struct {
+	// RatePerMin caps messages/minute per user (0 = unlimited). Default 20.
+	RatePerMin int `yaml:"ratePerMin"`
+	// RateBurst is the allowed short burst (default = RatePerMin).
+	RateBurst int `yaml:"rateBurst"`
+	// MaxQueryRunes rejects overly long messages (default 4000).
+	MaxQueryRunes int `yaml:"maxQueryRunes"`
 }
 
 // Agent configures the in-bot MCP tool-calling loop: an
@@ -172,6 +183,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Authz.Timeout == "" {
 		c.Authz.Timeout = "30s"
+	}
+	if c.Limits.RatePerMin == 0 {
+		c.Limits.RatePerMin = 20
 	}
 }
 
