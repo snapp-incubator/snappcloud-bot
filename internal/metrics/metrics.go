@@ -104,3 +104,26 @@ var registry = func() *prometheus.Registry {
 func Handler() http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 }
+
+// Init zero-initializes the known label values so the series exist (at 0) from
+// startup. Without it a counter only appears after its first event, and every
+// dashboard panel reads "No data" on a freshly deployed, idle bot.
+func Init(clusters, regions []string) {
+	for _, o := range []string{
+		"answered", "denied", "unauthorized", "backend_error", "agent_error",
+		"rate_limited", "too_long", "empty_answer", "refreshed",
+	} {
+		Messages.WithLabelValues(o)
+	}
+	for _, o := range []string{"ok", "error"} {
+		LLMRequests.WithLabelValues(o)
+		for _, r := range regions {
+			AuthzRequests.WithLabelValues(r, o)
+		}
+	}
+	for _, c := range clusters {
+		for _, o := range []string{"ok", "error", "denied", "filtered"} {
+			ToolCalls.WithLabelValues(c, o)
+		}
+	}
+}

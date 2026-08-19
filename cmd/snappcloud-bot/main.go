@@ -88,6 +88,14 @@ func run(configPath, addr string, log *slog.Logger) error {
 		regions = append(regions, authzclient.Region{Name: r.Name, URL: r.URL})
 		names = append(names, r.Name)
 	}
+	clusterNames := make([]string, 0, len(cfg.Agent.Clusters))
+	for _, c := range cfg.Agent.Clusters {
+		clusterNames = append(clusterNames, c.Name)
+	}
+	// Create the metric series up front so dashboards show 0 rather than "No
+	// data" before the first message.
+	metrics.Init(clusterNames, names)
+
 	authzBase := authzclient.New(regions, authzToken, timeout, log)
 	resolver := authzclient.NewCachedResolver(authzBase, ttl)
 	log.Info("authz ready", "regions", names, "cacheTTL", ttl)
