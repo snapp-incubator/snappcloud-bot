@@ -42,11 +42,18 @@ only ever receives authorized data — authorization is not the model's job, and
 the prompt requires withheld data to be reported as an access limitation, never
 as "does not exist".
 
-Two exemption classes:
+Three exemption classes:
 - **Cluster-infrastructure tools** (`toolRules.<tool>.clusterAdminOnly`): nodes,
   BGP state, agent status. Denied outright for non-admins; returned unfiltered
   for callers whose cluster-wide SAR passed (`clusterWide` in the mcp-authz
   scope response). Deterministic RBAC, per cluster.
+- **Self-authorized servers** (`servers[].selfAuthorized`): trusted,
+  identity-aware MCP servers (e.g. argocd-mcp). The caller's SSO identity is
+  forwarded as the `X-Remote-User` header and the server authorizes the caller
+  itself, so the bot skips namespace filtering and returns results unfiltered —
+  trusting it the same way it trusts mcp-authz. The identity comes from the
+  authenticated Mattermost user (never a tool argument, so the model can't spoof
+  it); a request with no identity is refused, never sent unscoped (fail-closed).
 - **Global servers** (the general docs): namespace-agnostic, available to any
   authorized user, not scope-filtered.
 
@@ -122,6 +129,23 @@ If authed, add the key to the `snappcloud_bot.mcpAuth` secret (the full
 Its tools appear automatically, cluster-tagged and enforced. A namespace-agnostic
 server (docs) goes under `agent.globalServers`; cluster-infrastructure tools it
 exposes should be listed in `agent.toolRules` with `clusterAdminOnly: true`.
+
+For a trusted, identity-aware server that authorizes the caller itself (e.g.
+argocd-mcp), set `selfAuthorized: true` on the server entry. The caller's SSO
+identity is then forwarded as `X-Remote-User` and all of that server's tools skip
+the bot's namespace enforcement, returning results unfiltered:
+
+```yaml
+agent:
+  clusters:
+    - name: okd4-teh-1
+      servers:
+        - url: https://argocd-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+          selfAuthorized: true   # forwards X-Remote-User; server scopes the result
+```
+
+Enable it only for servers you trust to enforce the caller's access from the
+forwarded identity — it bypasses the bot's own filtering.
 
 ## Develop
 

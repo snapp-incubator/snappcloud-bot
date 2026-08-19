@@ -48,6 +48,9 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 				continue
 			}
 			owner[t.Name] = s.client
+			// Stamp the tool with its owning server's identity-aware flag so the
+			// agent can skip namespace enforcement for self-authorized servers.
+			t.SelfAuthorized = s.client.SelfAuthorized()
 			tools = append(tools, t)
 		}
 	}

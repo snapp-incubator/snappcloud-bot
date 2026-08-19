@@ -46,6 +46,10 @@ type Server struct {
 	// Alias groups global servers under a tool tag (default "docs"). Ignored for
 	// per-cluster servers.
 	Alias string
+	// SelfAuthorized marks a trusted, identity-aware server (argocd-mcp): its
+	// caller identity is forwarded as X-Remote-User and its tools are trusted to
+	// self-authorize, so the agent returns their results unfiltered.
+	SelfAuthorized bool
 }
 
 // Cluster describes one cluster's MCP servers.
@@ -83,7 +87,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		mux := mcp.NewMux()
 		for i, s := range c.Servers {
 			name := fmt.Sprintf("%s-%d", c.Name, i)
-			mux.Add(name, mcp.New(s.URL, s.AuthHeader, o.MCPTimeout))
+			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout))
 		}
 		alias := c.Alias
 		if alias == "" {
@@ -105,7 +109,8 @@ func New(o Options, log *slog.Logger) *Brain {
 			m = mcp.NewMux()
 			muxes[alias] = m
 		}
-		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, o.MCPTimeout))
+		// Global servers are tenant-independent; never send identity.
+		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, false, o.MCPTimeout))
 	}
 	global := make(map[string]agent.MCP, len(muxes))
 	for alias, m := range muxes {
@@ -135,9 +140,10 @@ func sortedKeys(m map[string]agent.MCP) []string {
 }
 
 // Answer runs the agent over every authorized cluster that has MCP tools and
-// returns the final text. history is a prior-conversation transcript ("" for a
-// fresh thread) used for memory.
-func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, history, reqID string) (string, error) {
+// returns the final text. user is the caller's identity (forwarded to identity-
+// aware servers); history is a prior-conversation transcript ("" for a fresh
+// thread) used for memory; reqID correlates the turn's log lines.
+func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query, history, reqID string) (string, error) {
 	var cts []agent.ClusterTools
 	for _, c := range scope.Clusters() {
 		cm, ok := b.clusters[c]
@@ -163,6 +169,7 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, query, hist
 	}
 	return b.agent.Run(ctx, agent.Input{
 		System:   b.systemPrompt(scope, history),
+		User:     user,
 		Query:    query,
 		Clusters: cts,
 		ReqID:    reqID,
@@ -239,7 +246,7 @@ func (m muxAdapter) ListTools(ctx context.Context) ([]agent.Tool, error) {
 	}
 	out := make([]agent.Tool, 0, len(ts))
 	for _, t := range ts {
-		out = append(out, agent.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		out = append(out, agent.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, SelfAuthorized: t.SelfAuthorized})
 	}
 	return out, nil
 }

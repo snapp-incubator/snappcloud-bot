@@ -33,7 +33,7 @@ func newReqID() string {
 // answerer runs the enforced agent loop and returns the answer text. history is
 // the prior thread transcript for memory.
 type answerer interface {
-	Answer(ctx context.Context, scope authzclient.Scope, query, history, reqID string) (string, error)
+	Answer(ctx context.Context, scope authzclient.Scope, user, query, history, reqID string) (string, error)
 }
 
 type mmClient interface {
@@ -160,7 +160,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	history := s.conv.get(convKey)
 	lg.Info("request", "user", identity, "clusters", scope.Clusters(), "thread", history != "")
 
-	answer, aerr := s.brain.Answer(ctx, scope, query, history, reqID)
+	answer, aerr := s.brain.Answer(ctx, scope, identity, query, history, reqID)
 	if aerr != nil {
 		lg.Error("agent failed", "user", identity, "err", aerr)
 		s.replyTo(ctx, p, msgAgentError)

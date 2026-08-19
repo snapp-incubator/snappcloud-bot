@@ -14,15 +14,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/identity"
 )
 
 const protocolVersion = "2025-03-26"
 
 // Client talks to one MCP server.
 type Client struct {
-	url        string
-	authHeader string // full Authorization header value ("" = none)
-	http       *http.Client
+	url            string
+	authHeader     string // full Authorization header value ("" = none)
+	selfAuthorized bool   // identity-aware server: forward X-Remote-User, tools self-authorize
+	http           *http.Client
 
 	mu        sync.Mutex
 	sessionID string
@@ -32,12 +35,21 @@ type Client struct {
 
 // New builds a client for one MCP server URL. authHeader is the full value of
 // the Authorization header (e.g. "Basic abc..."), or "" for no auth.
-func New(url, authHeader string, timeout time.Duration) *Client {
+// selfAuthorized marks a trusted, identity-aware server (e.g. argocd-mcp): the
+// caller's identity (carried in the request context) is forwarded as the
+// X-Remote-User header, and the agent trusts the server to scope its own
+// results (see mcp.Tool.SelfAuthorized). Enable it only for such servers.
+func New(url, authHeader string, selfAuthorized bool, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	return &Client{url: url, authHeader: authHeader, http: &http.Client{Timeout: timeout}}
+	return &Client{url: url, authHeader: authHeader, selfAuthorized: selfAuthorized, http: &http.Client{Timeout: timeout}}
 }
+
+// SelfAuthorized reports whether this server is identity-aware: its tools
+// authorize the caller from the forwarded identity and their results are trusted
+// unfiltered.
+func (c *Client) SelfAuthorized() bool { return c.selfAuthorized }
 
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -87,6 +99,10 @@ type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
+	// SelfAuthorized is stamped by the Mux from the owning server's config (not
+	// sent by the server): true when the tool comes from an identity-aware server
+	// whose results are trusted unfiltered. See Client.SelfAuthorized.
+	SelfAuthorized bool `json:"-"`
 }
 
 // ListTools returns the server's tools.
@@ -200,6 +216,15 @@ func (c *Client) newRequest(ctx context.Context, body []byte) (*http.Request, er
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if c.authHeader != "" {
 		req.Header.Set("Authorization", c.authHeader)
+	}
+	// Forward the caller's identity to identity-aware (self-authorized) servers
+	// (e.g. argocd-mcp), which use it to resolve the caller's own access. Set by
+	// the agent on ctx; never sourced from a tool argument, so the model cannot
+	// spoof it.
+	if c.selfAuthorized {
+		if u := identity.User(ctx); u != "" {
+			req.Header.Set("X-Remote-User", u)
+		}
 	}
 	c.mu.Lock()
 	sid := c.sessionID
