@@ -6,6 +6,7 @@ package metrics
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -35,11 +36,29 @@ var (
 		Buckets: prometheus.LinearBuckets(1, 1, 12),
 	})
 
-	// ToolCalls counts MCP tool calls by cluster and outcome.
+	// ToolCalls counts MCP tool calls by cluster, tool, and outcome. The tool
+	// label is bounded (the fixed tool set the MCP servers advertise, never user
+	// input), so cardinality stays flat.
 	ToolCalls = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "tool_calls_total",
-		Help: "MCP tool calls by cluster and outcome (ok, error, denied, filtered).",
-	}, []string{"cluster", "outcome"})
+		Help: "MCP tool calls by cluster, tool and outcome (ok, error, denied, filtered).",
+	}, []string{"cluster", "tool", "outcome"})
+
+	// ToolErrors counts failing tool calls by a CLASSIFIED reason, so a broken
+	// MCP server is diagnosable from metrics alone (timeout vs not_found vs
+	// bad_args vs server_error) without reading logs.
+	ToolErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "tool_errors_total",
+		Help: "Failed MCP tool calls by cluster, tool and classified reason.",
+	}, []string{"cluster", "tool", "reason"})
+
+	// ToolDuration is per-call latency, labeled by cluster only (per-tool
+	// histograms would multiply series by the whole tool set).
+	ToolDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: ns, Name: "tool_call_duration_seconds",
+		Help:    "MCP tool call latency by cluster.",
+		Buckets: []float64{.1, .25, .5, 1, 2, 5, 10, 30, 60, 120},
+	}, []string{"cluster"})
 
 	// LLMRequests counts reasoning-model calls by outcome.
 	LLMRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -93,12 +112,40 @@ var registry = func() *prometheus.Registry {
 	r.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		Messages, MessageDuration, TurnIterations, ToolCalls,
+		Messages, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMDuration, AuthzRequests, AuthzDuration,
 		ActiveConversations, Panics, InFlight,
 	)
 	return r
 }()
+
+// ClassifyToolError maps an MCP tool error to a small, bounded reason label so
+// failures are aggregatable. Unknown shapes fall back to "other".
+func ClassifyToolError(err string) string {
+	e := strings.ToLower(err)
+	switch {
+	case strings.Contains(e, "context deadline") || strings.Contains(e, "timeout") || strings.Contains(e, "timed out"):
+		return "timeout"
+	case strings.Contains(e, "connection refused") || strings.Contains(e, "no such host") ||
+		strings.Contains(e, "no route to host") || strings.Contains(e, "eof") ||
+		strings.Contains(e, "connection reset"):
+		return "unreachable"
+	case strings.Contains(e, "401") || strings.Contains(e, "403") || strings.Contains(e, "unauthorized") ||
+		strings.Contains(e, "forbidden"):
+		return "auth"
+	case strings.Contains(e, "not found") || strings.Contains(e, "404"):
+		return "not_found"
+	case strings.Contains(e, "required") || strings.Contains(e, "invalid") ||
+		strings.Contains(e, "unmarshal") || strings.Contains(e, "decode") ||
+		strings.Contains(e, "parse"):
+		return "bad_args"
+	case strings.Contains(e, "500") || strings.Contains(e, "502") || strings.Contains(e, "503") ||
+		strings.Contains(e, "internal"):
+		return "server_error"
+	default:
+		return "other"
+	}
+}
 
 // Handler serves the metrics registry (mount at /metrics).
 func Handler() http.Handler {
@@ -121,9 +168,9 @@ func Init(clusters, regions []string) {
 			AuthzRequests.WithLabelValues(r, o)
 		}
 	}
+	// Tool names are discovered from the MCP servers at runtime, so tool-labeled
+	// series cannot be pre-created; only the latency histogram is seeded.
 	for _, c := range clusters {
-		for _, o := range []string{"ok", "error", "denied", "filtered"} {
-			ToolCalls.WithLabelValues(c, o)
-		}
+		ToolDuration.WithLabelValues(c)
 	}
 }

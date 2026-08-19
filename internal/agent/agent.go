@@ -215,70 +215,79 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 					// only when the identity is actually sent.
 					if in.User == "" {
 						denied++
-						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "denied").Inc()
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
 						results = append(results, errResult(call.ID,
 							"authorization denied: this tool needs your identity, which is unavailable"))
 						continue
 					}
+					callStart := time.Now()
 					out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
+					metrics.ToolDuration.WithLabelValues(b.ct.Cluster).Observe(time.Since(callStart).Seconds())
 					if cerr != nil {
 						toolErrs++
-						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "error").Inc()
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "error").Inc()
+						metrics.ToolErrors.WithLabelValues(b.ct.Cluster, b.real, metrics.ClassifyToolError(cerr.Error())).Inc()
 						lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
 						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 						continue
 					}
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "ok").Inc()
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
 					results = append(results, ToolResult{CallID: call.ID, Content: capResult(out)})
 					continue
 				}
 				if a.enforcer.ClusterAdminOnly(b.real) {
 					if !b.ct.ClusterAdmin {
 						denied++
-						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "denied").Inc()
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
 						results = append(results, errResult(call.ID,
 							"authorization denied: this tool exposes cluster infrastructure and requires cluster-admin access on "+b.ct.Cluster))
 						continue
 					}
+					callStart := time.Now()
 					out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
+					metrics.ToolDuration.WithLabelValues(b.ct.Cluster).Observe(time.Since(callStart).Seconds())
 					if cerr != nil {
 						toolErrs++
-						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "error").Inc()
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "error").Inc()
+						metrics.ToolErrors.WithLabelValues(b.ct.Cluster, b.real, metrics.ClassifyToolError(cerr.Error())).Inc()
 						lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
 						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 						continue
 					}
 					// Cluster-admin caller: infrastructure output, returned unfiltered.
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "ok").Inc()
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
 					results = append(results, ToolResult{CallID: call.ID, Content: out})
 					continue
 				}
 				if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
 					denied++
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "denied").Inc()
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
 					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
 					continue
 				}
 			}
+			callStart := time.Now()
 			out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
+			metrics.ToolDuration.WithLabelValues(b.ct.Cluster).Observe(time.Since(callStart).Seconds())
 			if cerr != nil {
 				toolErrs++
-				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "error").Inc()
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "error").Inc()
+				metrics.ToolErrors.WithLabelValues(b.ct.Cluster, b.real, metrics.ClassifyToolError(cerr.Error())).Inc()
 				lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
 				results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 				continue
 			}
 			if b.ct.NoEnforce {
 				// Trusted namespace-agnostic source (docs) — no filtering.
-				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "ok").Inc()
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
 				results = append(results, ToolResult{CallID: call.ID, Content: out})
 			} else {
 				r, dropped := a.filtered(ctx, b, call.ID, out)
 				if dropped {
 					filtered++
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "filtered").Inc()
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "filtered").Inc()
 				} else {
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, "ok").Inc()
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
 				}
 				results = append(results, r)
 			}
