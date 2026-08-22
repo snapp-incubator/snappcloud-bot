@@ -66,6 +66,20 @@ var (
 		Help: "LLM requests by outcome (ok, error).",
 	}, []string{"outcome"})
 
+	// LLMByModel splits LLM requests across the primary and backup models, so a
+	// silent, prolonged failover is visible.
+	LLMByModel = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "llm_model_requests_total",
+		Help: "LLM requests by model role (primary, backup) and outcome.",
+	}, []string{"role", "outcome"})
+
+	// LLMFailover counts circuit-breaker transitions (open = switched to backup,
+	// closed = primary recovered).
+	LLMFailover = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "llm_failover_total",
+		Help: "LLM failover circuit-breaker transitions (open, closed).",
+	}, []string{"state"})
+
 	// LLMDuration is per-LLM-request latency.
 	LLMDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: ns, Name: "llm_request_duration_seconds",
@@ -113,7 +127,7 @@ var registry = func() *prometheus.Registry {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		Messages, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
-		LLMRequests, LLMDuration, AuthzRequests, AuthzDuration,
+		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		ActiveConversations, Panics, InFlight,
 	)
 	return r
@@ -164,6 +178,8 @@ func Init(clusters, regions []string) {
 	}
 	for _, o := range []string{"ok", "error"} {
 		LLMRequests.WithLabelValues(o)
+		LLMByModel.WithLabelValues("primary", o)
+		LLMByModel.WithLabelValues("backup", o)
 		for _, r := range regions {
 			AuthzRequests.WithLabelValues(r, o)
 		}

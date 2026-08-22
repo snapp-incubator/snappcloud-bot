@@ -41,6 +41,10 @@ type Agent struct {
 	// Persona is the bot's identity + greeting/help behavior (SnappCloud default).
 	Persona      string `yaml:"persona"`
 	SystemPrompt string `yaml:"systemPrompt"` // optional; overrides the built-in default
+	// FallbackLLM is an optional backup model. When the primary fails
+	// repeatedly the bot serves from this one and returns to the primary on its
+	// own. Empty = no failover.
+	FallbackLLM FallbackLLM `yaml:"fallbackLLM"`
 	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
 	ToolGuidance string         `yaml:"toolGuidance"`
 	Clusters     []AgentCluster `yaml:"clusters"`
@@ -58,6 +62,25 @@ type LLM struct {
 	MaxTokens int    `yaml:"maxTokens"` // default 8192
 	Version   string `yaml:"version"`   // anthropic-version, default 2023-06-01
 	Timeout   string `yaml:"timeout"`   // default 10m
+}
+
+// FallbackLLM configures the backup model and the failover circuit breaker.
+// Only Model is required — everything else inherits from agent.llm, so a second
+// model on the same endpoint needs a single line.
+type FallbackLLM struct {
+	Model string `yaml:"model"` // empty = failover disabled
+	// Optional overrides; default to the primary's values.
+	BaseURL   string `yaml:"baseURL"`
+	APIKeyEnv string `yaml:"apiKeyEnv"`
+	MaxTokens int    `yaml:"maxTokens"`
+	Version   string `yaml:"version"`
+	Timeout   string `yaml:"timeout"`
+	// FailureThreshold is how many consecutive primary failures switch traffic
+	// to the backup (default 3).
+	FailureThreshold int `yaml:"failureThreshold"`
+	// CooldownPeriod is how long the backup serves before the primary is probed
+	// again (default 5m).
+	CooldownPeriod string `yaml:"cooldownPeriod"`
 }
 
 // AgentCluster is one cluster's MCP servers. Name MUST match the mcp-authz

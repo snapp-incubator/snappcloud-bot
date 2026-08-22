@@ -61,8 +61,11 @@ type Cluster struct {
 
 // Options builds a Brain.
 type Options struct {
-	LLM     llm.Options
-	MaxIter int
+	LLM llm.Options
+	// FallbackLLM is the backup model; zero value (empty Model) disables failover.
+	FallbackLLM  llm.Options
+	FailoverOpts llm.FailoverOptions
+	MaxIter      int
 	// Persona is the bot's identity + greeting/help behavior, leading the prompt.
 	// A SnappCloud default is used when empty.
 	Persona      string
@@ -117,7 +120,15 @@ func New(o Options, log *slog.Logger) *Brain {
 		global[alias] = muxAdapter{m}
 	}
 
-	ag := agent.New(llm.New(o.LLM), agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, log)
+	// Primary model, optionally wrapped in a failover breaker that serves from
+	// the backup while the primary is failing and returns to it automatically.
+	var model agent.LLM = llm.New(o.LLM)
+	if strings.TrimSpace(o.FallbackLLM.Model) != "" {
+		model = llm.NewFailover(model, llm.New(o.FallbackLLM), o.FailoverOpts, log)
+		log.Info("llm failover enabled", "primary", o.LLM.Model, "backup", o.FallbackLLM.Model,
+			"failureThreshold", o.FailoverOpts.FailureThreshold, "cooldown", o.FailoverOpts.CooldownPeriod)
+	}
+	ag := agent.New(model, agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, log)
 	system := o.SystemPrompt
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem

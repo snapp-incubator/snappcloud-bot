@@ -188,6 +188,44 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		globalServers = append(globalServers, brain.Server{URL: s.URL, AuthHeader: auth, Alias: s.Alias})
 	}
 
+	// Optional backup model: anything it does not set is inherited from the
+	// primary, so a second model on the same endpoint is a one-line config.
+	var fallback llm.Options
+	fbOpts := llm.FailoverOptions{FailureThreshold: cfg.Agent.FallbackLLM.FailureThreshold}
+	if fb := cfg.Agent.FallbackLLM; strings.TrimSpace(fb.Model) != "" {
+		fbKey := llmKey
+		if fb.APIKeyEnv != "" && fb.APIKeyEnv != cfg.Agent.LLM.APIKeyEnv {
+			if v := os.Getenv(fb.APIKeyEnv); v != "" {
+				fbKey = v
+			} else {
+				return nil, fmt.Errorf("fallback llm api key env %q is empty", fb.APIKeyEnv)
+			}
+		}
+		fbTimeout := llmTimeout
+		if fb.Timeout != "" {
+			d, err := time.ParseDuration(fb.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("parse agent.fallbackLLM.timeout: %w", err)
+			}
+			fbTimeout = d
+		}
+		if fb.CooldownPeriod != "" {
+			d, err := time.ParseDuration(fb.CooldownPeriod)
+			if err != nil {
+				return nil, fmt.Errorf("parse agent.fallbackLLM.cooldownPeriod: %w", err)
+			}
+			fbOpts.CooldownPeriod = d
+		}
+		fallback = llm.Options{
+			BaseURL:   firstNonEmpty(fb.BaseURL, cfg.Agent.LLM.BaseURL),
+			APIKey:    fbKey,
+			Model:     fb.Model,
+			MaxTokens: firstPositive(fb.MaxTokens, cfg.Agent.LLM.MaxTokens),
+			Version:   firstNonEmpty(fb.Version, cfg.Agent.LLM.Version),
+			Timeout:   fbTimeout,
+		}
+	}
+
 	b := brain.New(brain.Options{
 		LLM: llm.Options{
 			BaseURL:   cfg.Agent.LLM.BaseURL,
@@ -197,6 +235,8 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			Version:   cfg.Agent.LLM.Version,
 			Timeout:   llmTimeout,
 		},
+		FallbackLLM:   fallback,
+		FailoverOpts:  fbOpts,
 		MaxIter:       cfg.Agent.MaxIterations,
 		Persona:       cfg.Agent.Persona,
 		SystemPrompt:  cfg.Agent.SystemPrompt,
@@ -209,6 +249,22 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 	}, log)
 	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "globalServers", len(globalServers), "maxIter", cfg.Agent.MaxIterations)
 	return b, nil
+}
+
+// firstNonEmpty returns a if set, else b.
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
+}
+
+// firstPositive returns a if > 0, else b.
+func firstPositive(a, b int) int {
+	if a > 0 {
+		return a
+	}
+	return b
 }
 
 func serveHealth(ctx context.Context, addr string, log *slog.Logger) {

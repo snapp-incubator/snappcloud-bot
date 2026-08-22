@@ -86,6 +86,13 @@ Three exemption classes:
   **retried** (never returns partial). Transient failures (network, `429`, `5xx`)
   retry with backoff+jitter; `4xx` do not. Falls back to a non-streaming JSON
   body if the endpoint ignores `stream:true`. HTTP/2 keep-alive transport.
+- **Model failover.** An optional backup model (`agent.fallbackLLM`) behind a
+  circuit breaker: after `failureThreshold` consecutive primary failures traffic
+  moves to the backup for `cooldownPeriod`, then the primary is probed once and
+  reinstated if healthy. The failing request itself is retried on the backup, so
+  users still get an answer. A single primary success resets the counter.
+  Watch `snappcloud_bot_llm_model_requests_total{role}` and
+  `snappcloud_bot_llm_failover_total{state}`.
 - **Bounded prompts.** A single tool result is capped (~100k chars, applied after
   filtering) so a verbose dump cannot blow the model's request budget; empty
   content blocks are normalized (the API rejects them).

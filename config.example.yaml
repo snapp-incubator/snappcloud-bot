@@ -47,6 +47,14 @@ agent:
     maxTokens: 8192
     version: "2023-06-01"
     timeout: 10m
+  # Optional backup model. When the primary fails repeatedly the bot serves
+  # from this one, then probes the primary again after cooldownPeriod and
+  # switches back on its own. Only `model` is required — everything else
+  # inherits from `llm` above. Omit the block to disable failover.
+  fallbackLLM:
+    model: zai/glm-5.2
+    failureThreshold: 3      # consecutive primary failures before switching
+    cooldownPeriod: 5m       # backup serves this long before re-probing
   maxIterations: 8
   # Bot identity + greeting/help behavior (SnappCloud default if omitted).
   # persona: |
