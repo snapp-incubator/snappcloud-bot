@@ -8,7 +8,7 @@ crashes, rollouts, quotas, logs, events) and networking (flows, drops, ingress,
 policy) across clusters in a single loop, while enforcing namespace scope on
 every tool result.
 
-Authorization is delegated to [mcp-authz](../mcp-authz) — one instance per
+Authorization is delegated to [mcp-authz](https://github.com/snapp-incubator/mcp-authz) — one instance per
 cluster. The bot holds **no cluster credentials**.
 
 ```
@@ -16,7 +16,7 @@ Mattermost user ── message (WebSocket)
         ▼
 snappcloud-bot ── resolve SSO email
         │  scope = mcp-authz(every region): cluster -> {namespaces, clusterWide}
-        │          (groups-aware SAR, admin fast-path, cached 5m)
+        │          (groups-aware SAR, admin fast-path, cached — authz.cacheTTL)
         ▼  if authorized somewhere
    agent loop (streaming reasoning model, all authorized clusters at once):
         │  model proposes cluster-tagged tool calls (in parallel)
@@ -68,7 +68,7 @@ Three exemption classes:
 - **Thorough tool use.** The system prompt pushes the model to investigate with
   every relevant tool (pods + logs + events + flows + policy + ingress) and
   reconcile them. Extend with your own MCP "skills" via `agent.toolGuidance`.
-- **Access refresh.** Scope is cached per user (`authz.cacheTTL`, default 5m). A
+- **Access refresh.** Scope is cached per user (`authz.cacheTTL`). A
   user whose authorization just changed can say **"refresh"** to flush their own
   cache and get their live cluster/namespace list immediately — no wait, no
   restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
@@ -91,6 +91,31 @@ Three exemption classes:
   content blocks are normalized (the API rejects them).
 - **MCP mux** skips a dead server (best-effort tool listing); a cluster with no
   reachable servers is dropped, not fatal. SSE responses up to 32 MiB per line.
+- **Crash isolation.** Each message is handled in its own goroutine with a panic
+  recover, so one bad message can never take the singleton process down.
+- **Abuse guards** (`limits`): per-user token-bucket rate limit
+  (`ratePerMin`/`rateBurst`) and a max query length (`maxQueryRunes`). Both
+  protect the LLM budget and the downstream MCP servers from a single client.
+
+## Metrics
+
+Prometheus metrics on `/metrics` (same port as the health probes), scraped via
+the chart's ServiceMonitor. Labels are deliberately low-cardinality — bounded
+enums only, never a user identity, namespace, or free text.
+
+| Metric | Labels | Use |
+|---|---|---|
+| `snappcloud_bot_messages_total` | `outcome` | answered / denied / rate_limited / agent_error / … |
+| `snappcloud_bot_message_duration_seconds` | — | end-to-end answer latency |
+| `snappcloud_bot_tool_calls_total` | `cluster`, `tool`, `outcome` | per-tool call rate |
+| `snappcloud_bot_tool_errors_total` | `cluster`, `tool`, `reason` | which MCP tool is broken, and why (`timeout`, `unreachable`, `auth`, `not_found`, `bad_args`, `server_error`) |
+| `snappcloud_bot_tool_call_duration_seconds` | `cluster` | slow MCP servers |
+| `snappcloud_bot_llm_requests_total` / `_duration_seconds` | `outcome` | model health |
+| `snappcloud_bot_authz_requests_total` / `_duration_seconds` | `region`, `outcome` | per-region mcp-authz health |
+| `snappcloud_bot_active_conversations`, `_messages_in_flight`, `_handler_panics_total` | — | live state |
+
+Dashboard: `core/dashboards/Network/SnappCloudBot`. Alerts:
+`core/helm/apps/monitoring-int/templates/rules/snappcloud-bot.yaml`.
 
 ## Configuration
 
