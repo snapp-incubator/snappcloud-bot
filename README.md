@@ -122,7 +122,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/query` | `{"query": "...", "history": "..."}` → `{"answer", "user", "clusters", "requestId"}` |
+| `POST /v1/query` | `{"query": "...", "history": "..."}` → `{"answer", "user", "requestId"}` |
 | `GET /v1/whoami` | verify a token and see the scope it grants (no agent run) |
 
 The bot holds no cluster credentials, so the token is verified by **mcp-authz

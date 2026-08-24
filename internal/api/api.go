@@ -83,10 +83,12 @@ type queryRequest struct {
 }
 
 type queryResponse struct {
-	Answer   string              `json:"answer"`
-	User     string              `json:"user"`
-	Clusters map[string][]string `json:"clusters"`
-	ReqID    string              `json:"requestId"`
+	Answer string `json:"answer"`
+	User   string `json:"user"`
+	ReqID  string `json:"requestId"`
+	// The caller's scope is deliberately NOT echoed here: it is unchanged
+	// between calls, can run to hundreds of namespaces for an admin, and is
+	// already available from /v1/whoami.
 }
 
 type whoamiResponse struct {
@@ -198,9 +200,7 @@ func (h *Handler) query(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "failed to answer the query")
 		return
 	}
-	writeJSON(w, http.StatusOK, queryResponse{
-		Answer: answer, User: id.User, Clusters: clusterMap(scope), ReqID: reqID,
-	})
+	writeJSON(w, http.StatusOK, queryResponse{Answer: answer, User: id.User, ReqID: reqID})
 }
 
 func clusterMap(s authzclient.Scope) map[string][]string {
