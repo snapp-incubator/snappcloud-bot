@@ -72,8 +72,14 @@ func New(regions []Region, token string, timeout time.Duration, log *slog.Logger
 }
 
 // namespaces calls one region's /v1/namespaces for the user.
-func (c *Client) namespaces(ctx context.Context, region Region, user string) (ClusterScope, error) {
+func (c *Client) namespaces(ctx context.Context, region Region, user string, groups []string) (ClusterScope, error) {
 	u := strings.TrimRight(region.URL, "/") + "/v1/namespaces?user=" + url.QueryEscape(user)
+	if len(groups) > 0 {
+		// ServiceAccounts carry their authorization in group membership
+		// (system:serviceaccounts:<ns>), so the SAR must see the groups the
+		// API server resolved for the token.
+		u += "&groups=" + url.QueryEscape(strings.Join(groups, ","))
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return ClusterScope{}, err
@@ -98,6 +104,104 @@ func (c *Client) namespaces(ctx context.Context, region Region, user string) (Cl
 		return ClusterScope{}, fmt.Errorf("region %s: decode: %w", region.Name, err)
 	}
 	return ClusterScope{Namespaces: out.Namespaces, ClusterWide: out.ClusterWide}, nil
+}
+
+// Identity is an authenticated caller: the username the cluster resolved the
+// token to, its groups, and which region validated it.
+type Identity struct {
+	User   string
+	Groups []string
+	Region string
+}
+
+// Authenticate verifies a bearer token against every configured region and
+// returns the identity of the first cluster that recognizes it. A token is
+// issued by one cluster, so at most one region authenticates it. The bot holds
+// no cluster credentials — mcp-authz performs the TokenReview.
+//
+// Fail-closed: if no region authenticates the token, an error is returned and
+// the caller is refused.
+func (c *Client) Authenticate(ctx context.Context, token string) (Identity, error) {
+	if strings.TrimSpace(token) == "" {
+		return Identity{}, fmt.Errorf("empty token")
+	}
+	body, _ := json.Marshal(map[string]string{"token": token})
+
+	type result struct {
+		id  Identity
+		ok  bool
+		err error
+	}
+	ch := make(chan result, len(c.regions))
+	// Cancel the remaining probes as soon as one region claims the token.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, r := range c.regions {
+		r := r
+		go func() {
+			id, ok, err := c.authenticateAt(ctx, r, body)
+			ch <- result{id: id, ok: ok, err: err}
+		}()
+	}
+
+	var firstErr error
+	for range c.regions {
+		res := <-ch
+		if res.err != nil {
+			if firstErr == nil {
+				firstErr = res.err
+			}
+			continue
+		}
+		if res.ok {
+			return res.id, nil
+		}
+	}
+	if firstErr != nil {
+		return Identity{}, fmt.Errorf("authentication unavailable: %w", firstErr)
+	}
+	return Identity{}, fmt.Errorf("token is not valid on any known cluster")
+}
+
+func (c *Client) authenticateAt(ctx context.Context, region Region, body []byte) (Identity, bool, error) {
+	u := strings.TrimRight(region.URL, "/") + "/v1/authenticate"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(body)))
+	if err != nil {
+		return Identity{}, false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Identity{}, false, nil // cancelled because another region won
+		}
+		return Identity{}, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		// Region running an older mcp-authz without /v1/authenticate.
+		return Identity{}, false, fmt.Errorf("region %s: /v1/authenticate not available", region.Name)
+	}
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return Identity{}, false, fmt.Errorf("region %s: %s: %s", region.Name, resp.Status, strings.TrimSpace(string(msg)))
+	}
+	var out struct {
+		Authenticated bool     `json:"authenticated"`
+		User          string   `json:"user"`
+		Groups        []string `json:"groups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return Identity{}, false, fmt.Errorf("region %s: decode: %w", region.Name, err)
+	}
+	if !out.Authenticated {
+		return Identity{}, false, nil
+	}
+	return Identity{User: out.User, Groups: out.Groups, Region: region.Name}, true, nil
 }
 
 // ResolveIPs maps each IP to its namespace(s) on the given cluster, via that
@@ -158,6 +262,13 @@ func (c *Client) ResolveIPs(ctx context.Context, cluster string, ips []string) (
 // region errors is an error returned, so the bot can say "temporarily
 // unavailable" instead of "unauthorized".
 func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
+	return c.ResolveWithGroups(ctx, user, nil)
+}
+
+// ResolveWithGroups is Resolve with explicit group membership, used for
+// identities authenticated by token (ServiceAccounts especially, whose access
+// comes from their system:serviceaccounts groups).
+func (c *Client) ResolveWithGroups(ctx context.Context, user string, groups []string) (Scope, error) {
 	start := time.Now()
 	defer func() { metrics.AuthzDuration.Observe(time.Since(start).Seconds()) }()
 	type result struct {
@@ -169,7 +280,7 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 	for _, r := range c.regions {
 		r := r
 		go func() {
-			cs, err := c.namespaces(ctx, r, user)
+			cs, err := c.namespaces(ctx, r, user, groups)
 			ch <- result{name: r.Name, cs: cs, err: err}
 		}()
 	}

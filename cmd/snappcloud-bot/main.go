@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
+	"github.com/snapp-incubator/snappcloud-bot/internal/api"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bot"
 	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
@@ -120,6 +121,10 @@ func run(configPath, addr string, log *slog.Logger) error {
 	}
 	log.Info("connected to mattermost", "bot", me.Username, "id", me.ID)
 
+	// One limiter shared by Mattermost and the HTTP API: a caller cannot bypass
+	// their budget by switching entrypoint.
+	limiter := bot.NewRateLimiter(cfg.Limits.RatePerMin, cfg.Limits.RateBurst)
+
 	svc := bot.New(mm, theBrain, resolver, bot.Options{
 		ConversationTTL: convTTL,
 		MemoryPath:      cfg.Memory.MemoryPath,
@@ -129,10 +134,28 @@ func run(configPath, addr string, log *slog.Logger) error {
 		RatePerMin:      cfg.Limits.RatePerMin,
 		RateBurst:       cfg.Limits.RateBurst,
 		MaxQueryRunes:   cfg.Limits.MaxQueryRunes,
+		Limiter:         limiter,
 	}, log)
 	go svc.StartSweeper(ctx)
 
 	go serveHealth(ctx, addr, log)
+
+	if cfg.API.Enabled {
+		apiTimeout := 5 * time.Minute
+		if cfg.API.Timeout != "" {
+			d, err := time.ParseDuration(cfg.API.Timeout)
+			if err != nil {
+				return fmt.Errorf("parse api.timeout: %w", err)
+			}
+			apiTimeout = d
+		}
+		h := api.New(theBrain, authzBase, limiter, api.Options{
+			MaxQueryRunes: cfg.Limits.MaxQueryRunes,
+			Timeout:       apiTimeout,
+		}, log)
+		go serveAPI(ctx, cfg.API.Addr, h, apiTimeout, log)
+		log.Info("query API enabled", "addr", cfg.API.Addr, "timeout", apiTimeout)
+	}
 
 	log.Info("starting SnappCloud bot",
 		"version", version.Version, "mattermost", cfg.Mattermost.URL)
@@ -265,6 +288,29 @@ func firstPositive(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// serveAPI runs the HTTP query interface until ctx is cancelled.
+func serveAPI(ctx context.Context, addr string, h *api.Handler, timeout time.Duration, log *slog.Logger) {
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	hs := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		// A query runs the whole agent loop, so the write deadline must exceed it.
+		WriteTimeout: timeout + time.Minute,
+		IdleTimeout:  120 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		sctx, c := context.WithTimeout(context.Background(), 10*time.Second)
+		defer c()
+		_ = hs.Shutdown(sctx)
+	}()
+	if err := hs.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Error("query API server", "err", err)
+	}
 }
 
 func serveHealth(ctx context.Context, addr string, log *slog.Logger) {

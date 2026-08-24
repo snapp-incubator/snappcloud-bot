@@ -104,6 +104,36 @@ Three exemption classes:
   (`ratePerMin`/`rateBurst`) and a max query length (`maxQueryRunes`). Both
   protect the LLM budget and the downstream MCP servers from a single client.
 
+## HTTP query API
+
+The same enforced agent loop, callable outside Mattermost (`api.enabled`, port
+`8081` by default). Callers authenticate with **their own OpenShift token** — a
+user token or a **ServiceAccount** token:
+
+```bash
+TOKEN=$(oc whoami -t)                     # or: oc create token my-sa -n my-ns
+BOT=https://snappcloud-bot.apps.private.okd4.teh-1.snappcloud.io
+
+curl -sS -H "Authorization: Bearer $TOKEN" "$BOT/v1/whoami"
+
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"query":"why are pods in my-ns crashing on okd4-teh-1?"}' "$BOT/v1/query"
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/query` | `{"query": "...", "history": "..."}` → `{"answer", "user", "clusters", "requestId"}` |
+| `GET /v1/whoami` | verify a token and see the scope it grants (no agent run) |
+
+The bot holds no cluster credentials, so the token is verified by **mcp-authz
+via TokenReview** (`POST /v1/authenticate`, requires `create` on
+`authentication.k8s.io/tokenreviews`). Every region is probed; the cluster that
+issued the token authenticates it. The resulting identity — including a
+ServiceAccount's `system:serviceaccounts:*` groups — is scoped and filtered
+exactly like a Mattermost user's, so an API caller can never see more than they
+can with `oc`. No token is ever logged or stored. Rate limiting is shared with
+Mattermost, so one identity has a single budget across both entrypoints.
+
 ## Metrics
 
 Prometheus metrics on `/metrics` (same port as the health probes), scraped via
@@ -112,6 +142,7 @@ enums only, never a user identity, namespace, or free text.
 
 | Metric | Labels | Use |
 |---|---|---|
+| `snappcloud_bot_api_requests_total` | `outcome` | HTTP query API traffic |
 | `snappcloud_bot_messages_total` | `outcome` | answered / denied / rate_limited / agent_error / … |
 | `snappcloud_bot_message_duration_seconds` | — | end-to-end answer latency |
 | `snappcloud_bot_tool_calls_total` | `cluster`, `tool`, `outcome` | per-tool call rate |

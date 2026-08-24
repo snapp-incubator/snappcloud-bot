@@ -22,6 +22,13 @@ var (
 		Help: "Handled messages by outcome (answered, denied, unauthorized, backend_error, agent_error, panic, ignored).",
 	}, []string{"outcome"})
 
+	// APIRequests counts HTTP query-API requests by outcome (the programmatic
+	// entry point; Mattermost traffic is counted by Messages).
+	APIRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "api_requests_total",
+		Help: "HTTP query API requests by outcome.",
+	}, []string{"outcome"})
+
 	// MessageDuration is end-to-end handling latency (auth + agent + reply).
 	MessageDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: ns, Name: "message_duration_seconds",
@@ -126,7 +133,7 @@ var registry = func() *prometheus.Registry {
 	r.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		Messages, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
+		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		ActiveConversations, Panics, InFlight,
 	)
@@ -175,6 +182,9 @@ func Init(clusters, regions []string) {
 		"rate_limited", "too_long", "empty_answer", "refreshed",
 	} {
 		Messages.WithLabelValues(o)
+	}
+	for _, o := range []string{"answered", "unauthorized", "rate_limited", "too_long", "bad_request", "agent_error"} {
+		APIRequests.WithLabelValues(o)
 	}
 	for _, o := range []string{"ok", "error"} {
 		LLMRequests.WithLabelValues(o)

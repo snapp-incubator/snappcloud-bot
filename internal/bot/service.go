@@ -52,7 +52,7 @@ type Service struct {
 	identityMap    map[string]string
 	botUsername    string
 	requireMention bool
-	limiter        *rateLimiter
+	limiter        *RateLimiter
 	maxQueryRunes  int
 	log            *slog.Logger
 }
@@ -70,6 +70,9 @@ type Options struct {
 	RateBurst  int
 	// MaxQueryRunes rejects overly long messages (0 = a sane default).
 	MaxQueryRunes int
+	// Limiter, when set, is shared with the HTTP API so one identity has a
+	// single budget across both entrypoints. Nil builds one from RatePerMin.
+	Limiter *RateLimiter
 }
 
 // New builds the orchestration service.
@@ -77,6 +80,10 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 	maxQ := o.MaxQueryRunes
 	if maxQ <= 0 {
 		maxQ = 4000
+	}
+	limiter := o.Limiter
+	if limiter == nil {
+		limiter = NewRateLimiter(o.RatePerMin, o.RateBurst)
 	}
 	return &Service{
 		mm:             mm,
@@ -86,7 +93,7 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		identityMap:    o.IdentityMap,
 		botUsername:    o.BotUsername,
 		requireMention: o.RequireMention,
-		limiter:        newRateLimiter(o.RatePerMin, o.RateBurst),
+		limiter:        limiter,
 		maxQueryRunes:  maxQ,
 		log:            log,
 	}
@@ -102,7 +109,7 @@ func (s *Service) StartSweeper(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.limiter.sweep()
+				s.limiter.Sweep()
 			}
 		}
 	}()
@@ -174,7 +181,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 
 	// Per-user rate limit: protects the bot, LLM budget, and downstream MCP
 	// servers from one client flooding requests.
-	if !s.limiter.allow(identity) {
+	if !s.limiter.Allow(identity) {
 		outcome = "rate_limited"
 		s.replyTo(ctx, p, msgRateLimited)
 		return nil

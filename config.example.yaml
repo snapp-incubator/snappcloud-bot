@@ -16,6 +16,13 @@ mattermost:
   requireMention: true
 
 # Abuse guards for client access.
+# Optional HTTP query API (same enforced agent loop, outside Mattermost).
+# Callers send their own OpenShift user or ServiceAccount token as a bearer.
+api:
+  enabled: false
+  addr: ":8081"
+  timeout: 5m
+
 limits:
   ratePerMin: 20
   rateBurst: 5

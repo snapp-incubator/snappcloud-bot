@@ -20,6 +20,21 @@ type Config struct {
 	Authz      Authz      `yaml:"authz"`
 	Agent      Agent      `yaml:"agent"`
 	Limits     Limits     `yaml:"limits"`
+	API        API        `yaml:"api"`
+}
+
+// API is the optional HTTP query interface: the same enforced agent loop the
+// Mattermost bot uses, reachable programmatically. Callers authenticate with
+// their OWN OpenShift user or ServiceAccount token (verified by mcp-authz via
+// TokenReview), so they can never see more than they can with `oc`.
+type API struct {
+	// Enabled turns the query API on (default false).
+	Enabled bool `yaml:"enabled"`
+	// Addr is the listen address (default :8081). Kept separate from the
+	// health/metrics port so ingress and NetworkPolicy can differ.
+	Addr string `yaml:"addr"`
+	// Timeout bounds one query end to end (default 5m).
+	Timeout string `yaml:"timeout"`
 }
 
 // Limits guards the bot against abuse from clients (rate + input size).
@@ -209,6 +224,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Limits.RatePerMin == 0 {
 		c.Limits.RatePerMin = 20
+	}
+	if c.API.Addr == "" {
+		c.API.Addr = ":8081"
 	}
 }
 

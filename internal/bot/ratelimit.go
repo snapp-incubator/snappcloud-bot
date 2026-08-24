@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// rateLimiter is a per-user token bucket. It protects the bot, the LLM budget,
+// RateLimiter is a per-user token bucket. It protects the bot, the LLM budget,
 // and the downstream MCP servers/mcp-authz from a single client flooding
 // requests — one authenticated user can only start `rate` turns per minute
 // (with a small burst). Bounded memory: idle buckets are swept.
-type rateLimiter struct {
+type RateLimiter struct {
 	mu       sync.Mutex
 	buckets  map[string]*bucket
 	rate     float64 // tokens per second
@@ -22,24 +22,24 @@ type bucket struct {
 	last   time.Time
 }
 
-// newRateLimiter builds a limiter allowing `perMin` messages per minute per
+// NewRateLimiter builds a limiter allowing `perMin` messages per minute per
 // user with burst `burst`. perMin <= 0 disables limiting.
-func newRateLimiter(perMin, burst int) *rateLimiter {
+func NewRateLimiter(perMin, burst int) *RateLimiter {
 	if perMin <= 0 {
-		return &rateLimiter{disabled: true}
+		return &RateLimiter{disabled: true}
 	}
 	if burst <= 0 {
 		burst = perMin
 	}
-	return &rateLimiter{
+	return &RateLimiter{
 		buckets: make(map[string]*bucket),
 		rate:    float64(perMin) / 60.0,
 		burst:   float64(burst),
 	}
 }
 
-// allow reports whether user may start a request now, consuming one token.
-func (r *rateLimiter) allow(user string) bool {
+// Allow reports whether user may start a request now, consuming one token.
+func (r *RateLimiter) Allow(user string) bool {
 	if r.disabled {
 		return true
 	}
@@ -64,8 +64,8 @@ func (r *rateLimiter) allow(user string) bool {
 	return true
 }
 
-// sweep drops buckets that have fully refilled (idle), keeping memory bounded.
-func (r *rateLimiter) sweep() {
+// Sweep drops buckets that have fully refilled (idle), keeping memory bounded.
+func (r *RateLimiter) Sweep() {
 	if r.disabled {
 		return
 	}
