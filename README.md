@@ -77,6 +77,15 @@ Three exemption classes:
   survives restarts.
 - **Replies.** Channels: in-thread, only when @-mentioned. DMs: always. Typing
   indicator while working; long answers split transparently.
+- **Mentions from other bots.** The mention is detected from the event's mention
+  list *or* from the message text, because Mattermost does not populate mention
+  metadata for posts authored by other bots, webhooks, and integrations. An
+  ignored channel message is logged at debug and counted as
+  `messages_total{outcome="ignored"}`. A calling bot still needs an identity the
+  platform can authorize: bot accounts usually have no email, so map theirs with
+  `mattermost.identityMap` (`"" -> username` is not possible; give the bot
+  account an email or map it) — otherwise the call is refused as unauthorized
+  and logged as `no identity for sender`.
 - **Singleton.** One WebSocket listener — a single replica on a single cluster.
 
 ## Reliability

@@ -131,7 +131,15 @@ const maxTranscriptRunes = 6000
 // OnPost handles one incoming Mattermost post.
 func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// Answer every direct message; in channels, only when @-mentioned.
-	if !p.IsDirect() && s.requireMention && !p.Mentioned {
+	//
+	// The mention is detected two ways because the event's mention list is a
+	// NOTIFICATION artefact: Mattermost does not populate it for posts made by
+	// other bots and integrations, so a bot that @-mentions us would otherwise
+	// be dropped here without a trace. Matching the text is independent of that.
+	if !p.IsDirect() && s.requireMention && !p.Mentioned && !s.textMentionsBot(p.Message) {
+		metrics.Messages.WithLabelValues("ignored").Inc()
+		s.log.Debug("ignored channel message: bot not mentioned",
+			"channel", p.ChannelID, "user", p.UserID, "post", p.ID)
 		return nil
 	}
 	query := strings.TrimSpace(s.stripMention(p.Message))
@@ -174,7 +182,12 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	}
 	identity := s.resolveIdentity(user.Email)
 	if identity == "" {
+		// Bot and integration accounts often carry no email, so there is no SSO
+		// identity to authorize. Log it: otherwise this looks like the bot
+		// silently ignoring a mention.
 		outcome = "unauthorized"
+		lg.Info("no identity for sender", "post", p.ID, "channel", p.ChannelID,
+			"user", p.UserID, "reason", "account has no email; map it via mattermost.identityMap")
 		s.replyTo(ctx, p, msgUnauthorized)
 		return nil
 	}
@@ -305,11 +318,48 @@ func looksLikeCode(s string) bool {
 	return codeSignal.MatchString(s)
 }
 
+// textMentionsBot reports whether the message text @-mentions this bot. Used as
+// a fallback for senders whose posts carry no mention metadata (other bots,
+// webhooks, integrations). Case-insensitive, and the mention must be followed by
+// a word boundary so "@cloud-bot-staging" does not match "@cloud-bot".
+func (s *Service) textMentionsBot(msg string) bool {
+	if s.botUsername == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	at := "@" + strings.ToLower(s.botUsername)
+	for i := 0; ; {
+		idx := strings.Index(lower[i:], at)
+		if idx < 0 {
+			return false
+		}
+		end := i + idx + len(at)
+		if end == len(lower) || !isMentionChar(lower[end]) {
+			return true
+		}
+		i = end
+	}
+}
+
+// isMentionChar reports whether b can be part of a Mattermost username, which
+// may contain letters, digits, and . - _ (so a longer username is not matched).
+func isMentionChar(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= '0' && b <= '9':
+		return true
+	case b == '.' || b == '-' || b == '_':
+		return true
+	}
+	return false
+}
+
 func (s *Service) stripMention(msg string) string {
 	if s.botUsername == "" {
 		return msg
 	}
-	return strings.ReplaceAll(msg, "@"+s.botUsername, "")
+	// Case-insensitive: other clients may not preserve the exact casing.
+	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(s.botUsername))
+	return re.ReplaceAllString(msg, "")
 }
 
 func (s *Service) resolveIdentity(email string) string {

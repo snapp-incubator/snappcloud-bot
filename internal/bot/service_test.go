@@ -290,3 +290,49 @@ func TestSanitizeEmptyWhenOnlyMarkup(t *testing.T) {
 		t.Fatalf("markup-only should sanitize to empty, got %q", got)
 	}
 }
+
+// Mattermost does not populate the event's mention list for posts made by other
+// bots/integrations, so the text itself must be enough to trigger a reply.
+func TestChannelMentionByTextWithoutMentionMetadata(t *testing.T) {
+	mm := &fakeMM{email: "otherbot@snapp.cab"}
+	b := &fakeBrain{answer: "ok"}
+	svc := newSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+
+	p := post()
+	p.ChannelType = "O"
+	p.Mentioned = false // no mention metadata, as for a bot-authored post
+	p.Message = "@snappbot why are pods failing in team-a?"
+
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if !b.called {
+		t.Fatal("a text @-mention must be answered even without mention metadata")
+	}
+}
+
+func TestTextMentionMatching(t *testing.T) {
+	svc := newSvc(&fakeMM{}, &fakeBrain{}, &fakeResolver{})
+	cases := map[string]bool{
+		"@snappbot hello":            true,
+		"hey @snappbot, check this":  true,
+		"@SnappBot uppercase":        true,
+		"ask @snappbot?":             true,
+		"@snappbot-staging is other": false, // longer username must not match
+		"@snappbotx":                 false,
+		"no mention here":            false,
+		"email me@snappbot.io":       false, // not an @-mention at a word start
+	}
+	for msg, want := range cases {
+		if got := svc.textMentionsBot(msg); got != want {
+			t.Errorf("textMentionsBot(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
+func TestStripMentionIsCaseInsensitive(t *testing.T) {
+	svc := newSvc(&fakeMM{}, &fakeBrain{}, &fakeResolver{})
+	if got := strings.TrimSpace(svc.stripMention("@SnappBot show pods")); got != "show pods" {
+		t.Fatalf("stripMention kept the mention: %q", got)
+	}
+}

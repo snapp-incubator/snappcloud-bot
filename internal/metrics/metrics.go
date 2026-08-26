@@ -179,7 +179,7 @@ func Handler() http.Handler {
 func Init(clusters, regions []string) {
 	for _, o := range []string{
 		"answered", "denied", "unauthorized", "backend_error", "agent_error",
-		"rate_limited", "too_long", "empty_answer", "refreshed",
+		"rate_limited", "too_long", "empty_answer", "refreshed", "ignored",
 	} {
 		Messages.WithLabelValues(o)
 	}
