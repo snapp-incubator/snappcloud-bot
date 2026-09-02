@@ -107,6 +107,11 @@ var (
 		Buckets: []float64{.05, .1, .25, .5, 1, 2, 5, 10, 30},
 	})
 
+	// Schedules is the number of stored user schedules.
+	Schedules = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "schedules", Help: "User-defined recurring queries currently stored.",
+	})
+
 	// ActiveConversations is the number of live conversation transcripts held.
 	ActiveConversations = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "active_conversations",
@@ -135,7 +140,7 @@ var registry = func() *prometheus.Registry {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
-		ActiveConversations, Panics, InFlight,
+		ActiveConversations, Schedules, Panics, InFlight,
 	)
 	return r
 }()
@@ -180,6 +185,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{
 		"answered", "denied", "unauthorized", "backend_error", "agent_error",
 		"rate_limited", "too_long", "empty_answer", "refreshed", "ignored",
+		"schedule_command", "scheduled",
 	} {
 		Messages.WithLabelValues(o)
 	}

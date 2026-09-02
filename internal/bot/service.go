@@ -20,6 +20,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
+	"github.com/snapp-incubator/snappcloud-bot/internal/schedule"
 )
 
 // newReqID returns a short random hex id correlating one message's log lines.
@@ -53,6 +54,7 @@ type Service struct {
 	botUsername    string
 	requireMention bool
 	limiter        *RateLimiter
+	sched          *schedule.Store
 	maxQueryRunes  int
 	log            *slog.Logger
 }
@@ -73,6 +75,8 @@ type Options struct {
 	// Limiter, when set, is shared with the HTTP API so one identity has a
 	// single budget across both entrypoints. Nil builds one from RatePerMin.
 	Limiter *RateLimiter
+	// Schedules enables user-defined recurring queries. Nil disables the feature.
+	Schedules *schedule.Store
 }
 
 // New builds the orchestration service.
@@ -94,6 +98,7 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		botUsername:    o.BotUsername,
 		requireMention: o.RequireMention,
 		limiter:        limiter,
+		sched:          o.Schedules,
 		maxQueryRunes:  maxQ,
 		log:            log,
 	}
@@ -216,6 +221,16 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		lg.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
 		s.replyTo(ctx, p, refreshSummary(scope))
 		return nil
+	}
+
+	// Schedule commands are handled before the agent: they manage saved queries
+	// rather than asking one.
+	if s.sched != nil {
+		if handled, reply := s.scheduleCommand(identity, p, query); handled {
+			outcome = "schedule_command"
+			s.replyTo(ctx, p, reply)
+			return nil
+		}
 	}
 
 	// 2. Authorize across all regions (via the per-region mcp-authz APIs).

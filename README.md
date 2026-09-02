@@ -72,6 +72,13 @@ Three exemption classes:
   user whose authorization just changed can say **"refresh"** to flush their own
   cache and get their live cluster/namespace list immediately — no wait, no
   restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
+- **Schedules.** A user can save a recurring query — `schedule every day at
+  09:00 are any pods failing in my-ns?` — plus `schedules` to list and
+  `unschedule <id>` to remove. Bounded by `schedules.perUser` / `total` /
+  `minInterval`, run by a small worker pool (`concurrency`) so recurring work
+  never crowds out interactive users, and disabled automatically after repeated
+  failures. **Authorization is resolved at run time, never stored**: a schedule
+  cannot outlive the access it was created with.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
   replayed for context; persisted to a file (`memory.memoryPath`, a PVC) so it
   survives restarts.

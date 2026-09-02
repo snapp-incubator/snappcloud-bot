@@ -23,6 +23,16 @@ api:
   addr: ":8081"
   timeout: 5m
 
+# User-defined recurring queries. Each run costs an LLM call plus MCP calls.
+schedules:
+  enabled: false
+  path: /data/schedules.json
+  perUser: 5
+  total: 200
+  minInterval: 1h
+  concurrency: 2
+  timeout: 5m
+
 limits:
   ratePerMin: 20
   rateBurst: 5

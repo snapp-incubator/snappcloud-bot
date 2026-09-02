@@ -21,6 +21,27 @@ type Config struct {
 	Agent      Agent      `yaml:"agent"`
 	Limits     Limits     `yaml:"limits"`
 	API        API        `yaml:"api"`
+	Schedules  Schedules  `yaml:"schedules"`
+}
+
+// Schedules configures user-defined recurring queries. Each one costs an LLM
+// run plus MCP calls every time it fires, so the limits are the important part.
+type Schedules struct {
+	// Enabled turns the feature on (default false).
+	Enabled bool `yaml:"enabled"`
+	// Path persists schedules across restarts (put it on the PVC).
+	Path string `yaml:"path"`
+	// PerUser caps schedules per user (default 5).
+	PerUser int `yaml:"perUser"`
+	// Total caps schedules across all users (default 200).
+	Total int `yaml:"total"`
+	// MinInterval is the shortest cadence a user may ask for (default 1h).
+	MinInterval string `yaml:"minInterval"`
+	// Concurrency caps simultaneous scheduled runs so they never crowd out
+	// interactive users (default 2).
+	Concurrency int `yaml:"concurrency"`
+	// Timeout bounds one scheduled run (default 5m).
+	Timeout string `yaml:"timeout"`
 }
 
 // API is the optional HTTP query interface: the same enforced agent loop the

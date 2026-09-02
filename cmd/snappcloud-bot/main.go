@@ -26,6 +26,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/llm"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
+	"github.com/snapp-incubator/snappcloud-bot/internal/schedule"
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
 
@@ -121,6 +122,26 @@ func run(configPath, addr string, log *slog.Logger) error {
 	}
 	log.Info("connected to mattermost", "bot", me.Username, "id", me.ID)
 
+	// User-defined recurring queries. The store is created before the service
+	// because the service implements the runner's Answerer.
+	var schedStore *schedule.Store
+	if cfg.Schedules.Enabled {
+		minInterval := time.Hour
+		if cfg.Schedules.MinInterval != "" {
+			d, err := time.ParseDuration(cfg.Schedules.MinInterval)
+			if err != nil {
+				return fmt.Errorf("parse schedules.minInterval: %w", err)
+			}
+			minInterval = d
+		}
+		schedStore = schedule.NewStore(cfg.Schedules.Path, schedule.Limits{
+			PerUser:     cfg.Schedules.PerUser,
+			Total:       cfg.Schedules.Total,
+			MinInterval: minInterval,
+		})
+		metrics.Schedules.Set(float64(schedStore.Count()))
+	}
+
 	// One limiter shared by Mattermost and the HTTP API: a caller cannot bypass
 	// their budget by switching entrypoint.
 	limiter := bot.NewRateLimiter(cfg.Limits.RatePerMin, cfg.Limits.RateBurst)
@@ -135,8 +156,27 @@ func run(configPath, addr string, log *slog.Logger) error {
 		RateBurst:       cfg.Limits.RateBurst,
 		MaxQueryRunes:   cfg.Limits.MaxQueryRunes,
 		Limiter:         limiter,
+		Schedules:       schedStore,
 	}, log)
 	go svc.StartSweeper(ctx)
+
+	if schedStore != nil {
+		schedTimeout := 5 * time.Minute
+		if cfg.Schedules.Timeout != "" {
+			d, err := time.ParseDuration(cfg.Schedules.Timeout)
+			if err != nil {
+				return fmt.Errorf("parse schedules.timeout: %w", err)
+			}
+			schedTimeout = d
+		}
+		runner := schedule.NewRunner(schedStore, svc, schedule.RunnerOptions{
+			Concurrency: cfg.Schedules.Concurrency,
+			Timeout:     schedTimeout,
+		}, log)
+		go runner.Start(ctx)
+		log.Info("schedules enabled", "stored", schedStore.Count(),
+			"perUser", schedStore.Limits().PerUser, "minInterval", schedStore.Limits().MinInterval)
+	}
 
 	go serveHealth(ctx, addr, log)
 
