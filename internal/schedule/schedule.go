@@ -61,9 +61,11 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 type Limits struct {
 	// PerUser caps schedules per user (default 5).
 	PerUser int
-	// Total caps schedules across all users (default 200).
+	// Total caps schedules across all users (default 500).
 	Total int
-	// MinInterval is the shortest allowed cadence (default 1h).
+	// MinInterval is the shortest allowed cadence (default 4h). Combined with
+	// Total it bounds the worst-case load: Total/MinInterval runs per hour, each
+	// one an LLM call plus MCP calls.
 	MinInterval time.Duration
 	// MaxFailures disables a schedule after this many consecutive failures
 	// (default 5).
@@ -75,10 +77,10 @@ func (l *Limits) applyDefaults() {
 		l.PerUser = 5
 	}
 	if l.Total <= 0 {
-		l.Total = 200
+		l.Total = 500
 	}
 	if l.MinInterval <= 0 {
-		l.MinInterval = time.Hour
+		l.MinInterval = 4 * time.Hour
 	}
 	if l.MaxFailures <= 0 {
 		l.MaxFailures = 5
@@ -94,6 +96,10 @@ var (
 	ErrTooFrequent = errors.New("that is too frequent")
 	// ErrNotFound means no such schedule for this user.
 	ErrNotFound = errors.New("no schedule with that id")
+	// ErrSkipped is returned by an Answerer when a run was deliberately not
+	// performed (the owner no longer has access). It is not a failure: it must
+	// not count towards MaxFailures.
+	ErrSkipped = errors.New("schedule skipped")
 )
 
 // Store holds schedules, persisted to a file so they survive restarts.
@@ -218,6 +224,18 @@ func (s *Store) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.m)
+}
+
+// Stats returns the number of stored schedules and the number of distinct
+// users owning them, under a single lock so the two always agree.
+func (s *Store) Stats() (total, owners int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{}, len(s.m))
+	for _, e := range s.m {
+		seen[e.User] = struct{}{}
+	}
+	return len(s.m), len(seen)
 }
 
 // advance moves an entry to its next slot strictly after now.

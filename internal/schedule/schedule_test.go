@@ -164,3 +164,37 @@ func TestRunnerRespectsConcurrency(t *testing.T) {
 		t.Fatalf("concurrency cap breached: peak %d", a.peak)
 	}
 }
+
+func TestStatsCountsDistinctOwners(t *testing.T) {
+	s := NewStore("", Limits{PerUser: 10, MinInterval: time.Hour})
+	now := time.Now()
+	_ = s.Add(entry("alice", "a", time.Hour, now))
+	_ = s.Add(entry("alice", "b", time.Hour, now))
+	_ = s.Add(entry("bob", "c", time.Hour, now))
+
+	total, owners := s.Stats()
+	if total != 3 || owners != 2 {
+		t.Fatalf("Stats() = (%d, %d), want (3, 2)", total, owners)
+	}
+}
+
+// A skipped run means the owner lost access: retrying cannot help, so it must
+// not consume the failure budget that eventually deletes the schedule.
+func TestSkippedRunsDoNotDisableSchedule(t *testing.T) {
+	s := NewStore("", Limits{PerUser: 10, MinInterval: time.Hour, MaxFailures: 2})
+	now := time.Now()
+	_ = s.Add(entry("u", "q", time.Hour, now.Add(-time.Minute)))
+
+	a := &fakeAnswerer{err: ErrSkipped}
+	r := NewRunner(s, a, RunnerOptions{Concurrency: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for i := 0; i < 5; i++ {
+		r.runDue(context.Background(), now.Add(time.Duration(i)*time.Hour))
+	}
+
+	if got := s.Count(); got != 1 {
+		t.Fatalf("schedule removed after skips: count = %d, want 1", got)
+	}
+	if got := s.List("u")[0].Failures; got != 0 {
+		t.Fatalf("skips counted as failures: %d, want 0", got)
+	}
+}

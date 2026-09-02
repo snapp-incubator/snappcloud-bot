@@ -26,6 +26,7 @@ func (s *Service) scheduleCommand(identity string, p mattermost.Post, query stri
 		if err := s.sched.Delete(identity, id); err != nil {
 			return true, fmt.Sprintf("❔ %s. Say `schedules` to see yours.", err.Error())
 		}
+		s.observeSchedules()
 		return true, fmt.Sprintf("🗑️ Removed schedule `%s`.", id)
 
 	case strings.HasPrefix(low, "schedule "):
@@ -64,9 +65,18 @@ func (s *Service) addSchedule(identity string, p mattermost.Post, rest string) s
 	if err := s.sched.Add(e); err != nil {
 		return "🚫 " + err.Error() + "."
 	}
-	metrics.Schedules.Set(float64(s.sched.Count()))
+	s.observeSchedules()
 	return fmt.Sprintf("⏰ Scheduled **%s**: %q\nFirst run %s. Say `schedules` to list, `unschedule %s` to remove.",
 		e.Spec, q, e.Next.Format("Mon 15:04"), e.ID)
+}
+
+// observeSchedules republishes the inventory gauges after a user-driven change.
+// The runner refreshes them on its own tick too; this keeps them current between
+// ticks.
+func (s *Service) observeSchedules() {
+	total, owners := s.sched.Stats()
+	metrics.Schedules.Set(float64(total))
+	metrics.ScheduleOwners.Set(float64(owners))
 }
 
 func (s *Service) renderSchedules(identity string) string {
@@ -81,8 +91,9 @@ func (s *Service) renderSchedules(identity string) string {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n",
 			e.ID, e.Spec, e.Next.Format("Mon 15:04"), e.Query)
 	}
-	fmt.Fprintf(&b, "\nRemove one with `unschedule <id>`. Limit: %d per user.",
-		s.sched.Limits().PerUser)
+	lim := s.sched.Limits()
+	fmt.Fprintf(&b, "\nRemove one with `unschedule <id>`. Limits: %d per user, no more often than every %s.",
+		lim.PerUser, lim.MinInterval)
 	return b.String()
 }
 
@@ -105,7 +116,7 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 		lg.Info("scheduled run skipped: owner has no access", "user", e.User)
 		s.post(ctx, e.ChannelID, e.RootID,
 			fmt.Sprintf("⏰ Schedule `%s` did not run: you no longer have access to any cluster.", e.ID))
-		return nil
+		return schedule.ErrSkipped
 	}
 
 	lg.Info("scheduled run", "user", e.User, "clusters", scope.Clusters())

@@ -74,9 +74,10 @@ Three exemption classes:
   restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
 - **Schedules.** A user can save a recurring query — `schedule every day at
   09:00 are any pods failing in my-ns?` — plus `schedules` to list and
-  `unschedule <id>` to remove. Bounded by `schedules.perUser` / `total` /
-  `minInterval`, run by a small worker pool (`concurrency`) so recurring work
-  never crowds out interactive users, and disabled automatically after repeated
+  `unschedule <id>` to remove. Bounded by `schedules.perUser` (5) / `total`
+  (500) / `minInterval` (4h) — `total ÷ minInterval` is the worst-case hourly
+  load — run by a small worker pool (`concurrency`) so recurring work never
+  crowds out interactive users, and disabled automatically after repeated
   failures. **Authorization is resolved at run time, never stored**: a schedule
   cannot outlive the access it was created with.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
@@ -166,6 +167,10 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_tool_call_duration_seconds` | `cluster` | slow MCP servers |
 | `snappcloud_bot_llm_requests_total` / `_duration_seconds` | `outcome` | model health |
 | `snappcloud_bot_authz_requests_total` / `_duration_seconds` | `region`, `outcome` | per-region mcp-authz health |
+| `snappcloud_bot_schedules`, `_schedule_owners`, `_schedule_limit` | — | stored recurring queries, distinct owners, configured ceiling |
+| `snappcloud_bot_schedule_runs_total` | `outcome` | scheduled runs: `ok` / `error` / `skipped` (owner lost access) |
+| `snappcloud_bot_schedule_run_duration_seconds`, `_schedule_runs_in_flight` | — | scheduled run latency and worker-pool saturation |
+| `snappcloud_bot_schedules_disabled_total` | — | schedules dropped after repeated failures |
 | `snappcloud_bot_active_conversations`, `_messages_in_flight`, `_handler_panics_total` | — | live state |
 
 Dashboard: `core/dashboards/Network/SnappCloudBot`. Alerts:

@@ -112,6 +112,46 @@ var (
 		Namespace: ns, Name: "schedules", Help: "User-defined recurring queries currently stored.",
 	})
 
+	// ScheduleOwners is the number of distinct users owning a schedule.
+	ScheduleOwners = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "schedule_owners",
+		Help: "Distinct users owning at least one schedule.",
+	})
+
+	// ScheduleLimit exposes the configured global ceiling, so a dashboard can
+	// show headroom without the limit being hard-coded in the query.
+	ScheduleLimit = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "schedule_limit",
+		Help: "Configured maximum number of schedules across all users.",
+	})
+
+	// ScheduleRuns counts fired schedules by outcome: ok, error, or skipped
+	// (owner lost access, so nothing was run).
+	ScheduleRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "schedule_runs_total",
+		Help: "Scheduled query runs by outcome (ok, error, skipped).",
+	}, []string{"outcome"})
+
+	// ScheduleRunDuration is end-to-end scheduled run latency.
+	ScheduleRunDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: ns, Name: "schedule_run_duration_seconds",
+		Help:    "End-to-end duration of one scheduled query run.",
+		Buckets: []float64{1, 5, 10, 30, 60, 120, 300},
+	})
+
+	// ScheduleDisabled counts schedules dropped after repeated failures.
+	ScheduleDisabled = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "schedules_disabled_total",
+		Help: "Schedules removed after exceeding the consecutive-failure limit.",
+	})
+
+	// ScheduleRunsInFlight is the number of scheduled runs executing right now,
+	// which is what saturates the runner's worker pool.
+	ScheduleRunsInFlight = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "schedule_runs_in_flight",
+		Help: "Scheduled runs executing right now.",
+	})
+
 	// ActiveConversations is the number of live conversation transcripts held.
 	ActiveConversations = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "active_conversations",
@@ -140,7 +180,8 @@ var registry = func() *prometheus.Registry {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
-		ActiveConversations, Schedules, Panics, InFlight,
+		ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r
 }()
@@ -191,6 +232,9 @@ func Init(clusters, regions []string) {
 	}
 	for _, o := range []string{"answered", "unauthorized", "rate_limited", "too_long", "bad_request", "agent_error"} {
 		APIRequests.WithLabelValues(o)
+	}
+	for _, o := range []string{"ok", "error", "skipped"} {
+		ScheduleRuns.WithLabelValues(o)
 	}
 	for _, o := range []string{"ok", "error"} {
 		LLMRequests.WithLabelValues(o)

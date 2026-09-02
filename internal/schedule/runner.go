@@ -2,8 +2,11 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // Answerer runs one query for an owner and delivers the result. Implemented by
@@ -51,6 +54,9 @@ func NewRunner(store *Store, a Answerer, o RunnerOptions, log *slog.Logger) *Run
 
 // Start runs the scheduling loop until ctx is cancelled, flushing on exit.
 func (r *Runner) Start(ctx context.Context) {
+	metrics.ScheduleLimit.Set(float64(r.store.Limits().Total))
+	r.observe()
+
 	t := time.NewTicker(r.tick)
 	defer t.Stop()
 	for {
@@ -61,8 +67,18 @@ func (r *Runner) Start(ctx context.Context) {
 		case now := <-t.C:
 			r.runDue(ctx, now)
 			r.store.Flush()
+			// Refresh the gauges every tick: additions and deletions happen on
+			// other goroutines, and failures remove entries here.
+			r.observe()
 		}
 	}
+}
+
+// observe publishes the current schedule inventory.
+func (r *Runner) observe() {
+	total, owners := r.store.Stats()
+	metrics.Schedules.Set(float64(total))
+	metrics.ScheduleOwners.Set(float64(owners))
 }
 
 // runDue executes everything due at now, bounded by the worker pool.
@@ -88,12 +104,35 @@ func (r *Runner) runDue(ctx context.Context, now time.Time) {
 			}()
 			rctx, cancel := context.WithTimeout(ctx, r.timeout)
 			defer cancel()
+
+			metrics.ScheduleRunsInFlight.Inc()
+			start := time.Now()
 			err := r.answerer.RunScheduled(rctx, e)
-			if removed := r.store.RecordResult(e.ID, err); removed {
+			metrics.ScheduleRunsInFlight.Dec()
+			metrics.ScheduleRunDuration.Observe(time.Since(start).Seconds())
+
+			// A skip is not a failure: the owner lost access, and retrying will
+			// not help, so it must not burn the failure budget.
+			skipped := errors.Is(err, ErrSkipped)
+			switch {
+			case skipped:
+				metrics.ScheduleRuns.WithLabelValues("skipped").Inc()
+			case err != nil:
+				metrics.ScheduleRuns.WithLabelValues("error").Inc()
+			default:
+				metrics.ScheduleRuns.WithLabelValues("ok").Inc()
+			}
+
+			result := err
+			if skipped {
+				result = nil
+			}
+			if removed := r.store.RecordResult(e.ID, result); removed {
+				metrics.ScheduleDisabled.Inc()
 				r.log.Warn("schedule disabled after repeated failures",
 					"id", e.ID, "user", e.User, "query", e.Query)
 			}
-			if err != nil {
+			if err != nil && !skipped {
 				r.log.Warn("scheduled run failed", "id", e.ID, "user", e.User, "err", err)
 			}
 		}()

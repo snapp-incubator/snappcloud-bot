@@ -33,9 +33,11 @@ type Schedules struct {
 	Path string `yaml:"path"`
 	// PerUser caps schedules per user (default 5).
 	PerUser int `yaml:"perUser"`
-	// Total caps schedules across all users (default 200).
+	// Total caps schedules across all users (default 500).
 	Total int `yaml:"total"`
-	// MinInterval is the shortest cadence a user may ask for (default 1h).
+	// MinInterval is the shortest cadence a user may ask for (default 4h).
+	// Total/MinInterval is the worst-case scheduled load, so raising Total or
+	// lowering MinInterval without raising Concurrency makes schedules fire late.
 	MinInterval string `yaml:"minInterval"`
 	// Concurrency caps simultaneous scheduled runs so they never crowd out
 	// interactive users (default 2).

@@ -126,7 +126,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 	// because the service implements the runner's Answerer.
 	var schedStore *schedule.Store
 	if cfg.Schedules.Enabled {
-		minInterval := time.Hour
+		// Zero means "use the store's default", which is where the real defaults
+		// live — don't duplicate them here.
+		var minInterval time.Duration
 		if cfg.Schedules.MinInterval != "" {
 			d, err := time.ParseDuration(cfg.Schedules.MinInterval)
 			if err != nil {
@@ -139,7 +141,10 @@ func run(configPath, addr string, log *slog.Logger) error {
 			Total:       cfg.Schedules.Total,
 			MinInterval: minInterval,
 		})
-		metrics.Schedules.Set(float64(schedStore.Count()))
+		total, owners := schedStore.Stats()
+		metrics.Schedules.Set(float64(total))
+		metrics.ScheduleOwners.Set(float64(owners))
+		metrics.ScheduleLimit.Set(float64(schedStore.Limits().Total))
 	}
 
 	// One limiter shared by Mattermost and the HTTP API: a caller cannot bypass
@@ -175,7 +180,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 		}, log)
 		go runner.Start(ctx)
 		log.Info("schedules enabled", "stored", schedStore.Count(),
-			"perUser", schedStore.Limits().PerUser, "minInterval", schedStore.Limits().MinInterval)
+			"perUser", schedStore.Limits().PerUser, "total", schedStore.Limits().Total,
+			"minInterval", schedStore.Limits().MinInterval)
 	}
 
 	go serveHealth(ctx, addr, log)
