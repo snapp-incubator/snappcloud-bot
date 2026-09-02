@@ -16,6 +16,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// Embed the IANA database: the scratch-style runtime image has no
+	// /usr/share/zoneinfo, so schedules.timezone would fail to load without it.
+	_ "time/tzdata"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
 	"github.com/snapp-incubator/snappcloud-bot/internal/api"
@@ -136,10 +139,19 @@ func run(configPath, addr string, log *slog.Logger) error {
 			}
 			minInterval = d
 		}
+		loc := time.Local
+		if cfg.Schedules.Timezone != "" {
+			l, err := time.LoadLocation(cfg.Schedules.Timezone)
+			if err != nil {
+				return fmt.Errorf("parse schedules.timezone: %w", err)
+			}
+			loc = l
+		}
 		schedStore = schedule.NewStore(cfg.Schedules.Path, schedule.Limits{
 			PerUser:     cfg.Schedules.PerUser,
 			Total:       cfg.Schedules.Total,
 			MinInterval: minInterval,
+			Location:    loc,
 		})
 		total, owners := schedStore.Stats()
 		metrics.Schedules.Set(float64(total))
@@ -181,7 +193,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		go runner.Start(ctx)
 		log.Info("schedules enabled", "stored", schedStore.Count(),
 			"perUser", schedStore.Limits().PerUser, "total", schedStore.Limits().Total,
-			"minInterval", schedStore.Limits().MinInterval)
+			"minInterval", schedStore.Limits().MinInterval, "timezone", schedStore.Location())
 	}
 
 	go serveHealth(ctx, addr, log)

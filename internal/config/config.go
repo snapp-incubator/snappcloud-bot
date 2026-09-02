@@ -39,6 +39,11 @@ type Schedules struct {
 	// Total/MinInterval is the worst-case scheduled load, so raising Total or
 	// lowering MinInterval without raising Concurrency makes schedules fire late.
 	MinInterval string `yaml:"minInterval"`
+	// Timezone is the IANA zone users' schedule times are expressed in, both
+	// typed ("at 09:00") and displayed. Empty = the process zone, which in a
+	// container is UTC — set it to where the users are or every time shown is
+	// off by the UTC offset.
+	Timezone string `yaml:"timezone"`
 	// Concurrency caps simultaneous scheduled runs so they never crowd out
 	// interactive users (default 2).
 	Concurrency int `yaml:"concurrency"`

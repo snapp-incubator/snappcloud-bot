@@ -18,6 +18,15 @@ import (
 //	every 6h <query>
 //	hourly <query>       daily <query>
 //
+// An interval cadence may name its first run, which people reach for
+// immediately when "every 4h" would otherwise start four hours from now:
+//
+//	every 4h starting at 16:10 <query>
+//	every 6h <query> first run at 09:00
+//
+// now must carry the location schedules are expressed in — times the user types
+// are read in that zone, and Next is returned in it.
+//
 // The returned Entry has Every, At, Spec and Next filled in; the caller supplies
 // the owner and destination.
 func Parse(input string, now time.Time) (*Entry, string, error) {
@@ -36,11 +45,24 @@ func Parse(input string, now time.Time) (*Entry, string, error) {
 			return nil, "", fmt.Errorf("that interval is not valid")
 		}
 		q := strings.TrimSpace(s[len(m[0]):])
-		return &Entry{
+
+		// "starting at HH:MM" / "first run at HH:MM" may sit anywhere in the
+		// rest. Pull it out so it sets the first run instead of silently
+		// becoming part of the question.
+		q, first, hasFirst, err := cutFirstRun(q)
+		if err != nil {
+			return nil, "", err
+		}
+		e := &Entry{
 			Every: Duration(d),
 			Spec:  fmt.Sprintf("every %d%s", n, m[2]),
 			Next:  now.Add(d),
-		}, q, nil
+		}
+		if hasFirst {
+			e.Next = nextDaily(now, first.hour, first.minute)
+			e.Spec = fmt.Sprintf("%s, from %s", e.Spec, first.text)
+		}
+		return e, q, nil
 	}
 
 	// every [<weekday>] [at] HH:MM ...   /  daily at HH:MM
@@ -91,7 +113,35 @@ func Parse(input string, now time.Time) (*Entry, string, error) {
 var (
 	everyIntervalRe = regexp.MustCompile(`^every\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b`)
 	everyDayRe      = regexp.MustCompile(`^(?:every\s+)?(day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|)\s*(?:at\s+)?(\d{1,2}:\d{2})`)
+
+	// "starting at 16:10", "start 16:10", "first run at 16:10", "schedule first
+	// run to 16:10", "from 16:10" — the phrasings people actually reach for.
+	firstRunRe = regexp.MustCompile(`(?i)\b(?:schedule\s+)?(?:starting|start|first\s+run|from)\s*(?:at|to|on)?\s*(\d{1,2}:\d{2})\b`)
 )
+
+// clock is a parsed HH:MM plus the text it came from.
+type clock struct {
+	hour, minute int
+	text         string
+}
+
+// cutFirstRun removes a "starting at HH:MM" clause from q and reports the time
+// it named. Without this the clause stays in the question and gets asked of the
+// LLM verbatim, which is how "schedule first run to 16:10" ended up inside a
+// query about restarting pods.
+func cutFirstRun(q string) (rest string, c clock, found bool, err error) {
+	m := firstRunRe.FindStringSubmatchIndex(q)
+	if m == nil {
+		return q, clock{}, false, nil
+	}
+	hhmm := q[m[2]:m[3]]
+	hour, minute, perr := parseClock(hhmm)
+	if perr != nil {
+		return "", clock{}, false, perr
+	}
+	rest = strings.TrimSpace(q[:m[0]] + " " + q[m[1]:])
+	return rest, clock{hour: hour, minute: minute, text: hhmm}, true, nil
+}
 
 func unitDuration(u string) (time.Duration, error) {
 	switch u {

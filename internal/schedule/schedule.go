@@ -70,6 +70,11 @@ type Limits struct {
 	// MaxFailures disables a schedule after this many consecutive failures
 	// (default 5).
 	MaxFailures int
+	// Location is the timezone users' times are expressed in — both the ones
+	// they type ("at 09:00") and the ones shown back to them. Defaults to the
+	// process zone, which in a container is UTC: set it to where the users are,
+	// or every displayed time is off by the UTC offset.
+	Location *time.Location
 }
 
 func (l *Limits) applyDefaults() {
@@ -84,6 +89,9 @@ func (l *Limits) applyDefaults() {
 	}
 	if l.MaxFailures <= 0 {
 		l.MaxFailures = 5
+	}
+	if l.Location == nil {
+		l.Location = time.Local
 	}
 }
 
@@ -122,6 +130,19 @@ func NewStore(path string, limits Limits) *Store {
 
 // Limits returns the configured bounds (for user-facing messages).
 func (s *Store) Limits() Limits { return s.limits }
+
+// Location is the timezone schedules are expressed in.
+func (s *Store) Location() *time.Location { return s.limits.Location }
+
+// Now returns the current time in the schedule timezone. Parsing must use it:
+// "at 09:00" means 09:00 where the users are, not where the pod runs.
+func (s *Store) Now() time.Time { return time.Now().In(s.limits.Location) }
+
+// FormatWhen renders a fire time for a user, naming the zone so a time can
+// never be read as local when it is not.
+func (s *Store) FormatWhen(t time.Time) string {
+	return t.In(s.limits.Location).Format("Mon 15:04") + " " + s.limits.Location.String()
+}
 
 // Add stores a new schedule for user, enforcing the limits.
 func (s *Store) Add(e *Entry) error {

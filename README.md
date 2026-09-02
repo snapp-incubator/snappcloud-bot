@@ -74,7 +74,9 @@ Three exemption classes:
   restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
 - **Schedules.** A user can save a recurring query — `schedule every day at
   09:00 are any pods failing in my-ns?` — plus `schedules` to list and
-  `unschedule <id>` to remove. Bounded by `schedules.perUser` (5) / `total`
+  `unschedule <id>` to remove. An interval schedule can name its first run
+  (`every 4h starting at 16:10 ...`). Times are read and displayed in
+  `schedules.timezone`, not the pod's zone. Bounded by `schedules.perUser` (5) / `total`
   (500) / `minInterval` (4h) — `total ÷ minInterval` is the worst-case hourly
   load — run by a small worker pool (`concurrency`) so recurring work never
   crowds out interactive users, and disabled automatically after repeated

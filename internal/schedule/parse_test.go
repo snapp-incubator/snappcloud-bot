@@ -86,3 +86,79 @@ func TestParseRejectsGibberish(t *testing.T) {
 		}
 	}
 }
+
+// Regression: "schedule first run to 16:10" was swallowed into the question and
+// asked of the LLM verbatim, and the schedule started 4h out anyway.
+func TestParseFirstRunClause(t *testing.T) {
+	now := time.Date(2026, 9, 2, 16, 8, 0, 0, time.UTC)
+	cases := []string{
+		"every 4h schedule first run to 16:10 are any pods restarting in ns?",
+		"every 4h starting at 16:10 are any pods restarting in ns?",
+		"every 4h are any pods restarting in ns? first run at 16:10",
+		"every 4h from 16:10 are any pods restarting in ns?",
+	}
+	for _, in := range cases {
+		e, q, err := Parse(in, now)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		if q != "are any pods restarting in ns?" {
+			t.Errorf("Parse(%q) query = %q, want the question alone", in, q)
+		}
+		want := time.Date(2026, 9, 2, 16, 10, 0, 0, time.UTC)
+		if !e.Next.Equal(want) {
+			t.Errorf("Parse(%q) first run = %s, want %s", in, e.Next, want)
+		}
+		if time.Duration(e.Every) != 4*time.Hour {
+			t.Errorf("Parse(%q) interval = %s, want 4h", in, time.Duration(e.Every))
+		}
+	}
+}
+
+// A first-run time that has already passed today belongs tomorrow, not in the past.
+func TestParseFirstRunAlreadyPassed(t *testing.T) {
+	now := time.Date(2026, 9, 2, 16, 8, 0, 0, time.UTC)
+	e, _, err := Parse("every 6h starting at 09:00 check quota", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
+	if !e.Next.Equal(want) {
+		t.Errorf("first run = %s, want %s", e.Next, want)
+	}
+}
+
+// Without a first-run clause the question must survive untouched.
+func TestParseLeavesQuestionAlone(t *testing.T) {
+	now := time.Date(2026, 9, 2, 16, 8, 0, 0, time.UTC)
+	e, q, err := Parse("every 4h are any pods restarting in snappcloud-tools on teh-1?", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q != "are any pods restarting in snappcloud-tools on teh-1?" {
+		t.Errorf("query = %q", q)
+	}
+	if !e.Next.Equal(now.Add(4 * time.Hour)) {
+		t.Errorf("first run = %s, want now+4h", e.Next)
+	}
+}
+
+// Times the user types are read in the schedule zone, not the pod's.
+func TestParseUsesGivenLocation(t *testing.T) {
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		t.Skip("no tzdata")
+	}
+	now := time.Date(2026, 9, 2, 16, 8, 0, 0, tehran)
+	e, _, err := Parse("every day at 09:00 check quota", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, m, _ := e.Next.In(tehran).Clock()
+	if h != 9 || m != 0 {
+		t.Errorf("next run at %02d:%02d Tehran, want 09:00", h, m)
+	}
+	if e.Next.Before(now) {
+		t.Errorf("next run %s is in the past", e.Next)
+	}
+}

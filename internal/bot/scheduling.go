@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
@@ -37,12 +36,15 @@ func (s *Service) scheduleCommand(identity string, p mattermost.Post, query stri
 
 // addSchedule parses "<cadence> <question>" and stores it.
 func (s *Service) addSchedule(identity string, p mattermost.Post, rest string) string {
-	e, q, err := schedule.Parse(rest, time.Now())
+	// Parse in the schedule timezone: a time the user types means that time
+	// where they are, not where the pod runs.
+	e, q, err := schedule.Parse(rest, s.sched.Now())
 	if err != nil {
 		return "❔ I could not read that schedule. Try:\n" +
 			"```text\n" +
 			"schedule every day at 09:00 are any pods failing in my-namespace?\n" +
 			"schedule every 6h is my-namespace over quota?\n" +
+			"schedule every 4h starting at 16:10 any pods restarting in my-namespace?\n" +
 			"schedule every monday at 08:30 summarise last week's drops\n" +
 			"```"
 	}
@@ -67,7 +69,7 @@ func (s *Service) addSchedule(identity string, p mattermost.Post, rest string) s
 	}
 	s.observeSchedules()
 	return fmt.Sprintf("⏰ Scheduled **%s**: %q\nFirst run %s. Say `schedules` to list, `unschedule %s` to remove.",
-		e.Spec, q, e.Next.Format("Mon 15:04"), e.ID)
+		e.Spec, q, s.sched.FormatWhen(e.Next), e.ID)
 }
 
 // observeSchedules republishes the inventory gauges after a user-driven change.
@@ -89,7 +91,7 @@ func (s *Service) renderSchedules(identity string) string {
 	b.WriteString("**Your schedules**\n\n| id | when | next | question |\n| --- | --- | --- | --- |\n")
 	for _, e := range list {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n",
-			e.ID, e.Spec, e.Next.Format("Mon 15:04"), e.Query)
+			e.ID, e.Spec, s.sched.FormatWhen(e.Next), e.Query)
 	}
 	lim := s.sched.Limits()
 	fmt.Fprintf(&b, "\nRemove one with `unschedule <id>`. Limits: %d per user, no more often than every %s.",
