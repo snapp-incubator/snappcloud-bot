@@ -28,10 +28,12 @@ type Brain struct {
 	agent    *agent.Agent
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   map[string]agent.MCP   // alias -> namespace-agnostic tools (e.g. docs); empty if none
-	persona  string                 // who the bot is + how to greet/help (leads the prompt)
-	system   string
-	guidance string // MCP tool-usage guidance ("skills"), appended to every prompt
-	log      *slog.Logger
+	// globalAdminOnly marks global aliases only cluster-admins may see.
+	globalAdminOnly map[string]bool
+	persona         string // who the bot is + how to greet/help (leads the prompt)
+	system          string
+	guidance        string // MCP tool-usage guidance ("skills"), appended to every prompt
+	log             *slog.Logger
 }
 
 type clusterMCP struct {
@@ -50,6 +52,8 @@ type Server struct {
 	// caller identity is forwarded as X-Remote-User and its tools are trusted to
 	// self-authorize, so the agent returns their results unfiltered.
 	SelfAuthorized bool
+	// ClusterAdminOnly restricts a global server to cluster-admin callers.
+	ClusterAdminOnly bool
 }
 
 // Cluster describes one cluster's MCP servers.
@@ -102,6 +106,9 @@ func New(o Options, log *slog.Logger) *Brain {
 	// Group global servers by alias (default "docs"): each alias becomes its own
 	// namespace-agnostic tool group tagged [alias].
 	muxes := make(map[string]*mcp.Mux)
+	// An alias is admin-only if ANY server in it is: restrictive on purpose, so
+	// merging a public server into an admin group can never widen the group.
+	adminOnly := make(map[string]bool)
 	for i, s := range o.GlobalServers {
 		alias := s.Alias
 		if alias == "" {
@@ -111,6 +118,9 @@ func New(o Options, log *slog.Logger) *Brain {
 		if !ok {
 			m = mcp.NewMux()
 			muxes[alias] = m
+		}
+		if s.ClusterAdminOnly {
+			adminOnly[alias] = true
 		}
 		// Global servers are tenant-independent; never send identity.
 		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, false, o.MCPTimeout))
@@ -137,7 +147,22 @@ func New(o Options, log *slog.Logger) *Brain {
 	if strings.TrimSpace(persona) == "" {
 		persona = defaultPersona
 	}
-	return &Brain{agent: ag, clusters: clusters, global: global, persona: persona, system: system, guidance: o.ToolGuidance, log: log}
+	return &Brain{agent: ag, clusters: clusters, global: global, globalAdminOnly: adminOnly,
+		persona: persona, system: system, guidance: o.ToolGuidance, log: log}
+}
+
+// visibleGlobal returns the global tool aliases a caller may see, sorted for
+// stable tool ordering. Admin-only groups are omitted for non-admins rather
+// than denied per call, so the model never learns the tools exist.
+func (b *Brain) visibleGlobal(admin bool) []string {
+	out := make([]string, 0, len(b.global))
+	for _, alias := range sortedKeys(b.global) {
+		if b.globalAdminOnly[alias] && !admin {
+			continue
+		}
+		out = append(out, alias)
+	}
+	return out
 }
 
 // sortedKeys returns a map's keys sorted, for stable ordering.
@@ -172,7 +197,11 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 	}
 	// Global tools are available to any authorized user, unfiltered, grouped by
 	// alias (e.g. docs). Sorted for stable tool ordering.
-	for _, alias := range sortedKeys(b.global) {
+	//
+	// An admin-only group is skipped entirely for non-admins rather than denied
+	// per call: the model never sees the tools, so it cannot propose them, name
+	// them in an answer, or leak what they are.
+	for _, alias := range b.visibleGlobal(scope.HasClusterWide()) {
 		cts = append(cts, agent.ClusterTools{Cluster: alias, Alias: alias, MCP: b.global[alias], NoEnforce: true})
 	}
 	if len(cts) == 0 {

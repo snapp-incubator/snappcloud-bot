@@ -55,7 +55,11 @@ Three exemption classes:
   authenticated Mattermost user (never a tool argument, so the model can't spoof
   it); a request with no identity is refused, never sent unscoped (fail-closed).
 - **Global servers** (the general docs): namespace-agnostic, available to any
-  authorized user, not scope-filtered.
+  authorized user, not scope-filtered. A global server marked
+  `clusterAdminOnly` is served only to callers holding cluster-wide access on
+  some cluster, and its tools are **not listed at all** for anyone else — the
+  model cannot propose them or name them. Where the URL is itself a credential
+  (a capability token in the path), set `urlEnv` and keep it in the Secret.
 
 ## Behavior
 

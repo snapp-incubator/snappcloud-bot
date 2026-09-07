@@ -31,6 +31,18 @@ type ClusterScope struct {
 // omitted. Cluster names match the agent per-cluster MCP tool groups.
 type Scope map[string]ClusterScope
 
+// HasClusterWide reports whether the subject holds cluster-wide access on any
+// cluster — the test for platform staff, as opposed to per-cluster admin which
+// gates that cluster's infrastructure tools.
+func (s Scope) HasClusterWide() bool {
+	for _, cs := range s {
+		if cs.ClusterWide {
+			return true
+		}
+	}
+	return false
+}
+
 // Clusters returns the scope's cluster names, sorted.
 func (s Scope) Clusters() []string {
 	out := make([]string, 0, len(s))

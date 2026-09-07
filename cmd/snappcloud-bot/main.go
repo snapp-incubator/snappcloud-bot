@@ -266,7 +266,19 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		if s.AuthHeaderEnv != "" {
 			auth = os.Getenv(s.AuthHeaderEnv)
 		}
-		globalServers = append(globalServers, brain.Server{URL: s.URL, AuthHeader: auth, Alias: s.Alias})
+		url := s.URL
+		if s.URLEnv != "" {
+			// The URL is itself a credential (capability token in the path), so it
+			// comes from the Secret. Missing = misconfiguration, not "no server":
+			// starting without it would silently drop the tool group.
+			url = os.Getenv(s.URLEnv)
+			if url == "" {
+				return nil, fmt.Errorf("globalServer %q: %s is empty", s.Alias, s.URLEnv)
+			}
+		}
+		globalServers = append(globalServers, brain.Server{
+			URL: url, AuthHeader: auth, Alias: s.Alias, ClusterAdminOnly: s.ClusterAdminOnly,
+		})
 	}
 
 	// Optional backup model: anything it does not set is inherited from the

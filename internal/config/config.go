@@ -138,9 +138,19 @@ type AgentCluster struct {
 // Authorization header value (e.g. "Basic ...") — empty for no auth. Name is an
 // optional label.
 type MCPServer struct {
-	Name          string `yaml:"name"`
-	URL           string `yaml:"url"`
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+	// URLEnv reads the URL from an environment variable instead of this file.
+	// Use it when the URL itself is a credential — some MCP endpoints carry a
+	// capability token in their path — so it lives in the Secret, not in Git.
+	// Takes precedence over URL.
+	URLEnv        string `yaml:"urlEnv"`
 	AuthHeaderEnv string `yaml:"authHeaderEnv"`
+	// ClusterAdminOnly restricts a globalServer to callers who hold cluster-wide
+	// access on at least one cluster. Its tools are not even listed for anyone
+	// else, so the model cannot propose or name them. Ignored for per-cluster
+	// servers, which are gated per tool by toolRules.
+	ClusterAdminOnly bool `yaml:"clusterAdminOnly"`
 	// Alias groups a globalServer's tools under a tool-name tag (default "docs").
 	// Global servers sharing an alias are merged; distinct aliases are exposed as
 	// separate [alias] tool groups. Ignored for per-cluster servers.
