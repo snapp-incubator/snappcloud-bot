@@ -37,7 +37,21 @@ MCP tools take pods/IPs/services, not namespaces — the namespace lives in the
 **result data**. So the bot filters every tenant-data tool result before the
 model sees it: a record referencing a namespace the user can't access is
 dropped; a bare IP is resolved to its namespace via mcp-authz and gated; if
-resolution is unavailable the result is withheld (**fail-closed**). The model
+resolution is unavailable the result is withheld (**fail-closed**).
+
+Two shapes need more than per-record namespace matching:
+- **Peer-shaped records** (a Hubble flow names a source *and* a destination) are
+  kept when the caller owns **either** side. A tenant's own egress always names
+  a peer they do not own — CoreDNS, another team's service, the world — so the
+  all-sides rule hid their own traffic from them, including DNS failures and
+  cross-namespace policy denials. They are a party to that traffic and can
+  already see it with `tcpdump` inside their own pod. A flow they own **neither**
+  side of is still dropped, and the relaxation applies only to peer-shaped
+  records: an ordinary resource never becomes visible for mentioning an
+  authorized namespace.
+- **Aggregates** (`flow_summary`) hide the namespace in the map *key*
+  (`{"top_source_pods": {"team-b/api-0": 42}}`), where a namespace-field scan
+  cannot see it. Those entries are scoped by key before the result is returned. The model
 only ever receives authorized data — authorization is not the model's job, and
 the prompt requires withheld data to be reported as an access limitation, never
 as "does not exist".

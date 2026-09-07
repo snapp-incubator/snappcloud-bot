@@ -18,6 +18,15 @@ import (
 // doesn't name); a record touching any unauthorized namespace is dropped. A
 // document with no array of records is gated whole (blocked if it names an
 // unauthorized namespace).
+//
+// PEER-SHAPED records (a Hubble flow, which names a source AND a destination)
+// are the exception: they are kept when the caller owns EITHER side. Every
+// egress flow a tenant has names a peer outside their namespaces — CoreDNS,
+// another team's service, the world — so the all-sides rule hid a tenant's own
+// traffic from them, including DNS failures and cross-namespace policy denials.
+// The caller is a party to that traffic and can already observe it with tcpdump
+// from inside their own pod, so showing the peer reveals nothing they cannot
+// already obtain. A flow where they own NEITHER side is still dropped.
 
 var ipRe = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 
@@ -48,15 +57,25 @@ func FilterResult(result string, allowed map[string]bool, resolved map[string][]
 		b, _ := json.Marshal(kept)
 		return string(b), n, false
 	case map[string]any:
+		// Aggregated results (Hubble's flow_summary) hide the namespace in the
+		// map KEY -- {"top_source_pods": {"team-b/api-0": 42}} -- where the
+		// namespace-key scan cannot see it, so the whole summary would pass.
+		// Scope those entries before anything else.
+		removed += filterKeyedCounts(t, allowed)
+
 		if key := dominantArrayKey(t); key != "" {
 			arr, _ := t[key].([]any)
 			kept, n := filterArray(arr, allowed, resolved)
 			t[key] = kept
 			b, _ := json.Marshal(t)
-			return string(b), n, false
+			return string(b), n + removed, false
 		}
 		if unauthorized(recordNamespaces(t, resolved), allowed) {
 			return "", 0, true
+		}
+		if removed > 0 {
+			b, _ := json.Marshal(t)
+			return string(b), removed, false
 		}
 		return result, 0, false
 	default:
@@ -68,13 +87,63 @@ func filterArray(arr []any, allowed map[string]bool, resolved map[string][]strin
 	kept := make([]any, 0, len(arr))
 	removed := 0
 	for _, el := range arr {
-		if unauthorized(recordNamespaces(el, resolved), allowed) {
+		if !recordAllowed(el, allowed, resolved) {
 			removed++
 			continue
 		}
 		kept = append(kept, el)
 	}
 	return kept, removed
+}
+
+// recordAllowed decides one record. Peer-shaped records (both a source and a
+// destination namespace) pass when the caller owns either side; everything else
+// keeps the strict rule, so a single-namespace resource never becomes visible
+// because it happens to mention an authorized namespace somewhere.
+func recordAllowed(el any, allowed map[string]bool, resolved map[string][]string) bool {
+	src := sideNamespaces(el, "source", resolved)
+	dst := sideNamespaces(el, "destination", resolved)
+	if len(src) > 0 && len(dst) > 0 {
+		return anyAllowed(src, allowed) || anyAllowed(dst, allowed)
+	}
+	return !unauthorized(recordNamespaces(el, resolved), allowed)
+}
+
+func anyAllowed(ns []string, allowed map[string]bool) bool {
+	for _, n := range ns {
+		if allowed[n] {
+			return true
+		}
+	}
+	return false
+}
+
+// sideNamespaces returns the namespaces named on one side of a peer-shaped
+// record: the subtrees under keys containing "source" or "destination"
+// ("source", "source_ip", "destination_pod"), including namespaces its IPs
+// resolve to.
+func sideNamespaces(el any, side string, resolved map[string][]string) []string {
+	m, ok := el.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for k, v := range m {
+		if !strings.Contains(strings.ToLower(k), side) {
+			continue
+		}
+		out = append(out, collectNamespaces(v)...)
+		if s, ok := v.(string); ok && strings.Contains(strings.ToLower(k), "namespace") {
+			out = append(out, s)
+		}
+		if len(resolved) > 0 {
+			blob, _ := json.Marshal(v)
+			for _, ip := range extractIPs(string(blob)) {
+				out = append(out, resolved[ip]...)
+			}
+		}
+	}
+	return out
 }
 
 // recordNamespaces returns every namespace a single record references: the
@@ -191,4 +260,38 @@ func uniqSorted(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// nsQualifiedRe matches a "namespace/name" map key, the way aggregated tool
+// output identifies a pod or service ("team-a/web-0"). Anchored and restricted
+// to DNS-1123 characters so it cannot match a URL path, an FQDN, or a CIDR.
+var nsQualifiedRe = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?)/([a-z0-9][-a-z0-9._]*)$`)
+
+// filterKeyedCounts walks nested maps and drops entries whose KEY is
+// "namespace/name" for a namespace the caller cannot access. This is the
+// aggregate counterpart to filterArray: a summary is not a list of records, so
+// per-record filtering never sees it, and the namespace lives in the key rather
+// than in a field. Returns how many entries were dropped.
+func filterKeyedCounts(m map[string]any, allowed map[string]bool) int {
+	removed := 0
+	for _, v := range m {
+		sub, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k := range sub {
+			match := nsQualifiedRe.FindStringSubmatch(k)
+			if match == nil {
+				// Not namespace-qualified (a verdict, a protocol, an FQDN):
+				// recurse in case it nests further.
+				continue
+			}
+			if !allowed[match[1]] {
+				delete(sub, k)
+				removed++
+			}
+		}
+		removed += filterKeyedCounts(sub, allowed)
+	}
+	return removed
 }
