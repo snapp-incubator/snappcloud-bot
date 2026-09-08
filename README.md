@@ -86,6 +86,11 @@ Three exemption classes:
 - **Thorough tool use.** The system prompt pushes the model to investigate with
   every relevant tool (pods + logs + events + flows + policy + ingress) and
   reconcile them. Extend with your own MCP "skills" via `agent.toolGuidance`.
+- **Commands.** `help` lists everything the bot understands, and only the
+  features that are switched on. Commands are matched on the whole message
+  after normalising case, punctuation and politeness (`Alerts On, please` works),
+  but a message that merely *mentions* a command word is treated as a question —
+  "which alerts are firing on teh-1" goes to the agent, not the command handler.
 - **Access refresh.** Scope is cached per user (`authz.cacheTTL`). A
   user whose authorization just changed can say **"refresh"** to flush their own
   cache and get their live cluster/namespace list immediately — no wait, no

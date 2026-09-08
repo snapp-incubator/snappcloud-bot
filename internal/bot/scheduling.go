@@ -14,11 +14,20 @@ import (
 // scheduleCommand handles the schedule sub-commands. It returns handled=false
 // when the message is an ordinary question, so normal flow continues.
 func (s *Service) scheduleCommand(identity string, p mattermost.Post, query string) (bool, string) {
-	low := strings.ToLower(strings.TrimSpace(query))
+	low := normalizeCommand(query)
 
 	switch {
-	case low == "schedules" || low == "list schedules" || low == "my schedules":
+	case low == "schedules" || low == "list schedules" || low == "my schedules" ||
+		low == "schedules list" || low == "schedule list":
 		return true, s.renderSchedules(identity)
+
+	case strings.HasPrefix(low, "schedules remove ") || strings.HasPrefix(low, "schedule remove "):
+		id := strings.TrimSpace(low[strings.LastIndex(low, " ")+1:])
+		if err := s.sched.Delete(identity, id); err != nil {
+			return true, fmt.Sprintf("❔ %s. Say `schedules` to see yours.", err.Error())
+		}
+		s.observeSchedules()
+		return true, fmt.Sprintf("🗑️ Removed schedule `%s`.", id)
 
 	case strings.HasPrefix(low, "unschedule ") || strings.HasPrefix(low, "delete schedule "):
 		id := strings.TrimSpace(query[strings.LastIndex(low, " ")+1:])

@@ -247,6 +247,15 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		return nil
 	}
 
+	// help lists what the bot understands. It is answered before authorization
+	// because a user with no access still needs to know how to ask, and it costs
+	// nothing to produce.
+	if helpVerbs[normalizeCommand(query)] {
+		outcome = "help"
+		s.replyTo(ctx, p, helpText(s.sched != nil, s.alertChannels != nil))
+		return nil
+	}
+
 	// Schedule commands are handled before the agent: they manage saved queries
 	// rather than asking one.
 	if s.sched != nil {

@@ -260,7 +260,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{
 		"answered", "denied", "unauthorized", "backend_error", "agent_error",
 		"rate_limited", "too_long", "empty_answer", "refreshed", "ignored",
-		"schedule_command", "scheduled", "alert", "alert_command",
+		"schedule_command", "scheduled", "alert", "alert_command", "help",
 	} {
 		Messages.WithLabelValues(o)
 	}

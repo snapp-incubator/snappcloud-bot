@@ -18,20 +18,22 @@ func (s *Service) alertCommand(identity string, p mattermost.Post, query string)
 	if s.alertChannels == nil {
 		return false, ""
 	}
-	low := strings.ToLower(strings.TrimSpace(query))
-	switch low {
-	case "alerts on", "watch alerts", "mark alert channel":
+	verb, ok := alertVerb(normalizeCommand(query))
+	if !ok {
+		return false, ""
+	}
+	switch verb {
+	case "on":
 		return true, s.markAlertChannel(identity, p)
-	case "alerts off", "unwatch alerts", "unmark alert channel":
+	case "off":
 		if err := s.alertChannels.Unmark(p.ChannelID); err != nil {
 			return true, "This channel is not marked for alerts."
 		}
 		metrics.AlertChannels.Set(float64(s.alertChannels.Count()))
 		return true, "🔕 Stopped investigating alerts in this channel."
-	case "alerts", "alerts status":
+	default:
 		return true, s.alertStatus(p)
 	}
-	return false, ""
 }
 
 func (s *Service) markAlertChannel(identity string, p mattermost.Post) string {
