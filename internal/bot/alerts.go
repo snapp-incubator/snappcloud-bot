@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -129,96 +130,137 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 		return nil
 	}
 
-	for _, a := range b.Investigate {
-		start := time.Now()
-		answer, aerr := s.brain.Answer(ctx, scope, ch.Owner, alertQuery(a), "", reqID)
-		metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
-		if aerr != nil {
-			metrics.AlertInvestigations.WithLabelValues("error").Inc()
-			lg.Warn("alert investigation failed", "alert", a.Name, "err", aerr)
-			continue
-		}
-		clean := sanitize(answer)
-		if clean == "" {
-			metrics.AlertInvestigations.WithLabelValues("empty").Inc()
-			lg.Warn("alert investigation produced nothing", "alert", a.Name)
-			continue
-		}
-		metrics.AlertInvestigations.WithLabelValues("ok").Inc()
-		// Reply in the alert's own thread: the channel stays readable, and the
-		// finding sits with the alert it explains.
-		s.post(ctx, b.ChannelID, a.PostID, "🔎 **"+a.Name+"**\n\n"+clean)
+	// One investigation for the whole batch. Alerts that fire together are
+	// usually one incident, and asking about them separately gets several
+	// partial answers — each blind to the others — plus a message each.
+	start := time.Now()
+	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner, batchQuery(b), "", reqID)
+	metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
+	if aerr != nil {
+		metrics.AlertInvestigations.WithLabelValues("error").Inc()
+		return fmt.Errorf("agent: %w", aerr)
 	}
+	clean := sanitize(answer)
+	if clean == "" {
+		metrics.AlertInvestigations.WithLabelValues("empty").Inc()
+		lg.Warn("alert investigation produced nothing", "alerts", len(b.Investigate))
+		return nil
+	}
+	metrics.AlertInvestigations.WithLabelValues("ok").Inc()
+	lg.Info("alert batch investigated", "subjects", len(b.Investigate),
+		"context", len(b.Context), "skipped", len(b.Skipped))
+	s.post(ctx, b.ChannelID, b.Root(), batchHeader(b)+clean)
 
 	if note := skippedNote(b.Skipped); note != "" {
-		s.post(ctx, b.ChannelID, rootOf(b), note)
+		s.post(ctx, b.ChannelID, b.Root(), note)
 	}
 	return nil
 }
 
-// alertQuery turns an alert into the question the agent answers. It names the
-// job explicitly, because an alert's own text usually suggests a remedy that
-// only clears the symptom.
-func alertQuery(a alerts.Alert) string {
-	var b strings.Builder
-	b.WriteString("This alert just fired. Investigate it on the cluster and report: what is actually happening " +
-		"(with the evidence you found), the root cause, and how to fix it. If the alert text suggests a remedy, " +
-		"say whether it addresses the cause or only clears the symptom. If you cannot determine the cause, say what " +
-		"you checked and what you would need.\n\n")
-	if ns, cluster := a.Scope(); ns != "" || cluster != "" {
-		b.WriteString("Scope: ")
-		if ns != "" {
-			b.WriteString("namespace " + ns + " ")
-		}
-		if cluster != "" {
-			b.WriteString("on " + cluster)
-		}
-		b.WriteString("\n\n")
+// batchHeader names what the finding covers, so a single message about five
+// alerts is not mistaken for a comment on one of them.
+func batchHeader(b alerts.Batch) string {
+	if len(b.Investigate) == 1 && len(b.Context) == 0 {
+		return "🔎 **" + b.Investigate[0].Name + "**\n\n"
 	}
-	b.WriteString("Alert:\n" + a.Describe())
-	if a.Raw != "" && a.Raw != a.Describe() {
-		b.WriteString("\n\nAs posted:\n" + a.Raw)
+	names := make([]string, 0, len(b.Investigate))
+	for _, a := range b.Investigate {
+		names = append(names, a.Name)
 	}
-	return b.String()
+	header := fmt.Sprintf("🔎 **%d alerts fired together** — %s\n\n",
+		len(b.Investigate), strings.Join(uniq(names), ", "))
+	if len(b.Context) > 0 {
+		ctxNames := make([]string, 0, len(b.Context))
+		for _, a := range b.Context {
+			ctxNames = append(ctxNames, a.Name)
+		}
+		header += "_Also firing, investigated recently: " + strings.Join(uniq(ctxNames), ", ") + "._\n\n"
+	}
+	return header
 }
 
-// skippedNote summarises what fired but was not investigated, so the channel is
-// never left wondering whether the bot saw an alert.
+// batchQuery turns a window of alerts into ONE question. The framing matters:
+// the model is told they may be one incident and asked to say which, because
+// the alternative — treating each alert as its own problem — is exactly what
+// buries an on-call engineer in symptoms of a single cause.
+func batchQuery(b alerts.Batch) string {
+	var q strings.Builder
+	if len(b.Investigate) == 1 {
+		q.WriteString("This alert just fired. Investigate it on the cluster and report: what is actually " +
+			"happening (with the evidence you found), the root cause, and how to fix it.")
+	} else {
+		q.WriteString(fmt.Sprintf("These %d alerts fired within the same minute. Alerts that fire together are "+
+			"usually symptoms of ONE incident, so investigate them as a whole and report: what is actually "+
+			"happening (with the evidence you found); whether this is one incident or several, mapping each alert "+
+			"to its cause; the root cause; and how to fix it. If some alerts are unrelated to the rest, say so "+
+			"and treat them separately rather than forcing one story.", len(b.Investigate)))
+	}
+	q.WriteString(" If an alert's text suggests a remedy, say whether it addresses the cause or only clears the " +
+		"symptom. If you cannot determine the cause, say what you checked and what you would need.\n\n")
+
+	if scopes := batchScope(b); scopes != "" {
+		q.WriteString("Scope: " + scopes + "\n\n")
+	}
+
+	q.WriteString("Alerts:\n")
+	for i, a := range b.Investigate {
+		q.WriteString(fmt.Sprintf("\n%d. %s\n", i+1, a.Describe()))
+	}
+	if len(b.Context) > 0 {
+		q.WriteString("\nAlso firing right now, already investigated recently — context only, do not re-diagnose " +
+			"unless it explains the above:\n")
+		for _, a := range b.Context {
+			q.WriteString("- " + a.Name + "\n")
+		}
+	}
+	return q.String()
+}
+
+// batchScope collects the namespaces and clusters the alerts name, so the
+// investigation starts where the incident is.
+func batchScope(b alerts.Batch) string {
+	nsSet, clusterSet := map[string]bool{}, map[string]bool{}
+	for _, a := range b.Alerts() {
+		ns, cluster := a.Scope()
+		if ns != "" {
+			nsSet[ns] = true
+		}
+		if cluster != "" {
+			clusterSet[cluster] = true
+		}
+	}
+	var parts []string
+	if len(nsSet) > 0 {
+		parts = append(parts, "namespaces "+strings.Join(sortedKeys(nsSet), ", "))
+	}
+	if len(clusterSet) > 0 {
+		parts = append(parts, "clusters "+strings.Join(sortedKeys(clusterSet), ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// skippedNote covers only what was left out entirely — alerts over the
+// per-batch cap. Cooldown alerts are not mentioned here: they are handed to the
+// investigation as context, so they are already accounted for.
 func skippedNote(skipped []alerts.Skipped) string {
 	if len(skipped) == 0 {
 		return ""
 	}
-	byReason := map[string][]string{}
+	names := make([]string, 0, len(skipped))
 	for _, s := range skipped {
-		byReason[s.Reason] = append(byReason[s.Reason], s.Alert.Name)
+		names = append(names, s.Alert.Name)
 	}
-	var parts []string
-	for _, reason := range []string{"cooldown", "budget"} {
-		names := byReason[reason]
-		if len(names) == 0 {
-			continue
-		}
-		switch reason {
-		case "cooldown":
-			parts = append(parts, fmt.Sprintf("%s (already investigated recently)", strings.Join(uniq(names), ", ")))
-		case "budget":
-			parts = append(parts, fmt.Sprintf("%s (too many at once)", strings.Join(uniq(names), ", ")))
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "ℹ️ Also firing, not investigated: " + strings.Join(parts, "; ") + "."
-}
-
-func rootOf(b alerts.Batch) string {
-	if len(b.Investigate) > 0 {
-		return b.Investigate[0].PostID
-	}
-	if len(b.Skipped) > 0 {
-		return b.Skipped[0].Alert.PostID
-	}
-	return ""
+	return fmt.Sprintf("ℹ️ %d more alert(s) fired in the same minute than I investigate at once: %s. "+
+		"Ask me about any of them directly.", len(skipped), strings.Join(uniq(names), ", "))
 }
 
 func uniq(in []string) []string {

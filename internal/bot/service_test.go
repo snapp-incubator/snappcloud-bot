@@ -30,6 +30,7 @@ func (f *fakeMM) CreatePost(_ context.Context, _, msg, rootID string) error {
 func (f *fakeMM) Typing(_ context.Context, _, _ string) {}
 
 type fakeBrain struct {
+	calls      int
 	called     bool
 	gotScope   authzclient.Scope
 	gotUser    string
@@ -40,6 +41,7 @@ type fakeBrain struct {
 }
 
 func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, user, query, history, _ string) (string, error) {
+	f.calls++
 	f.called = true
 	f.gotScope = scope
 	f.gotUser = user

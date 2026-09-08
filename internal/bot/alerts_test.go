@@ -155,3 +155,89 @@ func TestMarkingIsExplicitAboutBorrowedAccess(t *testing.T) {
 		}
 	}
 }
+
+// Alerts that fire together are usually one incident: one investigation, one
+// message. Investigating each separately would give several partial answers to
+// the same question and post one reply each — the noise the window exists to
+// prevent.
+func TestBatchIsOneInvestigationAndOneMessage(t *testing.T) {
+	mm := &fakeMM{email: ""}
+	b := &fakeBrain{answer: "node-3 lost its kubelet; everything else follows from that"}
+	scope := authzclient.Scope{"okd4-teh-1": {Namespaces: []string{"team-a"}, ClusterWide: true}}
+	svc, ch, _ := alertSvc(mm, b, &fakeResolver{scope: scope})
+	marked := ch.Mark("c1", "", "sre@snapp.cab")
+
+	mk := func(name, sev, post string) alerts.Alert {
+		a, _ := alerts.Parse(name+"\nseverity: "+sev+"\nnamespace: team-a\ncluster: okd4-teh-1", time.Now())
+		a.ChannelID, a.PostID = "c1", post
+		return a
+	}
+	batch := alerts.Batch{
+		ChannelID: "c1",
+		Investigate: []alerts.Alert{
+			mk("NodeNotReady", "critical", "post-1"),
+			mk("KubePodPending", "warning", "post-2"),
+			mk("TargetDown", "warning", "post-3"),
+		},
+		Context: []alerts.Alert{mk("KubeletDown", "critical", "post-0")},
+	}
+
+	if err := svc.Investigate(context.Background(), marked, batch); err != nil {
+		t.Fatal(err)
+	}
+
+	if b.calls != 1 {
+		t.Errorf("ran %d investigations for one batch, want 1", b.calls)
+	}
+	if len(mm.posted) != 1 {
+		t.Fatalf("posted %d messages for one batch, want 1: %v", len(mm.posted), mm.posted)
+	}
+
+	// Every alert must reach the prompt, and the context alert must be marked as
+	// context rather than presented as a thing to diagnose.
+	for _, want := range []string{"NodeNotReady", "KubePodPending", "TargetDown", "KubeletDown"} {
+		if !strings.Contains(b.gotQuery, want) {
+			t.Errorf("alert %q missing from the investigation", want)
+		}
+	}
+	if !strings.Contains(b.gotQuery, "one incident") {
+		t.Error("the prompt must ask whether these are one incident")
+	}
+	if !strings.Contains(b.gotQuery, "context only") {
+		t.Error("the cooling alert must be marked as context, not as a subject")
+	}
+	if !strings.Contains(b.gotQuery, "team-a") || !strings.Contains(b.gotQuery, "okd4-teh-1") {
+		t.Errorf("scope not carried into the investigation: %q", b.gotQuery)
+	}
+
+	// A finding about four alerts does not belong under one of their threads.
+	if mm.lastRoot != "" {
+		t.Errorf("multi-alert finding posted in thread %q, want a channel post", mm.lastRoot)
+	}
+	if !strings.Contains(mm.posted[0], "3 alerts fired together") {
+		t.Errorf("message does not say what it covers: %s", mm.posted[0])
+	}
+	if !strings.Contains(mm.posted[0], "KubeletDown") {
+		t.Errorf("context alerts not named in the message: %s", mm.posted[0])
+	}
+}
+
+// A lone alert keeps the nicer behaviour: answered in its own thread.
+func TestSingleAlertStillRepliesInItsThread(t *testing.T) {
+	mm := &fakeMM{email: ""}
+	b := &fakeBrain{answer: "pod X is filling the conntrack map"}
+	svc, ch, _ := alertSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	marked := ch.Mark("c1", "", "sre@snapp.cab")
+
+	a, _ := alerts.Parse(alertPost, time.Now())
+	a.ChannelID, a.PostID = "c1", "post-1"
+	if err := svc.Investigate(context.Background(), marked, alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}); err != nil {
+		t.Fatal(err)
+	}
+	if mm.lastRoot != "post-1" {
+		t.Errorf("single alert answered at %q, want its own thread", mm.lastRoot)
+	}
+	if strings.Contains(mm.posted[0], "fired together") {
+		t.Errorf("single alert described as a batch: %s", mm.posted[0])
+	}
+}

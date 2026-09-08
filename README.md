@@ -113,10 +113,14 @@ Three exemption classes:
   team's alert template can be anything. Investigations run with the **marking
   user's** authorization, resolved fresh each batch and never stored, and the
   bot says so publicly when the channel is marked: everyone in the channel sees
-  what that person can see. Noise is bounded three ways — a `window` collapses
-  bursts, a per-alert `cooldown` stops every Alertmanager repeat becoming a new
-  investigation, and `maxPerWindow` caps a storm, with the remainder listed
-  rather than dropped silently. `Watchdog`, resolved notifications and
+  what that person can see. **A window is investigated as one unit**: alerts that
+  fire together are usually one incident, so they go into a single investigation
+  that is asked whether they share a cause, and produce a single message. Alerts
+  still inside their `cooldown` ride along as context — what else is firing is
+  often what identifies the incident — without being re-diagnosed. Noise is
+  bounded by the `window`, the per-alert `cooldown` (a window with nothing new
+  produces no message at all), and `maxPerWindow`, which bounds the prompt with
+  anything over it listed rather than dropped silently. `Watchdog`, resolved notifications and
   below-`minSeverity` alerts are skipped; an alert with *no* recognisable
   severity is investigated rather than dropped.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and

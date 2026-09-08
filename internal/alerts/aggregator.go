@@ -17,8 +17,9 @@ type Limits struct {
 	// this long. Alertmanager re-sends a firing alert every repeat_interval;
 	// without this, every repeat is a fresh investigation (default 30m).
 	Cooldown time.Duration
-	// MaxPerWindow caps investigations per batch. Anything over the budget is
-	// listed, not investigated (default 3).
+	// MaxPerWindow caps how many alerts go into one investigation. Alerts in a
+	// window are usually one incident, so they are investigated TOGETHER; this
+	// bounds the prompt, not the number of investigations (default 10).
 	MaxPerWindow int
 	// IgnoredAlerts are alert names never investigated (Watchdog and friends,
 	// which fire forever by design).
@@ -36,7 +37,7 @@ func (l *Limits) applyDefaults() {
 		l.Cooldown = 30 * time.Minute
 	}
 	if l.MaxPerWindow <= 0 {
-		l.MaxPerWindow = 3
+		l.MaxPerWindow = 10
 	}
 	if len(l.IgnoredAlerts) == 0 {
 		l.IgnoredAlerts = []string{"Watchdog", "InfoInhibitor", "DeadMansSwitch"}
@@ -46,14 +47,40 @@ func (l *Limits) applyDefaults() {
 	}
 }
 
-// Batch is one window's worth of alerts, already collapsed.
+// Batch is one window's worth of alerts, already collapsed. It is investigated
+// as a UNIT: alerts that fire together are usually one incident (a node goes
+// down, and pods, endpoints, quota and ingress all alert about it), and looking
+// at them separately produces several partial answers to one question — plus
+// one message each, which is the noise the window exists to prevent.
 type Batch struct {
 	ChannelID string
-	// Investigate are the alerts to actually look into, worst first.
+	// Investigate are the alerts this batch is about, worst first.
 	Investigate []Alert
-	// Skipped are alerts that fired but were not investigated, with the reason,
-	// so the channel can be told rather than left wondering.
+	// Context are alerts that fired but are still inside their cooldown. They
+	// are NOT the subject of the investigation, but they are handed to it
+	// anyway: knowing what else is firing is often what identifies the incident.
+	Context []Alert
+	// Skipped are alerts left out entirely (over the per-batch cap), so the
+	// channel can be told rather than left wondering.
 	Skipped []Skipped
+}
+
+// Alerts returns every alert in the batch, subjects first, for rendering.
+func (b Batch) Alerts() []Alert {
+	out := make([]Alert, 0, len(b.Investigate)+len(b.Context))
+	out = append(out, b.Investigate...)
+	out = append(out, b.Context...)
+	return out
+}
+
+// Root returns the thread to reply in: the alert's own thread when the batch is
+// a single alert, and "" (a new channel post) when it covers several, since a
+// finding about five alerts does not belong under one of them.
+func (b Batch) Root() string {
+	if len(b.Investigate) == 1 && len(b.Context) == 0 {
+		return b.Investigate[0].PostID
+	}
+	return ""
 }
 
 // Skipped is an alert that was not investigated, and why.
@@ -163,18 +190,22 @@ func (a *Aggregator) Due(now time.Time) []Batch {
 
 		for _, p := range ordered {
 			fp := p.alert.Fingerprint()
-			if last, ok := a.lastRun[fp]; ok && now.Sub(last) < a.limits.Cooldown {
-				batch.Skipped = append(batch.Skipped, Skipped{Alert: p.alert, Reason: "cooldown"})
+			if len(batch.Investigate)+len(batch.Context) >= a.limits.MaxPerWindow {
+				batch.Skipped = append(batch.Skipped, Skipped{Alert: p.alert, Reason: "budget"})
 				continue
 			}
-			if len(batch.Investigate) >= a.limits.MaxPerWindow {
-				batch.Skipped = append(batch.Skipped, Skipped{Alert: p.alert, Reason: "budget"})
+			// Inside its cooldown: not worth investigating again on its own, but
+			// worth knowing about while investigating whatever else is firing.
+			if last, ok := a.lastRun[fp]; ok && now.Sub(last) < a.limits.Cooldown {
+				batch.Context = append(batch.Context, p.alert)
 				continue
 			}
 			a.lastRun[fp] = now
 			batch.Investigate = append(batch.Investigate, p.alert)
 		}
-		if len(batch.Investigate) > 0 || len(batch.Skipped) > 0 {
+		// A window with nothing new is not worth a message: every alert in it has
+		// been investigated recently and the channel already has that answer.
+		if len(batch.Investigate) > 0 {
 			out = append(out, batch)
 		}
 	}
