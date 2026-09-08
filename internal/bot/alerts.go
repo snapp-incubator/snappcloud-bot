@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -189,11 +188,11 @@ func batchQuery(b alerts.Batch) string {
 		q.WriteString("This alert just fired. Investigate it on the cluster and report: what is actually " +
 			"happening (with the evidence you found), the root cause, and how to fix it.")
 	} else {
-		q.WriteString(fmt.Sprintf("These %d alerts fired within the same minute. Alerts that fire together are "+
+		fmt.Fprintf(&q, "These %d alerts fired within the same minute. Alerts that fire together are "+
 			"usually symptoms of ONE incident, so investigate them as a whole and report: what is actually "+
 			"happening (with the evidence you found); whether this is one incident or several, mapping each alert "+
 			"to its cause; the root cause; and how to fix it. If some alerts are unrelated to the rest, say so "+
-			"and treat them separately rather than forcing one story.", len(b.Investigate)))
+			"and treat them separately rather than forcing one story.", len(b.Investigate))
 	}
 	q.WriteString(" If an alert's text suggests a remedy, say whether it addresses the cause or only clears the " +
 		"symptom. If you cannot determine the cause, say what you checked and what you would need.\n\n")
@@ -204,7 +203,7 @@ func batchQuery(b alerts.Batch) string {
 
 	q.WriteString("Alerts:\n")
 	for i, a := range b.Investigate {
-		q.WriteString(fmt.Sprintf("\n%d. %s\n", i+1, a.Describe()))
+		fmt.Fprintf(&q, "\n%d. %s\n", i+1, a.Describe())
 	}
 	if len(b.Context) > 0 {
 		q.WriteString("\nAlso firing right now, already investigated recently — context only, do not re-diagnose " +
@@ -279,5 +278,3 @@ func uniq(in []string) []string {
 func human(d time.Duration) string {
 	return strings.TrimSuffix(strings.TrimSuffix(d.String(), "0s"), "0m")
 }
-
-var errNoAlertSupport = errors.New("alert watching is not enabled")
