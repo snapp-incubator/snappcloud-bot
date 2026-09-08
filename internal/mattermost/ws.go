@@ -26,11 +26,63 @@ type Post struct {
 	// top-level post.
 	RootID string `json:"root_id"`
 
+	// Props carries the post's attachments. Alertmanager and Grafana webhooks
+	// often put the alert in an attachment rather than the message body, so the
+	// message alone can be empty for a perfectly good alert.
+	Props map[string]any `json:"props"`
+
 	// ChannelType is the event's channel_type: "D" direct, "G" group, "O" open,
 	// "P" private.
 	ChannelType string `json:"-"`
 	// Mentioned is true when the bot's user id is in the event's mentions.
 	Mentioned bool `json:"-"`
+}
+
+// AlertText returns everything an alert could be written in: the message plus
+// any attachment title, text, and fields. Webhooks split the alert across these
+// inconsistently, so all of it is handed to the parser.
+func (p Post) AlertText() string {
+	var b strings.Builder
+	b.WriteString(p.Message)
+	for _, att := range p.attachments() {
+		for _, key := range []string{"pretext", "title", "text", "fallback"} {
+			if v, ok := att[key].(string); ok && strings.TrimSpace(v) != "" {
+				b.WriteString("\n" + v)
+			}
+		}
+		fields, _ := att["fields"].([]any)
+		for _, f := range fields {
+			fm, ok := f.(map[string]any)
+			if !ok {
+				continue
+			}
+			title, _ := fm["title"].(string)
+			value := fmt.Sprintf("%v", fm["value"])
+			if strings.TrimSpace(title) == "" && strings.TrimSpace(value) == "" {
+				continue
+			}
+			b.WriteString("\n" + strings.TrimSpace(title) + ": " + strings.TrimSpace(value))
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (p Post) attachments() []map[string]any {
+	raw, ok := p.Props["attachments"]
+	if !ok {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, a := range list {
+		if m, ok := a.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // IsDirect reports whether the post is in a direct (1:1) message channel.

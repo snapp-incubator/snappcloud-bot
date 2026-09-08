@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
@@ -55,6 +56,8 @@ type Service struct {
 	requireMention bool
 	limiter        *RateLimiter
 	sched          *schedule.Store
+	alertChannels  *alerts.Channels
+	alertAgg       *alerts.Aggregator
 	maxQueryRunes  int
 	log            *slog.Logger
 }
@@ -77,6 +80,10 @@ type Options struct {
 	Limiter *RateLimiter
 	// Schedules enables user-defined recurring queries. Nil disables the feature.
 	Schedules *schedule.Store
+	// AlertChannels and AlertAggregator enable investigating alerts posted in
+	// marked channels. Both nil disables the feature.
+	AlertChannels   *alerts.Channels
+	AlertAggregator *alerts.Aggregator
 }
 
 // New builds the orchestration service.
@@ -99,6 +106,8 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		requireMention: o.RequireMention,
 		limiter:        limiter,
 		sched:          o.Schedules,
+		alertChannels:  o.AlertChannels,
+		alertAgg:       o.AlertAggregator,
 		maxQueryRunes:  maxQ,
 		log:            log,
 	}
@@ -135,6 +144,21 @@ const maxTranscriptRunes = 6000
 
 // OnPost handles one incoming Mattermost post.
 func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
+	// An unaddressed post in a channel marked for alerts is an ALERT, not a
+	// question — but only when it comes from an account with no SSO identity, a
+	// webhook or integration. That is what separates an Alertmanager
+	// notification from a person talking in the same channel, and it holds for
+	// any alert format, which is what makes format differences between teams a
+	// non-issue here.
+	if !p.IsDirect() && !p.Mentioned && !s.textMentionsBot(p.Message) && s.isAlertChannel(p.ChannelID) {
+		if s.senderIsUnattributed(ctx, p) {
+			if s.ingestAlert(p) {
+				metrics.Messages.WithLabelValues("alert").Inc()
+				return nil
+			}
+		}
+	}
+
 	// Answer every direct message; in channels, only when @-mentioned.
 	//
 	// The mention is detected two ways because the event's mention list is a
@@ -231,6 +255,14 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 			s.replyTo(ctx, p, reply)
 			return nil
 		}
+	}
+
+	// Alert-channel commands, likewise: they configure the channel rather than
+	// asking a question.
+	if handled, reply := s.alertCommand(identity, p, query); handled {
+		outcome = "alert_command"
+		s.replyTo(ctx, p, reply)
+		return nil
 	}
 
 	// 2. Authorize across all regions (via the per-region mcp-authz APIs).
@@ -337,6 +369,31 @@ func looksLikeCode(s string) bool {
 // a fallback for senders whose posts carry no mention metadata (other bots,
 // webhooks, integrations). Case-insensitive, and the mention must be followed by
 // a word boundary so "@cloud-bot-staging" does not match "@cloud-bot".
+// isAlertChannel reports whether the channel is marked for alert investigation.
+func (s *Service) isAlertChannel(channelID string) bool {
+	if s.alertChannels == nil {
+		return false
+	}
+	_, ok := s.alertChannels.Get(channelID)
+	return ok
+}
+
+// senderIsUnattributed reports whether a post came from an account with no SSO
+// identity — a webhook or integration. Those are the alert sources: they have
+// no user to authorize, which is exactly why an alert channel borrows the
+// identity of whoever marked it.
+func (s *Service) senderIsUnattributed(ctx context.Context, p mattermost.Post) bool {
+	user, err := s.mm.GetUser(ctx, p.UserID)
+	if err != nil {
+		// Webhook posts can carry a user id the API will not resolve. Treat the
+		// lookup failure as "no identity", which is what it means here.
+		s.log.Debug("alert sender lookup failed; treating as webhook",
+			"channel", p.ChannelID, "user", p.UserID, "err", err)
+		return true
+	}
+	return s.resolveIdentity(user.Email) == ""
+}
+
 func (s *Service) textMentionsBot(msg string) bool {
 	if s.botUsername == "" {
 		return false

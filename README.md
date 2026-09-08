@@ -100,6 +100,20 @@ Three exemption classes:
   crowds out interactive users, and disabled automatically after repeated
   failures. **Authorization is resolved at run time, never stored**: a schedule
   cannot outlive the access it was created with.
+- **Alert channels.** A user says `alerts on` in a channel where Alertmanager
+  posts; from then on every post from a **webhook or integration account** (one
+  with no SSO identity) is treated as an alert, investigated, and answered as a
+  reply in the alert's own thread. Humans talking in the same channel are
+  unaffected — the discriminator is the author, not the message shape, so a
+  team's alert template can be anything. Investigations run with the **marking
+  user's** authorization, resolved fresh each batch and never stored, and the
+  bot says so publicly when the channel is marked: everyone in the channel sees
+  what that person can see. Noise is bounded three ways — a `window` collapses
+  bursts, a per-alert `cooldown` stops every Alertmanager repeat becoming a new
+  investigation, and `maxPerWindow` caps a storm, with the remainder listed
+  rather than dropped silently. `Watchdog`, resolved notifications and
+  below-`minSeverity` alerts are skipped; an alert with *no* recognisable
+  severity is investigated rather than dropped.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
   replayed for context; persisted to a file (`memory.memoryPath`, a PVC) so it
   survives restarts.
@@ -191,6 +205,10 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_schedule_runs_total` | `outcome` | scheduled runs: `ok` / `error` / `skipped` (owner lost access) |
 | `snappcloud_bot_schedule_run_duration_seconds`, `_schedule_runs_in_flight` | — | scheduled run latency and worker-pool saturation |
 | `snappcloud_bot_schedules_disabled_total` | — | schedules dropped after repeated failures |
+| `snappcloud_bot_alert_channels`, `_alerts_pending` | — | watched channels; alerts buffered in open windows |
+| `snappcloud_bot_alerts_received_total` | `disposition` | `queued` / `duplicate` / `cooldown` / `ignored` / `resolved` / `low_severity` — shows whether noise suppression is working |
+| `snappcloud_bot_alert_investigations_total` | `outcome` | `ok` / `error` / `empty` / `unauthorized` |
+| `snappcloud_bot_alert_investigation_duration_seconds` | — | investigation latency |
 | `snappcloud_bot_active_conversations`, `_messages_in_flight`, `_handler_panics_total` | — | live state |
 
 Dashboard: `core/dashboards/Network/SnappCloudBot`. Alerts:

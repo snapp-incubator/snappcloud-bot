@@ -152,6 +152,39 @@ var (
 		Help: "Scheduled runs executing right now.",
 	})
 
+	// AlertChannels is the number of channels marked for alert investigation.
+	AlertChannels = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "alert_channels",
+		Help: "Channels marked for alert investigation.",
+	})
+
+	// AlertsReceived counts alerts seen in marked channels by what happened to
+	// them: queued, duplicate, cooldown, ignored, resolved, low_severity. This
+	// is the metric that shows whether noise suppression is working.
+	AlertsReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "alerts_received_total",
+		Help: "Alerts seen in watched channels by disposition.",
+	}, []string{"disposition"})
+
+	// AlertsPending is the number of alerts buffered in open windows.
+	AlertsPending = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "alerts_pending",
+		Help: "Alerts buffered in open aggregation windows.",
+	})
+
+	// AlertInvestigations counts investigations by outcome.
+	AlertInvestigations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "alert_investigations_total",
+		Help: "Alert investigations by outcome (ok, error, empty, unauthorized).",
+	}, []string{"outcome"})
+
+	// AlertInvestigationDuration is end-to-end investigation latency.
+	AlertInvestigationDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: ns, Name: "alert_investigation_duration_seconds",
+		Help:    "Duration of one alert investigation.",
+		Buckets: []float64{5, 10, 30, 60, 120, 300},
+	})
+
 	// ActiveConversations is the number of live conversation transcripts held.
 	ActiveConversations = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "active_conversations",
@@ -180,6 +213,7 @@ var registry = func() *prometheus.Registry {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
+		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
 		ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
@@ -226,7 +260,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{
 		"answered", "denied", "unauthorized", "backend_error", "agent_error",
 		"rate_limited", "too_long", "empty_answer", "refreshed", "ignored",
-		"schedule_command", "scheduled",
+		"schedule_command", "scheduled", "alert", "alert_command",
 	} {
 		Messages.WithLabelValues(o)
 	}
@@ -235,6 +269,12 @@ func Init(clusters, regions []string) {
 	}
 	for _, o := range []string{"ok", "error", "skipped"} {
 		ScheduleRuns.WithLabelValues(o)
+	}
+	for _, o := range []string{"ok", "error", "empty", "unauthorized"} {
+		AlertInvestigations.WithLabelValues(o)
+	}
+	for _, d := range []string{"queued", "duplicate", "cooldown", "ignored", "resolved", "low_severity"} {
+		AlertsReceived.WithLabelValues(d)
 	}
 	for _, o := range []string{"ok", "error"} {
 		LLMRequests.WithLabelValues(o)

@@ -22,6 +22,7 @@ type Config struct {
 	Limits     Limits     `yaml:"limits"`
 	API        API        `yaml:"api"`
 	Schedules  Schedules  `yaml:"schedules"`
+	Alerts     Alerts     `yaml:"alerts"`
 }
 
 // Schedules configures user-defined recurring queries. Each one costs an LLM
@@ -48,6 +49,39 @@ type Schedules struct {
 	// interactive users (default 2).
 	Concurrency int `yaml:"concurrency"`
 	// Timeout bounds one scheduled run (default 5m).
+	Timeout string `yaml:"timeout"`
+}
+
+// Alerts configures investigating Alertmanager notifications posted in marked
+// channels. Every investigation costs an LLM run plus MCP calls, and an alert
+// storm is exactly when the cluster can least afford extra load, so the noise
+// limits are the important part.
+type Alerts struct {
+	// Enabled turns the feature on (default false).
+	Enabled bool `yaml:"enabled"`
+	// Path persists which channels are marked (put it on the PVC).
+	Path string `yaml:"path"`
+	// Window buffers alerts before processing, so a burst becomes one batch
+	// (default 1m).
+	Window string `yaml:"window"`
+	// Cooldown suppresses re-investigating the same alert. Alertmanager re-sends
+	// a firing alert every repeat_interval; without this every repeat is a fresh
+	// investigation (default 30m).
+	Cooldown string `yaml:"cooldown"`
+	// MaxPerWindow caps investigations per batch; the rest are listed, not
+	// investigated (default 3).
+	MaxPerWindow int `yaml:"maxPerWindow"`
+	// MinSeverity is the least severe level worth investigating (default
+	// "warning"). An alert whose severity is missing or unrecognised is always
+	// investigated: silently dropping a team whose template differs is worse
+	// than one extra investigation.
+	MinSeverity string `yaml:"minSeverity"`
+	// IgnoredAlerts are alert names never investigated (Watchdog and friends,
+	// which fire forever by design).
+	IgnoredAlerts []string `yaml:"ignoredAlerts"`
+	// Concurrency caps simultaneous investigations (default 2).
+	Concurrency int `yaml:"concurrency"`
+	// Timeout bounds one investigation (default 5m).
 	Timeout string `yaml:"timeout"`
 }
 

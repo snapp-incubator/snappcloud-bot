@@ -21,6 +21,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
+	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
 	"github.com/snapp-incubator/snappcloud-bot/internal/api"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bot"
@@ -159,6 +160,30 @@ func run(configPath, addr string, log *slog.Logger) error {
 		metrics.ScheduleLimit.Set(float64(schedStore.Limits().Total))
 	}
 
+	// Alert channels: Alertmanager notifications posted by a webhook are
+	// investigated with the authorization of whoever marked the channel.
+	var alertChannels *alerts.Channels
+	var alertAgg *alerts.Aggregator
+	if cfg.Alerts.Enabled {
+		window, err := optDuration(cfg.Alerts.Window)
+		if err != nil {
+			return fmt.Errorf("parse alerts.window: %w", err)
+		}
+		cooldown, err := optDuration(cfg.Alerts.Cooldown)
+		if err != nil {
+			return fmt.Errorf("parse alerts.cooldown: %w", err)
+		}
+		alertChannels = alerts.NewChannels(cfg.Alerts.Path)
+		alertAgg = alerts.NewAggregator(alerts.Limits{
+			Window:        window,
+			Cooldown:      cooldown,
+			MaxPerWindow:  cfg.Alerts.MaxPerWindow,
+			MinSeverity:   cfg.Alerts.MinSeverity,
+			IgnoredAlerts: cfg.Alerts.IgnoredAlerts,
+		})
+		metrics.AlertChannels.Set(float64(alertChannels.Count()))
+	}
+
 	// One limiter shared by Mattermost and the HTTP API: a caller cannot bypass
 	// their budget by switching entrypoint.
 	limiter := bot.NewRateLimiter(cfg.Limits.RatePerMin, cfg.Limits.RateBurst)
@@ -174,6 +199,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 		MaxQueryRunes:   cfg.Limits.MaxQueryRunes,
 		Limiter:         limiter,
 		Schedules:       schedStore,
+		AlertChannels:   alertChannels,
+		AlertAggregator: alertAgg,
 	}, log)
 	go svc.StartSweeper(ctx)
 
@@ -194,6 +221,22 @@ func run(configPath, addr string, log *slog.Logger) error {
 		log.Info("schedules enabled", "stored", schedStore.Count(),
 			"perUser", schedStore.Limits().PerUser, "total", schedStore.Limits().Total,
 			"minInterval", schedStore.Limits().MinInterval, "timezone", schedStore.Location())
+	}
+
+	if alertAgg != nil {
+		timeout, err := optDuration(cfg.Alerts.Timeout)
+		if err != nil {
+			return fmt.Errorf("parse alerts.timeout: %w", err)
+		}
+		runner := alerts.NewRunner(alertAgg, alertChannels, svc, alerts.RunnerOptions{
+			Concurrency: cfg.Alerts.Concurrency,
+			Timeout:     timeout,
+		}, log)
+		go runner.Start(ctx)
+		lim := alertAgg.Limits()
+		log.Info("alert channels enabled", "watched", alertChannels.Count(),
+			"window", lim.Window, "cooldown", lim.Cooldown, "maxPerWindow", lim.MaxPerWindow,
+			"minSeverity", lim.MinSeverity)
 	}
 
 	go serveHealth(ctx, addr, log)
@@ -413,4 +456,12 @@ func newLogger(level string) *slog.Logger {
 		lv = slog.LevelInfo
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
+}
+
+// optDuration parses an optional duration string; empty means "use the default".
+func optDuration(s string) (time.Duration, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(s)
 }
