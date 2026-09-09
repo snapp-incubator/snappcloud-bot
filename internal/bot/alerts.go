@@ -69,9 +69,9 @@ func (s *Service) alertStatus(p mattermost.Post) string {
 		human(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "))
 }
 
-// ingestAlert buffers a post from a marked channel. It is called for posts by
-// accounts with no SSO identity — webhooks and integrations — which is what
-// separates an alert from someone talking in the same channel.
+// ingestAlert buffers a post from a marked channel. It is called for posts
+// produced by an integration, which is what separates an alert from someone
+// talking in the same channel.
 func (s *Service) ingestAlert(p mattermost.Post) bool {
 	if s.alertChannels == nil || s.alertAgg == nil {
 		return false
@@ -91,7 +91,8 @@ func (s *Service) ingestAlert(p mattermost.Post) bool {
 	metrics.AlertsReceived.WithLabelValues(outcomeLabel(accepted, reason)).Inc()
 	metrics.AlertsPending.Set(float64(s.alertAgg.Pending()))
 	s.log.Debug("alert ingested", "channel", p.ChannelID, "alert", a.Name,
-		"severity", a.Severity, "accepted", accepted, "reason", reason)
+		"severity", a.Severity, "source", p.IntegrationName(),
+		"accepted", accepted, "reason", reason)
 	return true
 }
 

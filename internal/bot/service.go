@@ -145,13 +145,13 @@ const maxTranscriptRunes = 6000
 // OnPost handles one incoming Mattermost post.
 func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// An unaddressed post in a channel marked for alerts is an ALERT, not a
-	// question — but only when it comes from an account with no SSO identity, a
-	// webhook or integration. That is what separates an Alertmanager
-	// notification from a person talking in the same channel, and it holds for
-	// any alert format, which is what makes format differences between teams a
-	// non-issue here.
+	// question — when the POST was produced by an integration (Mattermost marks
+	// it on the post itself) rather than typed by a person. That separates an
+	// Alertmanager notification from someone talking in the same channel, and it
+	// holds for any alert format, which is what makes the differences between
+	// teams' templates a non-issue here.
 	if !p.IsDirect() && !p.Mentioned && !s.textMentionsBot(p.Message) && s.isAlertChannel(p.ChannelID) {
-		if s.senderIsUnattributed(ctx, p) {
+		if s.postIsFromAlertSource(ctx, p) {
 			if s.ingestAlert(p) {
 				metrics.Messages.WithLabelValues("alert").Inc()
 				return nil
@@ -387,16 +387,24 @@ func (s *Service) isAlertChannel(channelID string) bool {
 	return ok
 }
 
-// senderIsUnattributed reports whether a post came from an account with no SSO
-// identity — a webhook or integration. Those are the alert sources: they have
-// no user to authorize, which is exactly why an alert channel borrows the
-// identity of whoever marked it.
-func (s *Service) senderIsUnattributed(ctx context.Context, p mattermost.Post) bool {
+// postIsFromAlertSource reports whether a post was produced by an integration
+// rather than typed by a person.
+//
+// The post's own props decide it. Judging by the AUTHOR does not work: an
+// incoming webhook posts under the account of whoever created it, so an
+// Alertmanager integration set up by an engineer arrives carrying that
+// engineer's identity, and every alert would be mistaken for them talking. The
+// author is still consulted as a fallback for integrations that set no props
+// and have no SSO identity of their own.
+func (s *Service) postIsFromAlertSource(ctx context.Context, p mattermost.Post) bool {
+	if p.FromIntegration() {
+		return true
+	}
 	user, err := s.mm.GetUser(ctx, p.UserID)
 	if err != nil {
-		// Webhook posts can carry a user id the API will not resolve. Treat the
-		// lookup failure as "no identity", which is what it means here.
-		s.log.Debug("alert sender lookup failed; treating as webhook",
+		// Some integrations post under an id the API will not resolve. A lookup
+		// failure means there is no identity here, which is the same conclusion.
+		s.log.Debug("alert sender lookup failed; treating as an integration",
 			"channel", p.ChannelID, "user", p.UserID, "err", err)
 		return true
 	}

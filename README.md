@@ -106,11 +106,14 @@ Three exemption classes:
   failures. **Authorization is resolved at run time, never stored**: a schedule
   cannot outlive the access it was created with.
 - **Alert channels.** A user says `alerts on` in a channel where Alertmanager
-  posts; from then on every post from a **webhook or integration account** (one
-  with no SSO identity) is treated as an alert, investigated, and answered as a
-  reply in the alert's own thread. Humans talking in the same channel are
-  unaffected — the discriminator is the author, not the message shape, so a
-  team's alert template can be anything. Investigations run with the **marking
+  posts; from then on every post **produced by an integration** is treated as an
+  alert, investigated, and answered in the channel. Humans talking there are
+  unaffected — the discriminator is Mattermost's own marking of the post
+  (`from_webhook`, `from_bot`, an overridden username), not the message shape, so
+  a team's alert template can be anything. Note this is a property of the POST,
+  not the author: an incoming webhook posts under the account of whoever created
+  it, so an Alertmanager integration set up by an engineer carries that
+  engineer's identity and would otherwise look like them talking. Investigations run with the **marking
   user's** authorization, resolved fresh each batch and never stored, and the
   bot says so publicly when the channel is marked: everyone in the channel sees
   what that person can see. **A window is investigated as one unit**: alerts that

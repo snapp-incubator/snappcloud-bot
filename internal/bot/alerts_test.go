@@ -241,3 +241,62 @@ func TestSingleAlertStillRepliesInItsThread(t *testing.T) {
 		t.Errorf("single alert described as a batch: %s", mm.posted[0])
 	}
 }
+
+// The real case: Alertmanager posts through an INCOMING WEBHOOK created by an
+// engineer, so the post carries that engineer's user id and a working SSO
+// email. Judging by the author would file every alert as "a person talking" and
+// ignore it. Mattermost marks the post itself, which is what decides.
+func TestIntegrationPostFromARealUsersAccountIsAnAlert(t *testing.T) {
+	mm := &fakeMM{email: "mohamad.shirkhodaei@snapp.cab"} // a real, resolvable identity
+	b := &fakeBrain{answer: "ok"}
+	svc, ch, agg := alertSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	ch.Mark("c1", "", "sre@snapp.cab")
+
+	p := mattermost.Post{
+		UserID: "u-mohamad", ChannelID: "c1", ChannelType: "O", Message: alertPost,
+		Props: map[string]any{
+			"from_webhook":      "true",
+			"override_username": "Alertmanager",
+		},
+	}
+	if err := svc.OnPost(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if agg.Pending() != 1 {
+		t.Fatalf("integration post was not ingested as an alert: %d pending", agg.Pending())
+	}
+	if b.called {
+		t.Error("answered inline instead of batching")
+	}
+}
+
+// A bot account posting alerts is the same story.
+func TestBotAccountPostIsAnAlert(t *testing.T) {
+	mm := &fakeMM{email: "someone@snapp.cab"}
+	svc, ch, agg := alertSvc(mm, &fakeBrain{}, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	ch.Mark("c1", "", "sre@snapp.cab")
+
+	p := mattermost.Post{
+		UserID: "u-bot", ChannelID: "c1", ChannelType: "O", Message: alertPost,
+		Props: map[string]any{"from_bot": true}, // real bool, not the webhook's string
+	}
+	_ = svc.OnPost(context.Background(), p)
+	if agg.Pending() != 1 {
+		t.Errorf("bot post not ingested: %d pending", agg.Pending())
+	}
+}
+
+// The same engineer TYPING in that channel must still be treated as a person —
+// their messages carry none of those props.
+func TestTheIntegrationOwnerTypingIsStillAPerson(t *testing.T) {
+	mm := &fakeMM{email: "mohamad.shirkhodaei@snapp.cab"}
+	svc, ch, agg := alertSvc(mm, &fakeBrain{}, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	ch.Mark("c1", "", "sre@snapp.cab")
+
+	p := mattermost.Post{UserID: "u-mohamad", ChannelID: "c1", ChannelType: "O",
+		Message: "I restarted the agent, watching it now"}
+	_ = svc.OnPost(context.Background(), p)
+	if agg.Pending() != 0 {
+		t.Errorf("a person's message was ingested as an alert: %d pending", agg.Pending())
+	}
+}
