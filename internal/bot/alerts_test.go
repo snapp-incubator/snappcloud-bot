@@ -323,3 +323,42 @@ func TestMarkingReplyRendersDurationsReadably(t *testing.T) {
 		t.Errorf("window not rendered as 1m: %s", reply)
 	}
 }
+
+// The status line described the old behaviour ("at most N investigations per
+// window") after a window became ONE investigation. Wrong copy about what the
+// bot will do is worse than terse copy.
+func TestAlertTextsDescribeBatchedBehaviour(t *testing.T) {
+	mm := &fakeMM{email: "sre@snapp.cab"}
+	ch := alerts.NewChannels("")
+	agg := alerts.NewAggregator(alerts.Limits{Window: time.Minute, Cooldown: 30 * time.Minute,
+		MaxPerWindow: 10, MinSeverity: "warning"})
+	svc := New(mm, &fakeBrain{}, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}},
+		Options{ConversationTTL: time.Hour, BotUsername: "snappbot", RequireMention: true,
+			AlertChannels: ch, AlertAggregator: agg},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	post := mattermost.Post{ChannelID: "c1", ChannelType: "O"}
+
+	_, on := svc.alertCommand("sre@snapp.cab", post, "alerts on")
+	_, status := svc.alertCommand("sre@snapp.cab", post, "alerts status")
+
+	for _, s := range []string{on, status} {
+		if strings.Contains(s, "investigations per window") {
+			t.Errorf("still claims several investigations per window: %s", s)
+		}
+		if strings.Contains(s, "0s") || strings.Contains(s, "0m0s") {
+			t.Errorf("raw Go duration leaked into user text: %s", s)
+		}
+	}
+	if !strings.Contains(on, "together") || !strings.Contains(on, "one message") {
+		t.Errorf("marking reply does not say alerts are investigated together: %s", on)
+	}
+	if !strings.Contains(status, "One investigation per 1m") {
+		t.Errorf("status does not state the batching: %s", status)
+	}
+	// The limits quoted must be the configured ones, not hard-coded prose.
+	for _, want := range []string{"10", "30m", "warning", "Watchdog"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status omits %q: %s", want, status)
+		}
+	}
+}

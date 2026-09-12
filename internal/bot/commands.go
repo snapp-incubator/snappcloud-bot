@@ -52,13 +52,13 @@ func helpText(schedules, alerts bool) string {
 	b.WriteString("```text\nwhy are the pods in my-namespace on teh-1 crashing?\nare packets being dropped for my-namespace on teh-1?\nis my-namespace hitting its quota?\n```\n")
 
 	b.WriteString("\n**Your access**\n")
-	b.WriteString("| command | what it does |\n| --- | --- |\n")
+	b.WriteString("| Command | What it does |\n| --- | --- |\n")
 	b.WriteString("| `what access do I have?` | the clusters and namespaces I can look at for you |\n")
-	b.WriteString("| `refresh` | re-check your access now, after it was just changed |\n")
+	b.WriteString("| `refresh` | re-check your access now, if it was just changed |\n")
 
 	if schedules {
 		b.WriteString("\n**Recurring checks**\n")
-		b.WriteString("| command | what it does |\n| --- | --- |\n")
+		b.WriteString("| Command | What it does |\n| --- | --- |\n")
 		b.WriteString("| `schedule every day at 09:00 <question>` | ask a question on a schedule |\n")
 		b.WriteString("| `schedule every 12h starting at 08:00 <question>` | …choosing when it first runs |\n")
 		b.WriteString("| `schedules` | list yours, with ids and next run |\n")
@@ -66,11 +66,11 @@ func helpText(schedules, alerts bool) string {
 	}
 
 	if alerts {
-		b.WriteString("\n**Alert channels** (run these in the channel where alerts arrive)\n")
-		b.WriteString("| command | what it does |\n| --- | --- |\n")
-		b.WriteString("| `alerts on` | investigate alerts posted here, using YOUR access |\n")
-		b.WriteString("| `alerts off` | stop |\n")
-		b.WriteString("| `alerts status` | who it runs as, and the current limits |\n")
+		b.WriteString("\n**Alert channels** — run these in the channel where your alerts arrive\n")
+		b.WriteString("| Command | What it does |\n| --- | --- |\n")
+		b.WriteString("| `alerts on` | investigate alerts posted here, using **your** access |\n")
+		b.WriteString("| `alerts off` | stop investigating alerts here |\n")
+		b.WriteString("| `alerts status` | whose access it uses, and the current limits |\n")
 	}
 
 	b.WriteString("\nIn a channel, @-mention me. In a direct message, just write.")
@@ -109,4 +109,15 @@ func alertVerb(cmd string) (verb string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// capitalize upper-cases the first letter, so an error written as a sentence
+// fragment ("that is too frequent") reads as a sentence when shown to a user.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = []rune(strings.ToUpper(string(r[0])))[0]
+	return string(r)
 }

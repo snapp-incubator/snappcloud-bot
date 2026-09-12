@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 	"github.com/snapp-incubator/snappcloud-bot/internal/schedule"
@@ -14,6 +15,11 @@ import (
 // scheduleCommand handles the schedule sub-commands. It returns handled=false
 // when the message is an ordinary question, so normal flow continues.
 func (s *Service) scheduleCommand(identity string, p mattermost.Post, query string) (bool, string) {
+	// Guarded at the call site too, but not relying on that keeps the two
+	// command handlers symmetric and a nil store from panicking a message.
+	if s.sched == nil {
+		return false, ""
+	}
 	low := normalizeCommand(query)
 
 	switch {
@@ -62,7 +68,7 @@ func (s *Service) addSchedule(identity string, p mattermost.Post, rest string) s
 			"`schedule every day at 09:00 are any pods failing?`"
 	}
 	if len([]rune(q)) > s.maxQueryRunes {
-		return msgTooLong
+		return fmt.Sprintf(msgTooLongFmt, len([]rune(q))-s.maxQueryRunes, s.maxQueryRunes)
 	}
 
 	e.User = identity
@@ -74,7 +80,7 @@ func (s *Service) addSchedule(identity string, p mattermost.Post, rest string) s
 	e.Query = q
 
 	if err := s.sched.Add(e); err != nil {
-		return "🚫 " + err.Error() + "."
+		return "🚫 " + capitalize(err.Error()) + "."
 	}
 	s.observeSchedules()
 	return fmt.Sprintf("⏰ Scheduled **%s**: %q\nFirst run %s. Say `schedules` to list, `unschedule %s` to remove.",
@@ -97,14 +103,14 @@ func (s *Service) renderSchedules(identity string) string {
 			"`schedule every day at 09:00 <your question>`."
 	}
 	var b strings.Builder
-	b.WriteString("**Your schedules**\n\n| id | when | next | question |\n| --- | --- | --- | --- |\n")
+	b.WriteString("**Your schedules**\n\n| ID | When | Next run | Question |\n| --- | --- | --- | --- |\n")
 	for _, e := range list {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n",
 			e.ID, e.Spec, s.sched.FormatWhen(e.Next), e.Query)
 	}
 	lim := s.sched.Limits()
 	fmt.Fprintf(&b, "\nRemove one with `unschedule <id>`. Limits: %d per user, no more often than every %s.",
-		lim.PerUser, lim.MinInterval)
+		lim.PerUser, humanize.Duration(lim.MinInterval))
 	return b.String()
 }
 

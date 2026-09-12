@@ -28,7 +28,7 @@ func (s *Service) alertCommand(identity string, p mattermost.Post, query string)
 		return true, s.markAlertChannel(identity, p)
 	case "off":
 		if err := s.alertChannels.Unmark(p.ChannelID); err != nil {
-			return true, "This channel is not marked for alerts."
+			return true, "This channel was not being watched, so there is nothing to stop."
 		}
 		metrics.AlertChannels.Set(float64(s.alertChannels.Count()))
 		return true, "🔕 Stopped investigating alerts in this channel."
@@ -39,7 +39,8 @@ func (s *Service) alertCommand(identity string, p mattermost.Post, query string)
 
 func (s *Service) markAlertChannel(identity string, p mattermost.Post) string {
 	if p.IsDirect() {
-		return "Alert watching only makes sense in a channel — run this where the alerts arrive."
+		return "I can only watch a channel, not a direct message. Run `alerts on` in the channel where your " +
+			"alerts arrive."
 	}
 	ch := s.alertChannels.Mark(p.ChannelID, "", identity)
 	metrics.AlertChannels.Set(float64(s.alertChannels.Count()))
@@ -50,12 +51,15 @@ func (s *Service) markAlertChannel(identity string, p mattermost.Post) string {
 	// authorization, and that is not obvious from the outside.
 	return fmt.Sprintf(
 		"🔔 Watching this channel for alerts.\n\n"+
-			"- Investigations run with **%s**'s access, re-checked on every batch — so **everyone in this channel "+
-			"will see what %s can see**. Turn it off with `alerts off` if that is not right for this channel.\n"+
-			"- Alerts are collected for %s, then the %d most severe are investigated; repeats of the same alert are "+
-			"skipped for %s.\n"+
-			"- Answers are posted as replies in the alert's own thread.",
-		ch.Owner, ch.Owner, humanize.Duration(lim.Window), lim.MaxPerWindow, humanize.Duration(lim.Cooldown))
+			"- Investigations run with **%s**'s access, re-checked before every batch — so **everyone in this "+
+			"channel will see what %s can see**. Turn it off with `alerts off` if that is not right here.\n"+
+			"- Alerts are collected for %s and investigated **together**, as one incident, in one message — "+
+			"up to %d alerts at a time, most severe first.\n"+
+			"- The same alert is not looked at again for %s. A single alert is answered in its own thread; "+
+			"a batch is posted in the channel.\n"+
+			"- Ignored: %s, resolved notifications, and anything below %s.",
+		ch.Owner, ch.Owner, humanize.Duration(lim.Window), lim.MaxPerWindow,
+		humanize.Duration(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "), lim.MinSeverity)
 }
 
 func (s *Service) alertStatus(p mattermost.Post) string {
@@ -65,9 +69,10 @@ func (s *Service) alertStatus(p mattermost.Post) string {
 	}
 	lim := s.alertAgg.Limits()
 	return fmt.Sprintf("🔔 Watched since %s, running with **%s**'s access.\n"+
-		"Window %s · at most %d investigations per window · same alert skipped for %s · ignoring %s.",
+		"One investigation per %s covering up to %d alerts · the same alert not repeated for %s · "+
+		"ignoring %s and anything below %s.",
 		ch.Marked.Format("2006-01-02"), ch.Owner, humanize.Duration(lim.Window), lim.MaxPerWindow,
-		humanize.Duration(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "))
+		humanize.Duration(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "), lim.MinSeverity)
 }
 
 // ingestAlert buffers a post from a marked channel. It is called for posts

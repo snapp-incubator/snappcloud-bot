@@ -136,7 +136,7 @@ const (
 	msgAgentError   = "⚠️ I hit an error answering that. Please try again shortly."
 	msgRateLimited  = "🐢 You're sending requests too fast. Give me a few seconds and try again."
 	msgEmptyAnswer  = "🤔 I couldn't put together an answer for that. Try rephrasing, or narrow it to a specific namespace/cluster."
-	msgTooLong      = "✂️ That message is too long for me to process. Please shorten it and ask again."
+	msgTooLongFmt   = "✂️ That message is %d characters over the %d I can take. Shorten it, or split it into two questions."
 )
 
 // maxTranscriptRunes caps the stored per-thread memory transcript.
@@ -176,7 +176,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		return nil
 	}
 	if len([]rune(query)) > s.maxQueryRunes {
-		s.replyTo(ctx, p, msgTooLong)
+		s.replyTo(ctx, p, fmt.Sprintf(msgTooLongFmt, len([]rune(query))-s.maxQueryRunes, s.maxQueryRunes))
 		metrics.Messages.WithLabelValues("too_long").Inc()
 		return nil
 	}
