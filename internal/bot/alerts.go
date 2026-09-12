@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
+	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
@@ -54,7 +55,7 @@ func (s *Service) markAlertChannel(identity string, p mattermost.Post) string {
 			"- Alerts are collected for %s, then the %d most severe are investigated; repeats of the same alert are "+
 			"skipped for %s.\n"+
 			"- Answers are posted as replies in the alert's own thread.",
-		ch.Owner, ch.Owner, human(lim.Window), lim.MaxPerWindow, human(lim.Cooldown))
+		ch.Owner, ch.Owner, humanize.Duration(lim.Window), lim.MaxPerWindow, humanize.Duration(lim.Cooldown))
 }
 
 func (s *Service) alertStatus(p mattermost.Post) string {
@@ -65,8 +66,8 @@ func (s *Service) alertStatus(p mattermost.Post) string {
 	lim := s.alertAgg.Limits()
 	return fmt.Sprintf("🔔 Watched since %s, running with **%s**'s access.\n"+
 		"Window %s · at most %d investigations per window · same alert skipped for %s · ignoring %s.",
-		ch.Marked.Format("2006-01-02"), ch.Owner, human(lim.Window), lim.MaxPerWindow,
-		human(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "))
+		ch.Marked.Format("2006-01-02"), ch.Owner, humanize.Duration(lim.Window), lim.MaxPerWindow,
+		humanize.Duration(lim.Cooldown), strings.Join(lim.IgnoredAlerts, ", "))
 }
 
 // ingestAlert buffers a post from a marked channel. It is called for posts
@@ -274,8 +275,4 @@ func uniq(in []string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-func human(d time.Duration) string {
-	return strings.TrimSuffix(strings.TrimSuffix(d.String(), "0s"), "0m")
 }

@@ -300,3 +300,26 @@ func TestTheIntegrationOwnerTypingIsStillAPerson(t *testing.T) {
 		t.Errorf("a person's message was ingested as an alert: %d pending", agg.Pending())
 	}
 }
+
+// The marking reply quotes the limits back to the user. It said "skipped for 3"
+// because the duration was rendered by trimming "0m" off "30m0s".
+func TestMarkingReplyRendersDurationsReadably(t *testing.T) {
+	mm := &fakeMM{email: "sre@snapp.cab"}
+	ch := alerts.NewChannels("")
+	agg := alerts.NewAggregator(alerts.Limits{Window: time.Minute, Cooldown: 30 * time.Minute, MaxPerWindow: 10})
+	svc := New(mm, &fakeBrain{}, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}},
+		Options{ConversationTTL: time.Hour, BotUsername: "snappbot", RequireMention: true,
+			AlertChannels: ch, AlertAggregator: agg},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, reply := svc.alertCommand("sre@snapp.cab", mattermost.Post{ChannelID: "c1", ChannelType: "O"}, "alerts on")
+	if !strings.Contains(reply, "30m") {
+		t.Errorf("cooldown not rendered as 30m: %s", reply)
+	}
+	if strings.Contains(reply, "for 3.") || strings.Contains(reply, "for 3 ") {
+		t.Errorf("duration lost a digit: %s", reply)
+	}
+	if !strings.Contains(reply, "1m") {
+		t.Errorf("window not rendered as 1m: %s", reply)
+	}
+}

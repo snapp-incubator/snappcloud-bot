@@ -14,9 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
 )
 
 // Entry is one user's recurring query.
@@ -147,7 +148,7 @@ func (s *Store) FormatWhen(t time.Time) string {
 // Add stores a new schedule for user, enforcing the limits.
 func (s *Store) Add(e *Entry) error {
 	if time.Duration(e.Every) < s.limits.MinInterval {
-		return fmt.Errorf("%w: the minimum is every %s", ErrTooFrequent, human(s.limits.MinInterval))
+		return fmt.Errorf("%w: the minimum is every %s", ErrTooFrequent, humanize.Duration(s.limits.MinInterval))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -333,9 +334,4 @@ func atoi(s string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
-}
-
-func human(d time.Duration) string {
-	s := d.String()
-	return strings.TrimSuffix(s, "0s")
 }
