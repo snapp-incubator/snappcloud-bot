@@ -101,7 +101,13 @@ func (f *Failover) onPrimaryResult(err error) {
 func (f *Failover) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
 	if f.usePrimary() {
 		resp, err := f.primary.Complete(ctx, req)
-		f.onPrimaryResult(err)
+		// A caller that gave up — a cancelled message or a run timeout — is not
+		// a model failure. Counting it would let a few slow investigations open
+		// the breaker and move traffic to the backup with a healthy primary,
+		// which is the opposite of what the breaker is for.
+		if ctx.Err() == nil {
+			f.onPrimaryResult(err)
+		}
 		if err == nil {
 			metrics.LLMByModel.WithLabelValues("primary", "ok").Inc()
 			return resp, nil

@@ -146,3 +146,37 @@ func TestFailoverNilBackupReturnsPrimary(t *testing.T) {
 		t.Fatal("nil backup must return the primary unchanged")
 	}
 }
+
+// A caller that gives up must not push the breaker toward the backup. With long
+// run timeouts, a few slow investigations would otherwise fail the primary over
+// while it is perfectly healthy.
+func TestCancelledRequestsDoNotOpenTheBreaker(t *testing.T) {
+	primary := &fakeModel{name: "primary", fail: true}
+	backup := &fakeModel{name: "backup"}
+	f := NewFailover(primary, backup, FailoverOptions{FailureThreshold: 2, CooldownPeriod: time.Minute},
+		slog.New(slog.NewTextHandler(io.Discard, nil))).(*Failover)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 5; i++ {
+		if _, err := f.Complete(ctx, agent.Request{}); err == nil {
+			t.Fatal("a request with a dead context must surface its error")
+		}
+	}
+	if !f.usePrimary() {
+		t.Error("breaker opened on cancelled requests; the primary was never at fault")
+	}
+	if backup.calls != 0 {
+		t.Errorf("backup was called %d times for a cancelled caller", backup.calls)
+	}
+
+	// A genuine failure, with a live context, still opens the breaker.
+	for i := 0; i < 2; i++ {
+		if _, err := f.Complete(context.Background(), agent.Request{}); err != nil {
+			t.Fatalf("backup should have answered: %v", err)
+		}
+	}
+	if f.usePrimary() {
+		t.Error("breaker did not open on genuine primary failures")
+	}
+}
