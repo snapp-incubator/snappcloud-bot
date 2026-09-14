@@ -201,28 +201,42 @@ func batchHeader(b alerts.Batch) string {
 func batchQuery(b alerts.Batch) string {
 	var q strings.Builder
 	if len(b.Investigate) == 1 {
-		q.WriteString("This alert just fired. Investigate it on the cluster and report: what is actually " +
-			"happening (with the evidence you found), the root cause, and how to fix it.")
+		q.WriteString("This alert just fired. Investigate it on the cluster.\n\n")
 	} else {
-		fmt.Fprintf(&q, "These %d alerts fired within the same minute. Alerts that fire together are "+
-			"usually symptoms of ONE incident, so investigate them as a whole and report: what is actually "+
-			"happening (with the evidence you found); whether this is one incident or several, mapping each alert "+
-			"to its cause; the root cause; and how to fix it. If some alerts are unrelated to the rest, say so "+
-			"and treat them separately rather than forcing one story.", len(b.Investigate))
+		fmt.Fprintf(&q, "These %d alerts fired within the same minute. Alerts that fire together are usually "+
+			"symptoms of ONE incident, so investigate them as a whole: say whether this is one incident or "+
+			"several, and map each alert to its cause. If some are unrelated, say so and treat them separately "+
+			"rather than forcing one story.\n\n", len(b.Investigate))
 	}
-	q.WriteString(" If an alert's text suggests a remedy, say whether it addresses the cause or only clears the " +
-		"symptom. If you cannot determine the cause, say what you checked and what you would need.\n\n")
 
-	// An alert fired because a PromQL rule became true, so the metric behind it
-	// is the most direct evidence available — and the only thing that shows when
-	// it started, whether it is still true, and whether it is getting worse.
-	// Without this, an investigation reasons only from the current state of the
-	// cluster and cannot tell a spike from a slow climb.
-	q.WriteString("This alert came from a metric rule. If a Prometheus tool is available for the cluster, " +
-		"query the metric the alert is about before anything else: when did it cross the threshold, is it " +
-		"still true now, and is it climbing, flat or recovering? A cause that appeared at the same moment as " +
-		"the metric moved is the one worth reporting. Say so if no metrics are available for that cluster " +
-		"rather than treating the current state as the whole story.\n\n")
+	// The three questions an on-call engineer actually has, in the order they
+	// have them. Left implicit, an investigation tends to describe the cluster
+	// rather than answer them, and the reader has to work out for themselves
+	// whether this needs them now.
+	q.WriteString("Work in this order:\n" +
+		"1. IS IT REAL, AND IS IT NOW? The alert came from a metric rule, so where a Prometheus tool exists " +
+		"for the cluster, query that metric first: when did it cross the threshold, does it still hold, and " +
+		"is it climbing, flat or recovering? A spike that already recovered and a slow climb still going look " +
+		"identical in the cluster's current state and need different answers. Say so if the cluster has no " +
+		"metrics tool rather than treating the current state as the whole story.\n" +
+		"2. HOW FAR DOES IT REACH? One pod, one workload, one node, one namespace, or everything? That " +
+		"usually decides the class of cause on its own, and it tells the reader how urgent this is.\n" +
+		"3. WHAT CHANGED? Most incidents follow a change. Look for a deploy, a scale, a config or policy " +
+		"change, or a node event close to the moment the metric moved — rollouts and ReplicaSets, recent " +
+		"events, ArgoCD sync state. A cause that appeared at that moment is the one worth reporting; a " +
+		"condition that has been true for weeks is usually not.\n\n")
+
+	q.WriteString("Then report, briefly and in this order:\n" +
+		"- A one-line verdict: is this a real problem needing action now, something already recovering, " +
+		"expected behaviour, or something you could not determine?\n" +
+		"- What is happening, with the evidence: metric values and when they moved, pod and container " +
+		"states, log lines, events — quote them rather than summarising.\n" +
+		"- The root cause, or the most likely one with what would confirm it.\n" +
+		"- What to do, and whether the alert's own suggested remedy fixes the cause or only clears the " +
+		"symptom so it fires again.\n" +
+		"- What you could not check, and why. An unanswered question stated plainly is more useful than a " +
+		"confident guess, and it stops the next person repeating your work.\n\n" +
+		"Do not restate the alert text back: the reader already has it.\n\n")
 
 	if scopes := batchScope(b); scopes != "" {
 		q.WriteString("Scope: " + scopes + "\n\n")
