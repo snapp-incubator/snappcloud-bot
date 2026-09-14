@@ -292,7 +292,14 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, r)
 			}
 		}
-		msgs = append(msgs, Turn{Role: "user", Results: results})
+		msgs = append(msgs, Turn{Role: "user", Results: capRound(results)})
+		if n := trimConversation(msgs); n > 0 {
+			// Better a model that has forgotten an early dump than a request the
+			// model refuses outright, which fails the same way on every retry.
+			a.log.Info("trimmed oldest tool output to fit the context budget",
+				"req", in.ReqID, "results_dropped", n, "iteration", iter+1)
+			metrics.ConversationTrims.Inc()
+		}
 	}
 	summary("max-iters")
 

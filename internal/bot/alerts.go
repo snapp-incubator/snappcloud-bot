@@ -219,7 +219,7 @@ func batchQuery(b alerts.Batch) string {
 
 	q.WriteString("Alerts:\n")
 	for i, a := range b.Investigate {
-		fmt.Fprintf(&q, "\n%d. %s\n", i+1, a.Describe())
+		fmt.Fprintf(&q, "\n%d. %s\n", i+1, clampAlertText(a.Describe()))
 	}
 	if len(b.Context) > 0 {
 		q.WriteString("\nAlso firing right now, already investigated recently — context only, do not re-diagnose " +
@@ -289,4 +289,18 @@ func uniq(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// maxAlertRunes bounds one alert's contribution to the prompt. An alert is a
+// notification, not a payload: a template that inlines a long summary, a table,
+// or a stack trace would otherwise let ten of them push the request past what
+// the model accepts, which fails with HTTP 400 on every retry.
+const maxAlertRunes = 2_000
+
+func clampAlertText(s string) string {
+	r := []rune(s)
+	if len(r) <= maxAlertRunes {
+		return s
+	}
+	return string(r[:maxAlertRunes]) + "\n[alert text truncated]"
 }

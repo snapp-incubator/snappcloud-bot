@@ -191,6 +191,14 @@ var (
 		Help: "Conversation transcripts currently retained in memory.",
 	})
 
+	// ConversationTrims counts turns where the oldest tool output had to be
+	// dropped to fit the model's context budget. A rising count means
+	// investigations are outgrowing the window and answers are losing evidence.
+	ConversationTrims = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "conversation_trims_total",
+		Help: "Turns where old tool output was dropped to fit the context budget.",
+	})
+
 	// Panics counts recovered handler panics (each one = a message that crashed
 	// mid-handling but did not take the process down).
 	Panics = prometheus.NewCounter(prometheus.CounterOpts{
@@ -214,7 +222,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r
