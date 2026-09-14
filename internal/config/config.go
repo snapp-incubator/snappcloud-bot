@@ -214,6 +214,11 @@ type ToolRule struct {
 	// status) to callers with cluster-wide access; their results are returned
 	// unfiltered.
 	ClusterAdminOnly bool `yaml:"clusterAdminOnly"`
+	// PromQLArgs name arguments carrying a PromQL expression. Those arguments
+	// are rewritten before the call so every selector is pinned to the caller's
+	// namespaces — a metrics result cannot be filtered afterwards, because an
+	// aggregating query returns numbers with no namespace on them.
+	PromQLArgs []string `yaml:"promqlArgs"`
 }
 
 // Mattermost configures the bot's Mattermost connection.

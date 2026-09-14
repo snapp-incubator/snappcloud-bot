@@ -265,6 +265,15 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
 					continue
 				}
+				// A metrics query is restricted before it runs: its result
+				// cannot be filtered afterwards, because an aggregating query
+				// returns numbers carrying no namespace at all.
+				if err := a.pinPromQL(b.real, call.Args, b.ct.Allowed); err != nil {
+					denied++
+					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
+					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
+					continue
+				}
 			}
 			callStart := time.Now()
 			out, cerr := b.ct.MCP.CallTool(ctx, b.real, call.Args)
@@ -433,4 +442,28 @@ func qualify(alias, name string, reg map[string]binding) string {
 		}
 		q = base[:cut] + suffix
 	}
+}
+
+// pinPromQL rewrites every PromQL argument of a tool call so its selectors are
+// restricted to the caller's namespaces. Cluster-admins are not rewritten: they
+// reach this code only for tools that are not ClusterAdminOnly, and their scope
+// is the whole cluster anyway.
+func (a *Agent) pinPromQL(tool string, args map[string]any, allowed []string) error {
+	rule, _ := a.enforcer.ruleFor(tool)
+	for _, name := range rule.PromQLArgs {
+		raw, ok := args[name].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		pinned, err := PinNamespaces(raw, allowed)
+		if err != nil {
+			return err
+		}
+		if pinned != raw {
+			a.log.Debug("pinned a metrics query to the caller's namespaces",
+				"tool", tool, "arg", name, "before", raw, "after", pinned)
+		}
+		args[name] = pinned
+	}
+	return nil
 }

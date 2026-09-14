@@ -37,6 +37,11 @@ type ToolRule struct {
 	// them the result is returned unfiltered (it is infrastructure data, and
 	// filtering it destroys correct answers via fail-closed IP resolution).
 	ClusterAdminOnly bool
+	// PromQLArgs name arguments holding a PromQL expression. A metrics result
+	// cannot be filtered after the fact — an aggregating query returns numbers
+	// with no namespace on them — so the expression is rewritten before the call
+	// to pin every selector to the caller's namespaces.
+	PromQLArgs []string
 }
 
 // Enforcer decides whether a proposed tool call is allowed for a user whose

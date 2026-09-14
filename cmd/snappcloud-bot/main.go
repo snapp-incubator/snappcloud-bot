@@ -301,6 +301,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			Format:           f,
 			RequireNamespace: r.RequireNamespace,
 			ClusterAdminOnly: r.ClusterAdminOnly,
+			PromQLArgs:       r.PromQLArgs,
 		}
 	}
 
