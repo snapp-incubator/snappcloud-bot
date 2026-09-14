@@ -213,6 +213,17 @@ func batchQuery(b alerts.Batch) string {
 	q.WriteString(" If an alert's text suggests a remedy, say whether it addresses the cause or only clears the " +
 		"symptom. If you cannot determine the cause, say what you checked and what you would need.\n\n")
 
+	// An alert fired because a PromQL rule became true, so the metric behind it
+	// is the most direct evidence available — and the only thing that shows when
+	// it started, whether it is still true, and whether it is getting worse.
+	// Without this, an investigation reasons only from the current state of the
+	// cluster and cannot tell a spike from a slow climb.
+	q.WriteString("This alert came from a metric rule. If a Prometheus tool is available for the cluster, " +
+		"query the metric the alert is about before anything else: when did it cross the threshold, is it " +
+		"still true now, and is it climbing, flat or recovering? A cause that appeared at the same moment as " +
+		"the metric moved is the one worth reporting. Say so if no metrics are available for that cluster " +
+		"rather than treating the current state as the whole story.\n\n")
+
 	if scopes := batchScope(b); scopes != "" {
 		q.WriteString("Scope: " + scopes + "\n\n")
 	}

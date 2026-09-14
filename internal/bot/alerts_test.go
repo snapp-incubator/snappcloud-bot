@@ -435,3 +435,19 @@ func TestThreadedPostFallsBackToTheChannel(t *testing.T) {
 		t.Errorf("retry should be untethered, got root %q", mm.lastRoot)
 	}
 }
+
+// An alert fires because a PromQL rule became true, so the metric behind it is
+// the most direct evidence there is — and the only thing that shows when it
+// started and whether it is still true. The prompt has to ask for it: the tools
+// being available is not the same as the model reaching for them.
+func TestAlertPromptAsksForTheFiringMetric(t *testing.T) {
+	a, _ := alerts.Parse(alertPost, time.Now())
+	a.ChannelID = "c1"
+	q := batchQuery(alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}})
+
+	for _, want := range []string{"metric rule", "still true", "no metrics are available"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("the alert prompt does not ask about the metric (%q missing):\n%s", want, q)
+		}
+	}
+}
