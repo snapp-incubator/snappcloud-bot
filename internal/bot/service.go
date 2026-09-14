@@ -231,46 +231,10 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 
 	// Refresh command: flush the caller's cached scope and report live access.
 	// Lets a user pick up an authorization change without waiting out the cache.
-	if isRefreshCommand(query) {
-		if inv, ok := s.resolver.(authzclient.Invalidator); ok {
-			inv.Invalidate(identity)
-		}
-		scope, err := s.resolver.Resolve(ctx, identity)
-		if err != nil {
-			outcome = "backend_error"
-			s.replyTo(ctx, p, msgBackendError)
-			return nil
-		}
-		outcome = "refreshed"
-		lg.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
-		s.replyTo(ctx, p, refreshSummary(scope))
-		return nil
-	}
-
-	// help lists what the bot understands. It is answered before authorization
-	// because a user with no access still needs to know how to ask, and it costs
-	// nothing to produce.
-	if helpVerbs[normalizeCommand(query)] {
-		outcome = "help"
-		s.replyTo(ctx, p, helpText(s.sched != nil, s.alertChannels != nil))
-		return nil
-	}
-
-	// Schedule commands are handled before the agent: they manage saved queries
-	// rather than asking one.
-	if s.sched != nil {
-		if handled, reply := s.scheduleCommand(identity, p, query); handled {
-			outcome = "schedule_command"
-			s.replyTo(ctx, p, reply)
-			return nil
-		}
-	}
-
-	// Alert-channel commands, likewise: they configure the channel rather than
-	// asking a question.
-	if handled, reply := s.alertCommand(identity, p, query); handled {
-		outcome = "alert_command"
-		s.replyTo(ctx, p, reply)
+	// Commands are answered before the agent: they manage the bot rather than
+	// ask it anything, and none of them needs cluster access.
+	if handled, cmdOutcome := s.runCommand(ctx, p, identity, query, lg); handled {
+		outcome = cmdOutcome
 		return nil
 	}
 
@@ -459,83 +423,6 @@ func (s *Service) resolveIdentity(email string) string {
 	return email
 }
 
-// Mattermost rejects posts longer than its MaxPostSize (default 16383 chars).
-// Split safely below that. maxPostParts is a flood guard only — the whole answer
-// is delivered across posts; nothing is shown to the user about splitting.
-const (
-	maxPostRunes = 16000
-	maxPostParts = 40
-)
-
-// replyTo answers a post. In channels it threads the reply under the original
-// (mentioned) message; in direct messages it posts plainly. Long answers are
-// split transparently into multiple posts (Mattermost caps post length); the
-// user sees no truncation notice — the full answer is delivered.
-func (s *Service) replyTo(ctx context.Context, p mattermost.Post, msg string) {
-	root := ""
-	if !p.IsDirect() {
-		root = p.ThreadRoot()
-	}
-	parts := splitMessage(msg, maxPostRunes)
-	if len(parts) > maxPostParts {
-		s.log.Warn("answer exceeded post-part guard, dropping tail", "channel", p.ChannelID, "parts", len(parts))
-		parts = parts[:maxPostParts]
-	}
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		if err := s.mm.CreatePost(ctx, p.ChannelID, part, root); err != nil {
-			s.log.Error("post reply", "channel", p.ChannelID, "err", err)
-			return
-		}
-	}
-}
-
-// splitMessage breaks msg into chunks of at most max runes, preferring line
-// boundaries. The whole message is returned across chunks (no truncation).
-func splitMessage(msg string, max int) []string {
-	if len([]rune(msg)) <= max {
-		return []string{msg}
-	}
-	var parts []string
-	var b strings.Builder
-	bn := 0 // rune count in b
-	flush := func() {
-		if bn > 0 {
-			parts = append(parts, b.String())
-			b.Reset()
-			bn = 0
-		}
-	}
-	for _, line := range strings.Split(msg, "\n") {
-		lr := []rune(line)
-		for len(lr) > max { // a single over-long line: hard-split
-			flush()
-			parts = append(parts, string(lr[:max]))
-			lr = lr[max:]
-		}
-		if bn+len(lr)+1 > max {
-			flush()
-		}
-		if bn > 0 {
-			b.WriteByte('\n')
-			bn++
-		}
-		b.WriteString(string(lr))
-		bn += len(lr)
-	}
-	flush()
-	return parts
-}
-
-// refreshVerbs are the message texts that trigger a scope-cache refresh.
-var refreshVerbs = map[string]bool{
-	"refresh": true, "reload": true, "refresh access": true,
-	"reload access": true, "refresh my access": true, "sync access": true,
-}
-
-// isRefreshCommand reports whether the message is a request to re-check access.
 func isRefreshCommand(query string) bool {
 	return refreshVerbs[strings.ToLower(strings.TrimSpace(query))]
 }
@@ -558,4 +445,45 @@ func refreshSummary(scope authzclient.Scope) string {
 		fmt.Fprintf(&sb, "• **%s**%s: %s\n", c, admin, strings.Join(ns, ", "))
 	}
 	return sb.String()
+}
+
+// runCommand answers the bot's own commands — refresh, help, schedules, alerts
+// — and reports which outcome to record. handled is false for an ordinary
+// question, which then goes to the agent.
+//
+// These live together because they share one property: each manages the bot and
+// none of them needs cluster authorization, so they all run before the scope is
+// resolved.
+func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, query string, lg *slog.Logger) (handled bool, outcome string) {
+	if isRefreshCommand(query) {
+		if inv, ok := s.resolver.(authzclient.Invalidator); ok {
+			inv.Invalidate(identity)
+		}
+		scope, err := s.resolver.Resolve(ctx, identity)
+		if err != nil {
+			s.replyTo(ctx, p, msgBackendError)
+			return true, "backend_error"
+		}
+		lg.Info("access refreshed", "user", identity, "clusters", scope.Clusters())
+		s.replyTo(ctx, p, refreshSummary(scope))
+		return true, "refreshed"
+	}
+
+	// help is answered without authorization: a user with no access still needs
+	// to know how to ask, and it costs nothing to produce.
+	if helpVerbs[normalizeCommand(query)] {
+		s.replyTo(ctx, p, helpText(s.sched != nil, s.alertChannels != nil))
+		return true, "help"
+	}
+
+	if handled, reply := s.scheduleCommand(identity, p, query); handled {
+		s.replyTo(ctx, p, reply)
+		return true, "schedule_command"
+	}
+
+	if handled, reply := s.alertCommand(identity, p, query); handled {
+		s.replyTo(ctx, p, reply)
+		return true, "alert_command"
+	}
+	return false, ""
 }

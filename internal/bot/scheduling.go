@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
@@ -151,47 +150,5 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 		return fmt.Errorf("deliver answer: %w", err)
 	}
 	metrics.Messages.WithLabelValues("scheduled").Inc()
-	return nil
-}
-
-// postTimeout bounds delivery of an answer that has already been produced.
-const postTimeout = 20 * time.Second
-
-// post writes a message to a channel/thread, splitting long answers.
-//
-// Delivery runs on a context DETACHED from the caller's: a scheduled run and an
-// alert batch are each bounded by a timeout that covers the investigation, and
-// an investigation that used most of its budget would otherwise produce an
-// answer and then fail to post it — the work paid for, the result thrown away,
-// with only a "post answer" error to show for it. The deadline exists to stop
-// runaway investigations, not to discard finished ones.
-func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error {
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postTimeout)
-	defer cancel()
-
-	parts := splitMessage(msg, maxPostRunes)
-	if len(parts) > maxPostParts {
-		parts = parts[:maxPostParts]
-	}
-	for i, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		err := s.mm.CreatePost(dctx, channelID, part, rootID)
-		if err != nil && rootID != "" {
-			// The thread may be gone — an alert post deleted, or a root from a
-			// channel that has since been archived. An answer in the channel
-			// beats an answer nobody receives, so try again untethered.
-			s.log.Warn("threaded post failed; retrying at channel level",
-				"channel", channelID, "root", rootID, "err", err)
-			rootID = ""
-			err = s.mm.CreatePost(dctx, channelID, part, "")
-		}
-		if err != nil {
-			s.log.Error("post answer", "channel", channelID, "root", rootID,
-				"part", i+1, "of", len(parts), "err", err)
-			return fmt.Errorf("post to %s: %w", channelID, err)
-		}
-	}
 	return nil
 }
