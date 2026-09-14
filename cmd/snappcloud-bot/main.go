@@ -29,6 +29,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/config"
 	"github.com/snapp-incubator/snappcloud-bot/internal/llm"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
+	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 	"github.com/snapp-incubator/snappcloud-bot/internal/schedule"
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
@@ -110,6 +111,9 @@ func run(configPath, addr string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// The transport cap follows the container's memory rather than the build.
+	mcp.SetMaxResponseBytes(int64(cfg.Agent.Budgets.ResponseBytes))
 
 	mm := mattermost.NewClient(cfg.Mattermost.URL, mmToken)
 
@@ -383,8 +387,14 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		Clusters:      clusters,
 		GlobalServers: globalServers,
 		Rules:         rules,
-		MCPTimeout:    5 * time.Minute,
-		Resolver:      resolver,
+		Budgets: agent.Budgets{
+			ResultRunes:       cfg.Agent.Budgets.ResultRunes,
+			RoundRunes:        cfg.Agent.Budgets.RoundRunes,
+			ConversationRunes: cfg.Agent.Budgets.ConversationRunes,
+			FilterBytes:       cfg.Agent.Budgets.FilterBytes,
+		},
+		MCPTimeout: 5 * time.Minute,
+		Resolver:   resolver,
 	}, log)
 	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "globalServers", len(globalServers), "maxIter", cfg.Agent.MaxIterations)
 	return b, nil

@@ -15,17 +15,60 @@ import "fmt"
 //	maxRoundRunes   all results in one round, so parallel calls cannot either
 //	maxConvRunes    the whole transcript, enforced by dropping the OLDEST
 //	                results — the recent rounds are the ones being reasoned about
-const (
-	maxRoundRunes = 200_000
-	maxConvRunes  = 400_000
-)
+//
+// Budgets bound what one answer may consume. They are configuration rather than
+// constants because the right values depend on two things that differ per
+// deployment: how much memory the container has, and how large a context the
+// model accepts. Raising memory alone does not buy deeper investigations — the
+// transcript still has to fit the model — so the two move together or not at all.
+type Budgets struct {
+	// ResultRunes caps one tool result fed back to the model.
+	ResultRunes int
+	// RoundRunes caps all results from one round, where several tools answer in
+	// parallel.
+	RoundRunes int
+	// ConversationRunes caps the whole transcript. This one is bounded by the
+	// MODEL rather than by memory: exceed its context window and the endpoint
+	// answers HTTP 400 on every retry.
+	ConversationRunes int
+	// FilterBytes is the largest result the bot will authorize. Filtering parses
+	// a result twice and JSON becomes Go values at several times the size of its
+	// text, so this is a memory bound.
+	FilterBytes int
+}
+
+// DefaultBudgets are sized for a 1Gi container and a large-context model.
+func DefaultBudgets() Budgets {
+	return Budgets{
+		ResultRunes:       100_000,
+		RoundRunes:        200_000,
+		ConversationRunes: 400_000,
+		FilterBytes:       4 << 20,
+	}
+}
+
+func (b *Budgets) applyDefaults() {
+	d := DefaultBudgets()
+	if b.ResultRunes <= 0 {
+		b.ResultRunes = d.ResultRunes
+	}
+	if b.RoundRunes <= 0 {
+		b.RoundRunes = d.RoundRunes
+	}
+	if b.ConversationRunes <= 0 {
+		b.ConversationRunes = d.ConversationRunes
+	}
+	if b.FilterBytes <= 0 {
+		b.FilterBytes = d.FilterBytes
+	}
+}
 
 const droppedNotice = "[earlier tool output dropped to fit the model's context budget — " +
 	"re-run the tool if you still need it]"
 
 // capRound shrinks a round's results to fit maxRoundRunes, taking from the
 // largest first so one huge result cannot crowd out several small ones.
-func capRound(results []ToolResult) []ToolResult {
+func capRound(results []ToolResult, maxRoundRunes int) []ToolResult {
 	total := 0
 	for _, r := range results {
 		total += len([]rune(r.Content))
@@ -64,7 +107,7 @@ func capRound(results []ToolResult) []ToolResult {
 // fits maxConvRunes, and reports how many results it emptied. Structure is
 // preserved: every result keeps its CallID, because a tool result with no
 // matching call is exactly the "invalid conversation shape" the API rejects.
-func trimConversation(msgs []Turn) int {
+func trimConversation(msgs []Turn, maxConvRunes int) int {
 	total := 0
 	for _, m := range msgs {
 		total += len([]rune(m.Text))

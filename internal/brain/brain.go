@@ -86,7 +86,9 @@ type Options struct {
 	// scope-filtered.
 	GlobalServers []Server
 	Rules         map[string]agent.ToolRule
-	MCPTimeout    time.Duration
+	// Budgets bound what one answer may consume; zero values take the defaults.
+	Budgets    agent.Budgets
+	MCPTimeout time.Duration
 	// Resolver maps IPs -> namespaces for result filtering (the authz client).
 	Resolver agent.Resolver
 }
@@ -142,7 +144,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		log.Info("llm failover enabled", "primary", o.LLM.Model, "backup", o.FallbackLLM.Model,
 			"failureThreshold", o.FailoverOpts.FailureThreshold, "cooldown", o.FailoverOpts.CooldownPeriod)
 	}
-	ag := agent.New(model, agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, log)
+	ag := agent.New(model, agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, o.Budgets, log)
 	system := o.SystemPrompt
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem

@@ -48,7 +48,7 @@ func TestEmptyAllowListPermitsEverything(t *testing.T) {
 func TestOversizedResponseIsRefusedAtTheRead(t *testing.T) {
 	// A body larger than the cap, served as plain JSON.
 	big := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` +
-		strings.Repeat("x", maxResponseBytes+1024) + `"}]}}`
+		strings.Repeat("x", int(maxResponseBytes)+1024) + `"}]}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, big)

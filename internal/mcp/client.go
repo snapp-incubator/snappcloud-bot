@@ -279,12 +279,23 @@ func (c *Client) newRequest(ctx context.Context, body []byte) (*http.Request, er
 //
 // The cap is far above any useful answer: a tool result is truncated to 100k
 // runes before the model ever sees it.
-const maxResponseBytes = 8 << 20 // 8 MiB
+var maxResponseBytes int64 = 8 << 20 // 8 MiB; raised by SetMaxResponseBytes
+
+// SetMaxResponseBytes raises the ceiling on one tool response. It exists so the
+// limit can follow the container's memory rather than being fixed at build
+// time: a bot with 4Gi can afford answers a 256Mi one cannot.
+func SetMaxResponseBytes(n int64) {
+	if n > 0 {
+		maxResponseBytes = n
+	}
+}
 
 // errTooLarge is returned when a tool's response exceeds maxResponseBytes. It
 // reads as instruction rather than failure, because the model can act on it.
-var errTooLarge = fmt.Errorf("tool response exceeded %d MiB and was refused; "+
-	"narrow the query (a namespace, a node, a selector, or a smaller limit)", maxResponseBytes>>20)
+func errTooLarge() error {
+	return fmt.Errorf("tool response exceeded %d MiB and was refused; "+
+		"narrow the query (a namespace, a node, a selector, or a smaller limit)", maxResponseBytes>>20)
+}
 
 // decodeResponse reads either a single JSON response or an SSE stream, returning
 // the JSON-RPC response whose id matches.
@@ -297,14 +308,14 @@ func decodeResponse(resp *http.Response, id int) (*rpcResponse, error) {
 	if strings.Contains(ct, "text/event-stream") {
 		rpc, err := decodeSSE(body, id)
 		if body.exceeded {
-			return nil, errTooLarge
+			return nil, errTooLarge()
 		}
 		return rpc, err
 	}
 	var rpc rpcResponse
 	if err := json.NewDecoder(body).Decode(&rpc); err != nil {
 		if body.exceeded {
-			return nil, errTooLarge
+			return nil, errTooLarge()
 		}
 		return nil, fmt.Errorf("decode json: %w", err)
 	}

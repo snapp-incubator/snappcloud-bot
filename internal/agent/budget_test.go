@@ -26,13 +26,13 @@ func TestCapRoundSharesTheBudget(t *testing.T) {
 		{CallID: "b", Content: runes(150_000, 'b')},
 		{CallID: "c", Content: "short"},
 	}
-	out := capRound(results)
+	out := capRound(results, DefaultBudgets().RoundRunes)
 
 	total := 0
 	for _, r := range out {
 		total += len([]rune(r.Content))
 	}
-	if total > maxRoundRunes+len([]rune(droppedNotice))*len(out) {
+	if total > DefaultBudgets().RoundRunes+len([]rune(droppedNotice))*len(out) {
 		t.Errorf("round still over budget: %d runes", total)
 	}
 	if out[2].Content != "short" {
@@ -48,7 +48,7 @@ func TestCapRoundSharesTheBudget(t *testing.T) {
 // A round that fits must be left exactly alone.
 func TestCapRoundLeavesSmallRoundsAlone(t *testing.T) {
 	results := []ToolResult{{CallID: "a", Content: "one"}, {CallID: "b", Content: "two"}}
-	out := capRound(results)
+	out := capRound(results, DefaultBudgets().RoundRunes)
 	if out[0].Content != "one" || out[1].Content != "two" {
 		t.Errorf("a round within budget was modified: %+v", out)
 	}
@@ -68,11 +68,11 @@ func TestTrimConversationDropsOldestAndKeepsShape(t *testing.T) {
 		{Role: "user", Results: []ToolResult{{CallID: "3", Content: runes(200_000, 'n')}}},
 	}
 
-	dropped := trimConversation(msgs)
+	dropped := trimConversation(msgs, DefaultBudgets().ConversationRunes)
 	if dropped == 0 {
 		t.Fatal("an oversized conversation was not trimmed")
 	}
-	if convSize(msgs) > maxConvRunes {
+	if convSize(msgs) > DefaultBudgets().ConversationRunes {
 		t.Errorf("still over budget after trimming: %d runes", convSize(msgs))
 	}
 	if msgs[2].Results[0].Content != droppedNotice {
@@ -99,7 +99,7 @@ func TestTrimConversationLeavesSmallOnesAlone(t *testing.T) {
 		{Role: "user", Text: "hello"},
 		{Role: "user", Results: []ToolResult{{CallID: "1", Content: "a small result"}}},
 	}
-	if n := trimConversation(msgs); n != 0 {
+	if n := trimConversation(msgs, DefaultBudgets().ConversationRunes); n != 0 {
 		t.Errorf("trimmed %d results from a conversation within budget", n)
 	}
 	if msgs[1].Results[0].Content != "a small result" {
@@ -128,5 +128,26 @@ func TestTruncatedJSONWouldBypassTheFilter(t *testing.T) {
 	}
 	if !strings.Contains(body, "team-b") {
 		t.Fatal("fixture no longer demonstrates the hazard")
+	}
+}
+
+// Budgets are configuration, and a zero field must fall back rather than
+// disabling the cap — a zero budget would truncate every result to nothing.
+func TestBudgetsFallBackToDefaults(t *testing.T) {
+	b := Budgets{ResultRunes: 250_000}
+	b.applyDefaults()
+
+	if b.ResultRunes != 250_000 {
+		t.Errorf("configured value overwritten: %d", b.ResultRunes)
+	}
+	d := DefaultBudgets()
+	if b.RoundRunes != d.RoundRunes || b.ConversationRunes != d.ConversationRunes || b.FilterBytes != d.FilterBytes {
+		t.Errorf("unset fields did not take defaults: %+v", b)
+	}
+
+	var zero Budgets
+	zero.applyDefaults()
+	if zero != d {
+		t.Errorf("an empty Budgets must equal the defaults, got %+v", zero)
 	}
 }

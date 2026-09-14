@@ -104,7 +104,7 @@ func (f *fakeMCP) CallTool(_ context.Context, name string, _ map[string]any) (st
 }
 
 func newAgent(l LLM) *Agent {
-	return New(l, NewEnforcer(nil), nil, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(l, NewEnforcer(nil), nil, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestRunExecutesAuthorizedToolThenAnswers(t *testing.T) {
@@ -254,7 +254,7 @@ func TestClusterAdminGetsInfraToolUnfiltered(t *testing.T) {
 	mcp.output = `{"peers":[{"peer-address":"10.15.10.10","session-state":"established"}]}`
 
 	enforcer := NewEnforcer(map[string]ToolRule{"bgp_peers": {ClusterAdminOnly: true}})
-	ag := New(llm, enforcer, failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ag := New(llm, enforcer, failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := ag.Run(context.Background(), Input{
 		Query:    "bgp?",
 		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, ClusterAdmin: true, MCP: mcp}},
@@ -280,7 +280,7 @@ func TestNonAdminDeniedInfraTool(t *testing.T) {
 	mcp := &fakeMCP{tools: []string{"bgp_peers"}}
 
 	enforcer := NewEnforcer(map[string]ToolRule{"bgp_peers": {ClusterAdminOnly: true}})
-	ag := New(llm, enforcer, failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ag := New(llm, enforcer, failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := ag.Run(context.Background(), Input{
 		Query:    "bgp?",
 		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, MCP: mcp}},
@@ -306,7 +306,7 @@ func TestNormalToolStillWithheldOnResolverFailure(t *testing.T) {
 	mcp := &fakeMCP{tools: []string{"get_flows"}}
 	mcp.output = `[{"src_ip":"10.0.0.9","bytes":10}]`
 
-	ag := New(llm, NewEnforcer(nil), failingResolver{}, 6, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ag := New(llm, NewEnforcer(nil), failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := ag.Run(context.Background(), Input{
 		Query:    "flows?",
 		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"argocd"}, MCP: mcp}},

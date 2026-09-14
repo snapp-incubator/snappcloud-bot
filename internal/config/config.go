@@ -129,6 +129,25 @@ type Agent struct {
 	// available to every authorized user, not tied to a cluster or scope-filtered.
 	GlobalServers []MCPServer         `yaml:"globalServers"`
 	ToolRules     map[string]ToolRule `yaml:"toolRules"` // per-tool namespace-arg overrides
+	// Budgets bound what one answer may consume. Raise them for heavier
+	// investigations, together with the container's memory — and keep
+	// conversationRunes inside the model's context window, or the endpoint
+	// refuses the request outright. Zero means the built-in default.
+	Budgets Budgets `yaml:"budgets"`
+}
+
+// Budgets bound one answer's consumption. resultRunes, roundRunes and
+// filterBytes are memory bounds; conversationRunes is bounded by the MODEL's
+// context window, which more memory does not enlarge.
+type Budgets struct {
+	ResultRunes int `yaml:"resultRunes"`
+	// ResponseBytes caps ONE tool response at the transport, before it is
+	// resident. It is the first line of defence for memory: everything below
+	// only applies once the body has been read.
+	ResponseBytes     int `yaml:"responseBytes"`
+	RoundRunes        int `yaml:"roundRunes"`
+	ConversationRunes int `yaml:"conversationRunes"`
+	FilterBytes       int `yaml:"filterBytes"`
 }
 
 // LLM points at an Anthropic-style Messages endpoint (e.g. llm.snapp.tech).

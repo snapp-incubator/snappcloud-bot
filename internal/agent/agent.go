@@ -83,16 +83,18 @@ type Agent struct {
 	enforcer *Enforcer
 	resolver Resolver // may be nil (no IP resolution)
 	maxIter  int
+	budgets  Budgets
 	log      *slog.Logger
 }
 
 // New builds an Agent. maxIter bounds the tool-calling loop (default 6).
 // resolver may be nil.
-func New(llm LLM, enforcer *Enforcer, resolver Resolver, maxIter int, log *slog.Logger) *Agent {
+func New(llm LLM, enforcer *Enforcer, resolver Resolver, maxIter int, budgets Budgets, log *slog.Logger) *Agent {
 	if maxIter <= 0 {
 		maxIter = 6
 	}
-	return &Agent{llm: llm, enforcer: enforcer, resolver: resolver, maxIter: maxIter, log: log}
+	budgets.applyDefaults()
+	return &Agent{llm: llm, enforcer: enforcer, resolver: resolver, maxIter: maxIter, budgets: budgets, log: log}
 }
 
 // ClusterTools binds one authorized cluster: the user's scope on it, its MCP
@@ -136,24 +138,14 @@ type binding struct {
 	selfAuthorized bool
 }
 
-// maxResultRunes caps a single tool result fed back to the model. Oversized
-// payloads (a verbose BPF map dump) blow the prompt budget and get the whole
-// request rejected by the LLM endpoint.
-const maxResultRunes = 100_000
-
-// maxFilterBytes is the largest result the bot will try to authorize. Above it
-// the parse cost outweighs any answer the result could contain, and several
-// clusters answering at once multiplies it.
-const maxFilterBytes = 4 << 20 // 4 MiB
-
 // capResult truncates an oversized tool result, telling the model to narrow
 // the query. Applied AFTER namespace filtering so truncation can never turn
 // filterable JSON into an unfilterable fragment.
-func capResult(s string) string {
-	if len(s) <= maxResultRunes {
+func (a *Agent) capResult(s string) string {
+	if len(s) <= a.budgets.ResultRunes {
 		return s
 	}
-	return s[:maxResultRunes] + "\n[output truncated — narrow the query (a namespace, a node, or a filter)]"
+	return s[:a.budgets.ResultRunes] + "\n[output truncated — narrow the query (a namespace, a node, or a filter)]"
 }
 
 // Run drives the LLM ↔ MCP loop across every authorized cluster, enforcing each
@@ -237,7 +229,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 						continue
 					}
 					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-					results = append(results, ToolResult{CallID: call.ID, Content: capResult(out)})
+					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
 					continue
 				}
 				if a.enforcer.ClusterAdminOnly(b.real) {
@@ -306,8 +298,8 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, r)
 			}
 		}
-		msgs = append(msgs, Turn{Role: "user", Results: capRound(results)})
-		if n := trimConversation(msgs); n > 0 {
+		msgs = append(msgs, Turn{Role: "user", Results: capRound(results, a.budgets.RoundRunes)})
+		if n := trimConversation(msgs, a.budgets.ConversationRunes); n > 0 {
 			// Better a model that has forgotten an early dump than a request the
 			// model refuses outright, which fails the same way on every retry.
 			a.log.Info("trimmed oldest tool output to fit the context budget",
@@ -395,7 +387,7 @@ func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (To
 	// flight. Withhold instead, and say what to do about it: truncating first
 	// would leave invalid JSON, which the filter cannot parse and would pass
 	// through unfiltered.
-	if len(out) > maxFilterBytes {
+	if len(out) > a.budgets.FilterBytes {
 		metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "filtered").Inc()
 		return errResult(callID, fmt.Sprintf(
 			"result was %d MB, too large to authorize safely and withheld. "+
@@ -425,7 +417,7 @@ func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (To
 	if removed > 0 {
 		body += fmt.Sprintf("\n\n[authorization: %d record(s) in namespaces you cannot access were withheld]", removed)
 	}
-	return ToolResult{CallID: callID, Content: capResult(body)}, removed > 0
+	return ToolResult{CallID: callID, Content: a.capResult(body)}, removed > 0
 }
 
 func (a *Agent) withheld(callID string, b binding, why string) ToolResult {
