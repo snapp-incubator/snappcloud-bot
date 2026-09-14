@@ -63,6 +63,10 @@ func New(url, authHeader string, selfAuthorized bool, timeout time.Duration, all
 		allow: allow, http: &http.Client{Timeout: timeout}}
 }
 
+// URL is the server's endpoint, for logs: the mux names servers by cluster and
+// position, which does not say which server it was.
+func (c *Client) URL() string { return c.url }
+
 // Allowed reports whether a tool may be used. An empty allow-list means every
 // tool the server advertises.
 func (c *Client) Allowed(name string) bool { return c.allow == nil || c.allow[name] }

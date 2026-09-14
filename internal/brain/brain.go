@@ -97,7 +97,7 @@ type Options struct {
 func New(o Options, log *slog.Logger) *Brain {
 	clusters := make(map[string]*clusterMCP, len(o.Clusters))
 	for _, c := range o.Clusters {
-		mux := mcp.NewMux()
+		mux := mcp.NewMux(log.With("cluster", c.Name))
 		for i, s := range c.Servers {
 			name := fmt.Sprintf("%s-%d", c.Name, i)
 			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout, s.AllowTools...))
@@ -122,7 +122,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		}
 		m, ok := muxes[alias]
 		if !ok {
-			m = mcp.NewMux()
+			m = mcp.NewMux(log.With("group", alias))
 			muxes[alias] = m
 		}
 		if s.ClusterAdminOnly {

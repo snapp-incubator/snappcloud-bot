@@ -191,6 +191,15 @@ var (
 		Help: "Conversation transcripts currently retained in memory.",
 	})
 
+	// MCPListFailures counts turns where an MCP server failed to list its tools
+	// and so contributed none. A server can be down, unreachable, or refusing
+	// the bot's credentials, and the only visible symptom is the bot saying a
+	// cluster has "no such tool" — which reads as configuration, not outage.
+	MCPListFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "mcp_list_failures_total",
+		Help: "Turns where an MCP server failed to list its tools, by server.",
+	}, []string{"server"})
+
 	// ConversationTrims counts turns where the oldest tool output had to be
 	// dropped to fit the model's context budget. A rising count means
 	// investigations are outgrowing the window and answers are losing evidence.
@@ -222,7 +231,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

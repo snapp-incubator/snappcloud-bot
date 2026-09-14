@@ -2,10 +2,15 @@ package mcp
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // A server may ship far more than the bot should offer. The Grafana MCP server
@@ -90,4 +95,50 @@ func TestNormalResponseStillDecodes(t *testing.T) {
 	if rpc.Error != nil || len(rpc.Result) == 0 {
 		t.Errorf("result not decoded: %+v", rpc)
 	}
+}
+
+// A server that fails to list its tools must not disappear silently. The bot
+// then tells the user a cluster has "no such tool", which reads as configuration
+// rather than outage, and nothing anywhere records why.
+func TestMuxRecordsAServerThatFailsToList(t *testing.T) {
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(readBody(r), `"tools/list"`) {
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"list_pods"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer good.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer bad.Close()
+
+	var logged strings.Builder
+	m := NewMux(slog.New(slog.NewTextHandler(&logged, nil)))
+	m.Add("prod-1-0", New(good.URL, "", false, 0))
+	m.Add("prod-1-1", New(bad.URL, "", false, 0))
+
+	before := testutil.ToFloat64(metrics.MCPListFailures.WithLabelValues("prod-1-1"))
+	tools, err := m.ListTools(t.Context())
+	if err != nil {
+		t.Fatalf("one healthy server should still yield tools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "list_pods" {
+		t.Errorf("healthy server's tools missing: %+v", tools)
+	}
+
+	// The failure is recorded where an operator will find it.
+	if !strings.Contains(logged.String(), "mcp server unavailable") || !strings.Contains(logged.String(), bad.URL) {
+		t.Errorf("failing server not logged with its URL:\n%s", logged.String())
+	}
+	if after := testutil.ToFloat64(metrics.MCPListFailures.WithLabelValues("prod-1-1")); after != before+1 {
+		t.Errorf("failure not counted: before=%v after=%v", before, after)
+	}
+}
+
+func readBody(r *http.Request) string {
+	b, _ := io.ReadAll(r.Body)
+	return string(b)
 }
