@@ -22,7 +22,12 @@ type fakeMM struct {
 func (f *fakeMM) GetUser(_ context.Context, _ string) (mattermost.User, error) {
 	return mattermost.User{Email: f.email}, nil
 }
-func (f *fakeMM) CreatePost(_ context.Context, _, msg, rootID string) error {
+func (f *fakeMM) CreatePost(ctx context.Context, _, msg, rootID string) error {
+	// Honour the context the way the real client does, so a test that asserts
+	// delivery survives an expired deadline is actually testing something.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.posted = append(f.posted, msg)
 	f.lastRoot = rootID
 	return nil

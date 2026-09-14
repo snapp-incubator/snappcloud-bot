@@ -362,3 +362,33 @@ func TestAlertTextsDescribeBatchedBehaviour(t *testing.T) {
 		}
 	}
 }
+
+// The runner bounds an investigation with a timeout that also covered posting,
+// so an investigation using most of its budget produced an answer and then
+// failed to deliver it: the logs showed the batch investigated, the channel
+// showed nothing. Delivery must survive the expiry of the compute deadline.
+func TestAnswerIsPostedEvenWhenTheRunDeadlineHasPassed(t *testing.T) {
+	mm := &fakeMM{email: ""}
+	b := &fakeBrain{answer: "node-3 lost its kubelet"}
+	scope := authzclient.Scope{"okd4-teh-1": {Namespaces: []string{"team-a"}}}
+	svc, ch, _ := alertSvc(mm, b, &fakeResolver{scope: scope})
+	marked := ch.Mark("c1", "", "sre@snapp.cab")
+
+	a, _ := alerts.Parse(alertPost, time.Now())
+	a.ChannelID, a.PostID = "c1", "post-1"
+
+	// The investigation consumed the whole budget: by the time there is an
+	// answer, the context is done.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := svc.Investigate(ctx, marked, alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}); err != nil {
+		t.Fatalf("investigate: %v", err)
+	}
+	if len(mm.posted) != 1 {
+		t.Fatalf("answer was not delivered after the deadline passed: %v", mm.posted)
+	}
+	if !strings.Contains(mm.posted[0], "node-3 lost its kubelet") {
+		t.Errorf("wrong content posted: %s", mm.posted[0])
+	}
+}
