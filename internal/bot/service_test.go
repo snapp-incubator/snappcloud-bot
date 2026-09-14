@@ -14,9 +14,11 @@ import (
 )
 
 type fakeMM struct {
-	email    string
-	posted   []string
-	lastRoot string
+	email        string
+	posted       []string
+	lastRoot     string
+	postErr      error // every post fails
+	failThreaded bool  // only threaded posts fail, as a dead thread would
 }
 
 func (f *fakeMM) GetUser(_ context.Context, _ string) (mattermost.User, error) {
@@ -27,6 +29,12 @@ func (f *fakeMM) CreatePost(ctx context.Context, _, msg, rootID string) error {
 	// delivery survives an expired deadline is actually testing something.
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if f.postErr != nil {
+		return f.postErr
+	}
+	if f.failThreaded && rootID != "" {
+		return errors.New("mattermost: 400 invalid root_id")
 	}
 	f.posted = append(f.posted, msg)
 	f.lastRoot = rootID

@@ -175,7 +175,7 @@ var (
 	// AlertInvestigations counts investigations by outcome.
 	AlertInvestigations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "alert_investigations_total",
-		Help: "Alert investigations by outcome (ok, error, empty, unauthorized).",
+		Help: "Alert investigations by outcome (ok, error, empty, unauthorized, undelivered).",
 	}, []string{"outcome"})
 
 	// AlertInvestigationDuration is end-to-end investigation latency.
@@ -270,7 +270,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{"ok", "error", "skipped"} {
 		ScheduleRuns.WithLabelValues(o)
 	}
-	for _, o := range []string{"ok", "error", "empty", "unauthorized"} {
+	for _, o := range []string{"ok", "error", "empty", "unauthorized", "undelivered"} {
 		AlertInvestigations.WithLabelValues(o)
 	}
 	for _, d := range []string{"queued", "duplicate", "cooldown", "ignored", "resolved", "low_severity"} {

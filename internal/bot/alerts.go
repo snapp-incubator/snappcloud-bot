@@ -129,7 +129,7 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	}
 	if scope.Empty() {
 		lg.Info("alert batch skipped: owner has no access", "owner", ch.Owner)
-		s.post(ctx, b.ChannelID, "",
+		_ = s.post(ctx, b.ChannelID, "",
 			fmt.Sprintf("⚠️ I can no longer investigate alerts here: **%s**, who enabled this, has no cluster access. "+
 				"Someone with access can take it over by saying `alerts on`.", ch.Owner))
 		metrics.AlertInvestigations.WithLabelValues("unauthorized").Inc()
@@ -152,13 +152,22 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 		lg.Warn("alert investigation produced nothing", "alerts", len(b.Investigate))
 		return nil
 	}
+	// An answer nobody receives is a failed investigation, not a successful
+	// one: count and return it that way, so the batch is retried on the next
+	// window instead of sitting in cooldown having produced nothing.
+	if perr := s.post(ctx, b.ChannelID, b.Root(), batchHeader(b)+clean); perr != nil {
+		metrics.AlertInvestigations.WithLabelValues("undelivered").Inc()
+		return fmt.Errorf("deliver answer: %w", perr)
+	}
 	metrics.AlertInvestigations.WithLabelValues("ok").Inc()
-	lg.Info("alert batch investigated", "subjects", len(b.Investigate),
+	lg.Info("alert batch investigated and posted", "subjects", len(b.Investigate),
 		"context", len(b.Context), "skipped", len(b.Skipped))
-	s.post(ctx, b.ChannelID, b.Root(), batchHeader(b)+clean)
 
 	if note := skippedNote(b.Skipped); note != "" {
-		s.post(ctx, b.ChannelID, b.Root(), note)
+		// A failed footnote is not worth retrying the whole investigation for.
+		if err := s.post(ctx, b.ChannelID, b.Root(), note); err != nil {
+			lg.Warn("could not post the skipped-alert note", "err", err)
+		}
 	}
 	return nil
 }

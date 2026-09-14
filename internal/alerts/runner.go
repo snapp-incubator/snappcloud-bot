@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 // Investigator investigates one batch of alerts for a channel. Implemented by
@@ -63,6 +65,7 @@ func (r *Runner) Start(ctx context.Context) {
 		case now := <-t.C:
 			r.runDue(ctx, now)
 			r.channels.Flush()
+			metrics.AlertsPending.Set(float64(r.agg.Pending()))
 		}
 	}
 }
@@ -95,8 +98,11 @@ func (r *Runner) runDue(ctx context.Context, now time.Time) {
 			ictx, cancel := context.WithTimeout(ctx, r.timeout)
 			defer cancel()
 			if err := r.inv.Investigate(ictx, ch, b); err != nil {
-				r.log.Warn("alert investigation failed", "channel", b.ChannelID,
-					"alerts", len(b.Investigate), "err", err)
+				// Nothing was answered, so do not hold these alerts in cooldown:
+				// let the next window try again.
+				r.agg.Failed(b)
+				r.log.Warn("alert investigation failed; will retry on the next window",
+					"channel", b.ChannelID, "alerts", len(b.Investigate), "err", err)
 			}
 		}()
 	}

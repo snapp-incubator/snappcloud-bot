@@ -132,7 +132,7 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 	if scope.Empty() {
 		// Not an error worth retrying: the user genuinely has no access now.
 		lg.Info("scheduled run skipped: owner has no access", "user", e.User)
-		s.post(ctx, e.ChannelID, e.RootID,
+		_ = s.post(ctx, e.ChannelID, e.RootID,
 			fmt.Sprintf("⏰ Schedule `%s` did not run: you no longer have access to any cluster.", e.ID))
 		return schedule.ErrSkipped
 	}
@@ -146,8 +146,10 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 	if clean == "" {
 		return errors.New("empty answer")
 	}
-	s.post(ctx, e.ChannelID, e.RootID,
-		fmt.Sprintf("⏰ **%s** — %s\n\n%s", e.Spec, e.Query, clean))
+	if err := s.post(ctx, e.ChannelID, e.RootID,
+		fmt.Sprintf("⏰ **%s** — %s\n\n%s", e.Spec, e.Query, clean)); err != nil {
+		return fmt.Errorf("deliver answer: %w", err)
+	}
 	metrics.Messages.WithLabelValues("scheduled").Inc()
 	return nil
 }
@@ -163,7 +165,7 @@ const postTimeout = 20 * time.Second
 // answer and then fail to post it — the work paid for, the result thrown away,
 // with only a "post answer" error to show for it. The deadline exists to stop
 // runaway investigations, not to discard finished ones.
-func (s *Service) post(ctx context.Context, channelID, rootID, msg string) {
+func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error {
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postTimeout)
 	defer cancel()
 
@@ -175,10 +177,21 @@ func (s *Service) post(ctx context.Context, channelID, rootID, msg string) {
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
-		if err := s.mm.CreatePost(dctx, channelID, part, rootID); err != nil {
+		err := s.mm.CreatePost(dctx, channelID, part, rootID)
+		if err != nil && rootID != "" {
+			// The thread may be gone — an alert post deleted, or a root from a
+			// channel that has since been archived. An answer in the channel
+			// beats an answer nobody receives, so try again untethered.
+			s.log.Warn("threaded post failed; retrying at channel level",
+				"channel", channelID, "root", rootID, "err", err)
+			rootID = ""
+			err = s.mm.CreatePost(dctx, channelID, part, "")
+		}
+		if err != nil {
 			s.log.Error("post answer", "channel", channelID, "root", rootID,
 				"part", i+1, "of", len(parts), "err", err)
-			return
+			return fmt.Errorf("post to %s: %w", channelID, err)
 		}
 	}
+	return nil
 }

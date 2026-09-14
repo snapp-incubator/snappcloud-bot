@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -390,5 +391,47 @@ func TestAnswerIsPostedEvenWhenTheRunDeadlineHasPassed(t *testing.T) {
 	}
 	if !strings.Contains(mm.posted[0], "node-3 lost its kubelet") {
 		t.Errorf("wrong content posted: %s", mm.posted[0])
+	}
+}
+
+// An answer nobody receives is a failed investigation. Counting it as success
+// left the alerts in cooldown having produced nothing, so the channel stayed
+// silent for the whole cooldown.
+func TestUndeliveredAnswerIsAFailure(t *testing.T) {
+	mm := &fakeMM{email: "", postErr: errors.New("mattermost: 400 invalid root_id")}
+	b := &fakeBrain{answer: "the cause is pod X"}
+	svc, ch, _ := alertSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	marked := ch.Mark("c1", "", "sre@snapp.cab")
+
+	a, _ := alerts.Parse(alertPost, time.Now())
+	a.ChannelID, a.PostID = "c1", "post-1"
+
+	err := svc.Investigate(context.Background(), marked, alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}})
+	if err == nil {
+		t.Fatal("a failed delivery must be reported as an error, so the batch is retried")
+	}
+	if !strings.Contains(err.Error(), "deliver") {
+		t.Errorf("error does not name the cause: %v", err)
+	}
+}
+
+// A dead thread must not cost the answer: retry at channel level.
+func TestThreadedPostFallsBackToTheChannel(t *testing.T) {
+	mm := &fakeMM{email: "", failThreaded: true}
+	b := &fakeBrain{answer: "the cause is pod X"}
+	svc, ch, _ := alertSvc(mm, b, &fakeResolver{scope: authzclient.Scope{"c": {Namespaces: []string{"team-a"}}}})
+	marked := ch.Mark("c1", "", "sre@snapp.cab")
+
+	a, _ := alerts.Parse(alertPost, time.Now())
+	a.ChannelID, a.PostID = "c1", "deleted-post"
+
+	if err := svc.Investigate(context.Background(), marked, alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}); err != nil {
+		t.Fatalf("the answer should have landed in the channel: %v", err)
+	}
+	if len(mm.posted) != 1 || !strings.Contains(mm.posted[0], "the cause is pod X") {
+		t.Errorf("answer not delivered: %v", mm.posted)
+	}
+	if mm.lastRoot != "" {
+		t.Errorf("retry should be untethered, got root %q", mm.lastRoot)
 	}
 }

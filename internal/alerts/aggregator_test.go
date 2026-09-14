@@ -174,3 +174,35 @@ func TestCooldownStatePrunes(t *testing.T) {
 		t.Errorf("cooldown state retained %d expired entries", n)
 	}
 }
+
+// The cooldown is stamped when a batch is handed out, so the same alert is not
+// investigated twice at once. But a batch that FAILED answered nothing, and
+// holding those alerts for a full cooldown over a transient error looks exactly
+// like the bot ignoring the channel.
+func TestFailedBatchIsRetriedOnTheNextWindow(t *testing.T) {
+	now := time.Now()
+	a := NewAggregator(Limits{Window: time.Minute, Cooldown: 30 * time.Minute})
+	a.Add(alert("KubePodCrashLooping", "critical", "web-0", "ch1", now), now)
+
+	b := a.Due(now.Add(time.Minute))[0]
+	if len(b.Investigate) != 1 {
+		t.Fatal("first sighting must be investigated")
+	}
+
+	// Without this, the alert sits in cooldown having produced no answer.
+	a.Failed(b)
+
+	later := now.Add(2 * time.Minute)
+	a.Add(alert("KubePodCrashLooping", "critical", "web-0", "ch1", later), later)
+	retry := a.Due(later.Add(time.Minute))
+	if len(retry) != 1 || len(retry[0].Investigate) != 1 {
+		t.Fatalf("a failed batch was not retried: %+v", retry)
+	}
+
+	// A batch that succeeded still holds its cooldown.
+	third := now.Add(4 * time.Minute)
+	a.Add(alert("KubePodCrashLooping", "critical", "web-0", "ch1", third), third)
+	if b := a.Due(third.Add(time.Minute)); len(b) != 0 {
+		t.Errorf("a successful batch did not hold its cooldown: %+v", b)
+	}
+}
