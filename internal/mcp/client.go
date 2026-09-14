@@ -270,18 +270,67 @@ func (c *Client) newRequest(ctx context.Context, body []byte) (*http.Request, er
 	return req, nil
 }
 
+// maxResponseBytes bounds what one tool response may occupy. The bot runs in a
+// small container and fans out across clusters, so several responses are in
+// flight at once — and each is parsed again downstream for filtering, where JSON
+// becomes Go values at several times the size of the text. An unbounded read is
+// therefore an unbounded multiple of itself, which is how a single cluster-wide
+// query ends as an OOMKill rather than an error.
+//
+// The cap is far above any useful answer: a tool result is truncated to 100k
+// runes before the model ever sees it.
+const maxResponseBytes = 8 << 20 // 8 MiB
+
+// errTooLarge is returned when a tool's response exceeds maxResponseBytes. It
+// reads as instruction rather than failure, because the model can act on it.
+var errTooLarge = fmt.Errorf("tool response exceeded %d MiB and was refused; "+
+	"narrow the query (a namespace, a node, a selector, or a smaller limit)", maxResponseBytes>>20)
+
 // decodeResponse reads either a single JSON response or an SSE stream, returning
 // the JSON-RPC response whose id matches.
 func decodeResponse(resp *http.Response, id int) (*rpcResponse, error) {
+	// Bound the read itself. Truncating afterwards is too late: by then the
+	// whole body is resident, which is the thing being guarded against.
+	body := &limitedReader{r: resp.Body, left: maxResponseBytes}
+
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
-		return decodeSSE(resp.Body, id)
+		rpc, err := decodeSSE(body, id)
+		if body.exceeded {
+			return nil, errTooLarge
+		}
+		return rpc, err
 	}
 	var rpc rpcResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rpc); err != nil {
+	if err := json.NewDecoder(body).Decode(&rpc); err != nil {
+		if body.exceeded {
+			return nil, errTooLarge
+		}
 		return nil, fmt.Errorf("decode json: %w", err)
 	}
 	return &rpc, nil
+}
+
+// limitedReader stops after left bytes and remembers that it did, so an
+// oversized response is reported as such rather than as a parse error on
+// truncated JSON.
+type limitedReader struct {
+	r        io.Reader
+	left     int64
+	exceeded bool
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.left <= 0 {
+		l.exceeded = true
+		return 0, io.EOF
+	}
+	if int64(len(p)) > l.left {
+		p = p[:l.left]
+	}
+	n, err := l.r.Read(p)
+	l.left -= int64(n)
+	return n, err
 }
 
 // decodeSSE scans `data:` events for the JSON-RPC response with the given id.

@@ -141,6 +141,11 @@ type binding struct {
 // request rejected by the LLM endpoint.
 const maxResultRunes = 100_000
 
+// maxFilterBytes is the largest result the bot will try to authorize. Above it
+// the parse cost outweighs any answer the result could contain, and several
+// clusters answering at once multiplies it.
+const maxFilterBytes = 4 << 20 // 4 MiB
+
 // capResult truncates an oversized tool result, telling the model to narrow
 // the query. Applied AFTER namespace filtering so truncation can never turn
 // filterable JSON into an unfilterable fragment.
@@ -383,6 +388,21 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 // the summary aggregates it; a dropped result is normal enforcement, not an
 // error worth a line each.
 func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (ToolResult, bool) {
+	// Filtering parses the result twice — once to find IP references, once to
+	// drop unauthorized records — and JSON becomes Go values at several times
+	// the size of the text. Past a point that is more memory than the answer is
+	// worth, and the bot fans out across clusters with several of these in
+	// flight. Withhold instead, and say what to do about it: truncating first
+	// would leave invalid JSON, which the filter cannot parse and would pass
+	// through unfiltered.
+	if len(out) > maxFilterBytes {
+		metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "filtered").Inc()
+		return errResult(callID, fmt.Sprintf(
+			"result was %d MB, too large to authorize safely and withheld. "+
+				"Narrow the query: a namespace, a node, a selector, or a smaller limit.",
+			len(out)>>20)), true
+	}
+
 	_, ips := ExtractRefs(out)
 	var resolved map[string][]string
 	if len(ips) > 0 {

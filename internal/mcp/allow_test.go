@@ -1,6 +1,12 @@
 package mcp
 
-import "testing"
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 // A server may ship far more than the bot should offer. The Grafana MCP server
 // can update dashboards, manage alert rules and expire silences; the bot is
@@ -33,5 +39,55 @@ func TestEmptyAllowListPermitsEverything(t *testing.T) {
 		if !c.Allowed(name) {
 			t.Errorf("%q should be allowed when no allow-list is configured", name)
 		}
+	}
+}
+
+// An oversized response must be refused at the read, not after it is resident:
+// the bot fans out across clusters in a small container, and each response is
+// parsed again downstream at several times the size of its text.
+func TestOversizedResponseIsRefusedAtTheRead(t *testing.T) {
+	// A body larger than the cap, served as plain JSON.
+	big := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` +
+		strings.Repeat("x", maxResponseBytes+1024) + `"}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, big)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if _, err := decodeResponse(resp, 1); err == nil {
+		t.Fatal("an oversized response was accepted")
+	} else if !strings.Contains(err.Error(), "narrow the query") {
+		t.Errorf("error should tell the model what to do, got: %v", err)
+	}
+}
+
+// A normal response is unaffected by the cap.
+func TestNormalResponseStillDecodes(t *testing.T) {
+	body := `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"ok"}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	rpc, err := decodeResponse(resp, 7)
+	if err != nil {
+		t.Fatalf("a normal response was refused: %v", err)
+	}
+	if rpc.Error != nil || len(rpc.Result) == 0 {
+		t.Errorf("result not decoded: %+v", rpc)
 	}
 }

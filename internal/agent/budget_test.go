@@ -106,3 +106,27 @@ func TestTrimConversationLeavesSmallOnesAlone(t *testing.T) {
 		t.Error("content changed")
 	}
 }
+
+// A result too large to authorize is withheld, not truncated — because
+// truncating JSON leaves something the filter cannot parse, and an unparseable
+// result is passed through UNFILTERED. Truncating to save memory would turn a
+// memory guard into a data leak, which is why the caller refuses instead.
+func TestTruncatedJSONWouldBypassTheFilter(t *testing.T) {
+	full := `[{"namespace":"team-b","note":"another tenant"},{"namespace":"team-a","note":"mine"}]`
+
+	// Whole and valid: the other tenant's record is dropped.
+	out, removed, _ := FilterResult(full, map[string]bool{"team-a": true}, nil)
+	if removed != 1 || strings.Contains(out, "team-b") {
+		t.Fatalf("valid JSON not filtered: removed=%d out=%s", removed, out)
+	}
+
+	// Truncated: unparseable, so it passes through with the other tenant intact.
+	truncated := full[:len(full)/2]
+	body, n, blocked := FilterResult(truncated, map[string]bool{"team-a": true}, nil)
+	if n != 0 || blocked {
+		t.Fatalf("expected pass-through for unparseable input, got removed=%d blocked=%v", n, blocked)
+	}
+	if !strings.Contains(body, "team-b") {
+		t.Fatal("fixture no longer demonstrates the hazard")
+	}
+}
