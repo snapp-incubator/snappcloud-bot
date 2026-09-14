@@ -284,7 +284,8 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			if s.AuthHeaderEnv != "" {
 				auth = os.Getenv(s.AuthHeaderEnv)
 			}
-			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth, SelfAuthorized: s.SelfAuthorized})
+			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth,
+				SelfAuthorized: s.SelfAuthorized, AllowTools: s.AllowTools})
 		}
 		clusters = append(clusters, brain.Cluster{Name: c.Name, Alias: c.Alias, Servers: servers})
 	}
@@ -320,7 +321,8 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			}
 		}
 		globalServers = append(globalServers, brain.Server{
-			URL: url, AuthHeader: auth, Alias: s.Alias, ClusterAdminOnly: s.ClusterAdminOnly,
+			URL: url, AuthHeader: auth, Alias: s.Alias,
+			ClusterAdminOnly: s.ClusterAdminOnly, AllowTools: s.AllowTools,
 		})
 	}
 

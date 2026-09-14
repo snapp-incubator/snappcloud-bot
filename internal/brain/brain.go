@@ -54,6 +54,10 @@ type Server struct {
 	SelfAuthorized bool
 	// ClusterAdminOnly restricts a global server to cluster-admin callers.
 	ClusterAdminOnly bool
+	// AllowTools, when non-empty, is the only set of tools this server may
+	// expose. Servers that ship write operations alongside the reads the bot
+	// wants are narrowed here.
+	AllowTools []string
 }
 
 // Cluster describes one cluster's MCP servers.
@@ -94,7 +98,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		mux := mcp.NewMux()
 		for i, s := range c.Servers {
 			name := fmt.Sprintf("%s-%d", c.Name, i)
-			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout))
+			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout, s.AllowTools...))
 		}
 		alias := c.Alias
 		if alias == "" {
@@ -123,7 +127,7 @@ func New(o Options, log *slog.Logger) *Brain {
 			adminOnly[alias] = true
 		}
 		// Global servers are tenant-independent; never send identity.
-		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, false, o.MCPTimeout))
+		m.Add(fmt.Sprintf("%s-%d", alias, i), mcp.New(s.URL, s.AuthHeader, false, o.MCPTimeout, s.AllowTools...))
 	}
 	global := make(map[string]agent.MCP, len(muxes))
 	for alias, m := range muxes {

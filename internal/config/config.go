@@ -180,6 +180,13 @@ type MCPServer struct {
 	// Takes precedence over URL.
 	URLEnv        string `yaml:"urlEnv"`
 	AuthHeaderEnv string `yaml:"authHeaderEnv"`
+	// AllowTools, when set, is the ONLY set of tools the bot will list or call
+	// from this server. Use it for servers that ship more than the bot should
+	// offer: the Grafana MCP server, for example, can update dashboards, manage
+	// alert rules and expire silences, and the bot is read-only. Configuring the
+	// server itself is the first control; this is the second, so a server
+	// reconfigured elsewhere cannot widen what the bot will call.
+	AllowTools []string `yaml:"allowTools"`
 	// ClusterAdminOnly restricts a globalServer to callers who hold cluster-wide
 	// access on at least one cluster. Its tools are not even listed for anyone
 	// else, so the model cannot propose or name them. Ignored for per-cluster

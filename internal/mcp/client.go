@@ -25,7 +25,14 @@ type Client struct {
 	url            string
 	authHeader     string // full Authorization header value ("" = none)
 	selfAuthorized bool   // identity-aware server: forward X-Remote-User, tools self-authorize
-	http           *http.Client
+	// allow, when non-empty, is the only set of tools this server may expose.
+	// Some servers ship far more than the bot should offer — Grafana's, for
+	// instance, can update dashboards, manage alert rules and expire silences,
+	// and the bot is read-only. Configuring the server is the first control;
+	// this is the second, so a server reconfigured elsewhere cannot widen what
+	// the bot will call.
+	allow map[string]bool
+	http  *http.Client
 
 	mu        sync.Mutex
 	sessionID string
@@ -39,12 +46,26 @@ type Client struct {
 // caller's identity (carried in the request context) is forwarded as the
 // X-Remote-User header, and the agent trusts the server to scope its own
 // results (see mcp.Tool.SelfAuthorized). Enable it only for such servers.
-func New(url, authHeader string, selfAuthorized bool, timeout time.Duration) *Client {
+func New(url, authHeader string, selfAuthorized bool, timeout time.Duration, allowTools ...string) *Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	return &Client{url: url, authHeader: authHeader, selfAuthorized: selfAuthorized, http: &http.Client{Timeout: timeout}}
+	var allow map[string]bool
+	if len(allowTools) > 0 {
+		allow = make(map[string]bool, len(allowTools))
+		for _, t := range allowTools {
+			if t = strings.TrimSpace(t); t != "" {
+				allow[t] = true
+			}
+		}
+	}
+	return &Client{url: url, authHeader: authHeader, selfAuthorized: selfAuthorized,
+		allow: allow, http: &http.Client{Timeout: timeout}}
 }
+
+// Allowed reports whether a tool may be used. An empty allow-list means every
+// tool the server advertises.
+func (c *Client) Allowed(name string) bool { return c.allow == nil || c.allow[name] }
 
 // SelfAuthorized reports whether this server is identity-aware: its tools
 // authorize the caller from the forwarded identity and their results are trusted
@@ -120,11 +141,25 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("decode tools: %w", err)
 	}
-	return out.Tools, nil
+	if c.allow == nil {
+		return out.Tools, nil
+	}
+	kept := make([]Tool, 0, len(c.allow))
+	for _, t := range out.Tools {
+		if c.allow[t.Name] {
+			kept = append(kept, t)
+		}
+	}
+	return kept, nil
 }
 
 // CallTool invokes a tool and returns its concatenated text content.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	// Enforced on the call as well as the listing: a model that names a tool it
+	// was never offered must not reach it.
+	if !c.Allowed(name) {
+		return "", fmt.Errorf("tool %q is not enabled on this server", name)
+	}
 	if err := c.ensureInit(ctx); err != nil {
 		return "", err
 	}
