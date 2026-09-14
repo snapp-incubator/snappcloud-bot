@@ -1,15 +1,62 @@
 # snappcloud-bot
 
-The SnappCloud Mattermost bot. An authenticated user chats with it; the bot
-resolves the user's authorization and runs an **in-process MCP agent** that
-drives the per-cluster MCP servers (Kubernetes/OpenShift, Cilium/Hubble,
-Envoy/Contour, docs) with a reasoning model — investigating workloads (pods,
-crashes, rollouts, quotas, logs, events) and networking (flows, drops, ingress,
-policy) across clusters in a single loop, while enforcing namespace scope on
-every tool result.
+**A ChatOps SRE assistant for Kubernetes and OpenShift that cannot exceed the
+asking user's own access.**
 
-Authorization is delegated to [mcp-authz](https://github.com/snapp-incubator/mcp-authz) — one instance per
-cluster. The bot holds **no cluster credentials**.
+Ask it a question in chat — *"why are the pods in team-a crashing on prod-1?"* —
+and it investigates across your clusters with a reasoning model driving
+[MCP](https://modelcontextprotocol.io) servers: pods, logs, events, rollouts,
+quotas, network flows, packet drops, ingress, GitOps state and Prometheus
+metrics. It answers with the evidence it found, the root cause, and what to do.
+
+It can also **investigate Alertmanager alerts on its own**: mark a channel, and
+alerts posted there are batched, investigated, and answered in the thread before
+anyone opens it.
+
+**User documentation:**
+[docs.snappcloud.io](https://docs.snappcloud.io/docs/observability/snappcloud-bot)
+· **Related:** [mcp-authz](https://github.com/snapp-incubator/mcp-authz) (per-cluster
+authorization) · [openshift-mcp](https://github.com/snapp-incubator/openshift-mcp)
+(read-only Kubernetes tools)
+
+## Why this exists
+
+An LLM with cluster credentials is a liability: prompts are not a security
+boundary, and "only show the user their own namespaces" is a request, not a
+control. This bot is built the other way around.
+
+- **It holds no cluster credentials.** All reads happen in MCP servers, each
+  with its own read-only role.
+- **Authorization is resolved per request** against the same RBAC `oc` uses, via
+  [mcp-authz](https://github.com/snapp-incubator/mcp-authz) — one per cluster.
+- **Results are filtered before the model sees them.** A record naming a
+  namespace the caller cannot access is dropped; a bare IP is resolved and
+  gated; if scope cannot be verified the result is withheld. The model never
+  receives data the user is not entitled to, so it cannot leak it.
+- **Metrics queries are rewritten, not filtered.** A PromQL result carries no
+  namespace to filter on, so every selector is pinned to the caller's namespaces
+  *before* the query runs.
+- **Strictly read-only.** It tells you the fix; you apply it.
+
+## What you need to run it
+
+- A chat front end — Mattermost today (the agent loop is independent of it)
+- An Anthropic-style `/v1/messages` LLM endpoint
+- One [mcp-authz](https://github.com/snapp-incubator/mcp-authz) per cluster
+- One or more MCP servers, e.g.
+  [openshift-mcp](https://github.com/snapp-incubator/openshift-mcp) for
+  Kubernetes, plus anything else that speaks MCP
+
+```sh
+make build
+./bin/snappcloud-bot -config config.example.yaml
+```
+
+`config.example.yaml` is a full, commented configuration. Deployment manifests
+live in the SnappCloud helm repository; the binary needs only a config file, a
+Mattermost token, an LLM key, and network reach to its MCP servers.
+
+## How it works
 
 ```
 Mattermost user ── message (WebSocket)
@@ -90,7 +137,7 @@ Three exemption classes:
   features that are switched on. Commands are matched on the whole message
   after normalising case, punctuation and politeness (`Alerts On, please` works),
   but a message that merely *mentions* a command word is treated as a question —
-  "which alerts are firing on teh-1" goes to the agent, not the command handler.
+  "which alerts are firing on prod-1" goes to the agent, not the command handler.
 - **Access refresh.** Scope is cached per user (`authz.cacheTTL`). A
   user whose authorization just changed can say **"refresh"** to flush their own
   cache and get their live cluster/namespace list immediately — no wait, no
@@ -175,12 +222,12 @@ user token or a **ServiceAccount** token:
 
 ```bash
 TOKEN=$(oc whoami -t)                     # or: oc create token my-sa -n my-ns
-BOT=https://snappcloud-bot.apps.private.okd4.teh-1.snappcloud.io
+BOT=https://snappcloud-bot.prod-1.example.com
 
 curl -sS -H "Authorization: Bearer $TOKEN" "$BOT/v1/whoami"
 
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"query":"why are pods in my-ns crashing on okd4-teh-1?"}' "$BOT/v1/query"
+  -d '{"query":"why are pods in my-ns crashing on prod-1?"}' "$BOT/v1/query"
 ```
 
 | Endpoint | Purpose |
@@ -252,9 +299,9 @@ Append one entry under the cluster — no code change:
 ```yaml
 agent:
   clusters:
-    - name: okd4-teh-1
+    - name: prod-1
       servers:
-        - url: https://hubble-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+        - url: https://hubble-mcp.prod-1.example.com/mcp
           authHeaderEnv: HUBBLE_TEH1_AUTH   # only if it needs auth (per region)
 ```
 
@@ -272,9 +319,9 @@ the bot's namespace enforcement, returning results unfiltered:
 ```yaml
 agent:
   clusters:
-    - name: okd4-teh-1
+    - name: prod-1
       servers:
-        - url: https://argocd-mcp.apps.private.okd4.teh-1.snappcloud.io/mcp
+        - url: https://argocd-mcp.prod-1.example.com/mcp
           selfAuthorized: true   # forwards X-Remote-User; server scopes the result
 ```
 
@@ -299,3 +346,7 @@ as env via `envFrom` — including per-region `mcpAuth` entries), and a **PVC** 
 conversation memory. Secrets are grouped under the `snappcloud_bot` sops key; the
 shared `mcp_authz.authToken` sops key is read by both this chart and mcp-authz so
 the bearer can never drift.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
