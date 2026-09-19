@@ -444,7 +444,7 @@ func TestThreadedPostFallsBackToTheChannel(t *testing.T) {
 func TestAlertPromptDirectsTheInvestigation(t *testing.T) {
 	a, _ := alerts.Parse(alertPost, time.Now())
 	a.ChannelID = "c1"
-	q := strings.ToLower(batchQuery(alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}))
+	q := strings.ToLower(batchQuery(alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}, nil))
 
 	for what, phrase := range map[string]string{
 		"query the firing metric":     "metric rule",
@@ -461,5 +461,32 @@ func TestAlertPromptDirectsTheInvestigation(t *testing.T) {
 	}
 	if strings.Contains(q, "restate the alert") == false {
 		t.Error("the prompt should tell it not to restate the alert text")
+	}
+}
+
+// An alert's cluster label rarely matches the bot's cluster name. The batch
+// prompt resolves it and says so, so the model is never left to conclude the
+// user lacks access to a cluster that is merely spelled differently.
+func TestBatchScopeResolvesAlertClusterLabel(t *testing.T) {
+	a := alerts.Alert{Name: "CiliumHighBpfMapPressure", Labels: map[string]string{"cluster": "c-teh-1", "namespace": "team-a"}}
+	q := batchQuery(alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}, (&fakeBrain{}).ResolveCluster)
+	if !strings.Contains(q, `clusters c (the alert's label for it is "c-teh-1")`) {
+		t.Fatalf("cluster label not resolved in scope line:\n%s", q)
+	}
+	if strings.Contains(q, "matches no cluster") {
+		t.Fatalf("resolved label reported as unknown:\n%s", q)
+	}
+}
+
+// A label nobody configured is still not an access verdict: the prompt names
+// the mismatch for what it is and tells the model to pick a cluster, not to
+// refuse.
+func TestBatchScopeNamesUnknownClusterLabelAsNamingDifference(t *testing.T) {
+	a := alerts.Alert{Name: "X", Labels: map[string]string{"cluster": "mystery-9"}}
+	q := batchQuery(alerts.Batch{ChannelID: "c1", Investigate: []alerts.Alert{a}}, (&fakeBrain{}).ResolveCluster)
+	for _, want := range []string{"mystery-9 matches no cluster", "not an access limit", "pick the cluster"} {
+		if !strings.Contains(q, want) {
+			t.Fatalf("missing %q in:\n%s", want, q)
+		}
 	}
 }

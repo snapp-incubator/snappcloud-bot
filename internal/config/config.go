@@ -182,8 +182,15 @@ type FallbackLLM struct {
 // AgentCluster is one cluster's MCP servers. Name MUST match the mcp-authz
 // region name (scope key). Alias is a short tool-name prefix.
 type AgentCluster struct {
-	Name    string      `yaml:"name"`
-	Alias   string      `yaml:"alias"`
+	Name  string `yaml:"name"`
+	Alias string `yaml:"alias"`
+	// Names lists what else this cluster is called outside the bot: the
+	// `cluster`/`region` label your alert rules carry, the Grafana datasource
+	// name, what people say. The bot maps them to this cluster so the model is
+	// never left to guess whether "snappgroup-teh-1" is a cluster the user may
+	// use. The configured name, alias and the name without its okd4- prefix
+	// are always recognised.
+	Names   []string    `yaml:"names"`
 	Servers []MCPServer `yaml:"servers"`
 }
 

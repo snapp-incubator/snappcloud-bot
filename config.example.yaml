@@ -93,9 +93,15 @@ agent:
   # filtering; allowTools and clusterAdminOnly toolRules still apply). Use it only
   # for data you are willing to show every tenant, e.g. Prometheus metrics while
   # investigations need cluster-wide context. Off by default.
+  # names: what else the cluster is called outside the bot — the cluster/region
+  # label on your alerts, the Grafana datasource, what people say. The bot maps
+  # them to this cluster so the model never mistakes a spelling for a missing
+  # permission. The name, alias and the name without an okd4- prefix are always
+  # recognised.
   clusters:
     - name: prod-1
       alias: teh1
+      names: [prod-teh-1, teh-1]
       servers:
         - url: https://cilium-mcp.prod-1.example.com/mcp
           authHeaderEnv: CILIUM_TEH1_AUTH

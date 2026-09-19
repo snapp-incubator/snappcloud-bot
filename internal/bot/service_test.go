@@ -53,6 +53,15 @@ type fakeBrain struct {
 	err        error
 }
 
+// ResolveCluster recognises the "c" cluster the tests use, under its own name
+// or the alert-style label "c-teh-1".
+func (f *fakeBrain) ResolveCluster(label string) (string, bool) {
+	if label == "c" || label == "c-teh-1" {
+		return "c", true
+	}
+	return "", false
+}
+
 func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, user, query, history, _ string) (string, error) {
 	f.calls++
 	f.called = true

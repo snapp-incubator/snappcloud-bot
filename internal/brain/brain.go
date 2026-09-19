@@ -38,6 +38,7 @@ type Brain struct {
 
 type clusterMCP struct {
 	alias string
+	names []string // everything the cluster is called; see clusterNames
 	mcp   agent.MCP
 }
 
@@ -66,8 +67,11 @@ type Server struct {
 
 // Cluster describes one cluster's MCP servers.
 type Cluster struct {
-	Name    string
-	Alias   string
+	Name  string
+	Alias string
+	// Names are the cluster's other names outside the bot (alert labels,
+	// datasources, shorthand). See config.AgentCluster.Names.
+	Names   []string
 	Servers []Server
 }
 
@@ -116,7 +120,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		if alias == "" {
 			alias = c.Name
 		}
-		clusters[c.Name] = &clusterMCP{alias: alias, mcp: muxAdapter{mux}}
+		clusters[c.Name] = &clusterMCP{alias: alias, names: clusterNames(c.Name, c.Alias, c.Names), mcp: muxAdapter{mux}}
 	}
 
 	// Group global servers by alias (default "docs"): each alias becomes its own
@@ -247,13 +251,27 @@ func (b *Brain) systemPrompt(scope authzclient.Scope, history string) string {
 	for _, c := range scope.Clusters() {
 		ns := append([]string(nil), scope[c].Namespaces...)
 		sort.Strings(ns)
-		fmt.Fprintf(&sb, "- %s: %s\n", c, strings.Join(ns, ", "))
+		line := "- " + c
+		if also := b.KnownNames(c); len(also) > 0 {
+			line += " (also called " + strings.Join(also, ", ") + ")"
+		}
+		if scope[c].ClusterWide {
+			// Said outright: an admin's namespace list is long, and a model
+			// reading a long list still treats it as a boundary.
+			line += " — CLUSTER-ADMIN, may see every namespace on this cluster"
+		}
+		fmt.Fprintf(&sb, "%s: %s\n", line, strings.Join(ns, ", "))
 	}
 	sb.WriteString("\nThis list is exhaustive and per-user: it contains every cluster and namespace this user may access, and NOTHING else. " +
 		"If the user asks what access / which clusters / which namespaces they have, answer directly from this list — never call a tool to enumerate, and never mention or imply any cluster or namespace not listed here (other clusters exist but are not this user's business). " +
 		"Each cluster tool is tagged [cluster X]; call tools on the correct cluster. " +
 		"For a cross-cluster question, call the relevant tools on each cluster and combine the results. " +
-		"Results for namespaces the user cannot access are withheld automatically; never imply a cluster has only these namespaces.")
+		"Results for namespaces the user cannot access are withheld automatically; never imply a cluster has only these namespaces.\n\n" +
+		"The platform resolved this access before you started, so it is not yours to judge. Alerts, dashboards and people " +
+		"name clusters differently from this list (a region label like snappgroup-teh-1, a short alias, a datasource name); " +
+		"the names in parentheses above are the same clusters. Map any such name to the cluster here that it matches and " +
+		"investigate there. Never tell the user they lack access to a cluster, that a cluster is not in their allowed list, " +
+		"or that someone else must look — if a name matches nothing above, say which clusters you can query and ask which was meant.")
 	if len(b.global) > 0 {
 		tags := sortedKeys(b.global)
 		for i := range tags {

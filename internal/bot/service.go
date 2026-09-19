@@ -37,6 +37,9 @@ func newReqID() string {
 // the prior thread transcript for memory.
 type answerer interface {
 	Answer(ctx context.Context, scope authzclient.Scope, user, query, history, reqID string) (string, error)
+	// ResolveCluster maps a cluster name as alerts or people write it to the
+	// configured cluster, if any is recognised.
+	ResolveCluster(label string) (string, bool)
 }
 
 type mmClient interface {

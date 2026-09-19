@@ -45,3 +45,62 @@ func TestHasClusterWide(t *testing.T) {
 		t.Error("cluster-wide grant on one cluster not reported")
 	}
 }
+
+func namedBrain() *Brain {
+	return &Brain{clusters: map[string]*clusterMCP{
+		"okd4-teh-1":      {alias: "teh1", names: clusterNames("okd4-teh-1", "teh1", nil)},
+		"okd4-teh-2":      {alias: "teh2", names: clusterNames("okd4-teh-2", "teh2", nil)},
+		"okd4-snappgroup": {alias: "snappgroup", names: clusterNames("okd4-snappgroup", "snappgroup", []string{"sg"})},
+		"okd4-box":        {alias: "box", names: clusterNames("okd4-box", "box", nil)},
+	}}
+}
+
+// The names alerts, datasources and people use for a cluster all land on the
+// configured one — and "snappgroup-teh-1" lands on snappgroup, not teh-1,
+// although it contains both.
+func TestResolveClusterMapsOutsideNamesToConfiguredCluster(t *testing.T) {
+	b := namedBrain()
+	cases := map[string]string{
+		"okd4-snappgroup":  "okd4-snappgroup",
+		"snappgroup-teh-1": "okd4-snappgroup",
+		"SnappGroup":       "okd4-snappgroup",
+		"sg":               "okd4-snappgroup",
+		"teh-1":            "okd4-teh-1",
+		"teh1":             "okd4-teh-1",
+		"okd4.teh-2":       "okd4-teh-2",
+		"box-teh-2":        "okd4-box",
+		"prod-box":         "okd4-box",
+	}
+	for in, want := range cases {
+		got, ok := b.ResolveCluster(in)
+		if !ok || got != want {
+			t.Errorf("ResolveCluster(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	if got, ok := b.ResolveCluster("nowhere-1"); ok {
+		t.Errorf("unknown label resolved to %q", got)
+	}
+	if _, ok := b.ResolveCluster(""); ok {
+		t.Error("empty label resolved")
+	}
+}
+
+// The prompt lists the cluster's other names beside it and says cluster-admins
+// see everything — and it forbids the one sentence that was actually said.
+func TestSystemPromptNamesAliasesAndAdminAndForbidsAccessVerdicts(t *testing.T) {
+	b := namedBrain()
+	b.persona, b.system = "P", "S"
+	out := b.systemPrompt(authzclient.Scope{
+		"okd4-snappgroup": {Namespaces: []string{"team-a"}, ClusterWide: true},
+		"okd4-teh-1":      {Namespaces: []string{"team-a"}},
+	}, "")
+	for _, want := range []string{
+		"- okd4-snappgroup (also called sg, snappgroup) — CLUSTER-ADMIN",
+		"- okd4-teh-1 (also called teh-1, teh1): team-a",
+		"Never tell the user they lack access to a cluster",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in prompt:\n%s", want, out)
+		}
+	}
+}

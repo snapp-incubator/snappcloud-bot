@@ -291,7 +291,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth,
 				SelfAuthorized: s.SelfAuthorized, Unscoped: s.Unscoped, AllowTools: s.AllowTools})
 		}
-		clusters = append(clusters, brain.Cluster{Name: c.Name, Alias: c.Alias, Servers: servers})
+		clusters = append(clusters, brain.Cluster{Name: c.Name, Alias: c.Alias, Names: c.Names, Servers: servers})
 	}
 
 	rules := make(map[string]agent.ToolRule, len(cfg.Agent.ToolRules))

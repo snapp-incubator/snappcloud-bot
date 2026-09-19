@@ -298,6 +298,13 @@ like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
+A cluster's `names` lists what else it is called outside the bot — the
+`cluster`/`region` label on your alerts, the Grafana datasource, what people
+say. The bot maps those to the configured cluster (exact, then prefix, then
+substring match, longest wins, ignoring case and an `okd4-` prefix) and tells
+the model the mapping, so `snappgroup-teh-1` on an alert is investigated on
+`okd4-snappgroup` rather than reported as a cluster the user cannot access.
+
 ### Adding a new MCP server
 
 Append one entry under the cluster — no code change:

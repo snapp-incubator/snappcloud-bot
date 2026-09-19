@@ -140,7 +140,7 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	// usually one incident, and asking about them separately gets several
 	// partial answers — each blind to the others — plus a message each.
 	start := time.Now()
-	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner, batchQuery(b), "", reqID)
+	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner, batchQuery(b, s.brain.ResolveCluster), "", reqID)
 	metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
 	if aerr != nil {
 		metrics.AlertInvestigations.WithLabelValues("error").Inc()
@@ -198,7 +198,7 @@ func batchHeader(b alerts.Batch) string {
 // the model is told they may be one incident and asked to say which, because
 // the alternative — treating each alert as its own problem — is exactly what
 // buries an on-call engineer in symptoms of a single cause.
-func batchQuery(b alerts.Batch) string {
+func batchQuery(b alerts.Batch, resolve func(string) (string, bool)) string {
 	var q strings.Builder
 	if len(b.Investigate) == 1 {
 		q.WriteString("This alert just fired. Investigate it on the cluster.\n\n")
@@ -238,7 +238,7 @@ func batchQuery(b alerts.Batch) string {
 		"confident guess, and it stops the next person repeating your work.\n\n" +
 		"Do not restate the alert text back: the reader already has it.\n\n")
 
-	if scopes := batchScope(b); scopes != "" {
+	if scopes := batchScope(b, resolve); scopes != "" {
 		q.WriteString("Scope: " + scopes + "\n\n")
 	}
 
@@ -258,7 +258,13 @@ func batchQuery(b alerts.Batch) string {
 
 // batchScope collects the namespaces and clusters the alerts name, so the
 // investigation starts where the incident is.
-func batchScope(b alerts.Batch) string {
+//
+// The cluster label is resolved to the bot's own cluster name here, not left
+// to the model: an alert saying snappgroup-teh-1 against a tool list saying
+// okd4-snappgroup once produced "the user has no access to that cluster" — an
+// access verdict from a naming difference. Told the mapping, the model has
+// nothing to infer; told a label matched nothing, it is told what that means.
+func batchScope(b alerts.Batch, resolve func(string) (string, bool)) string {
 	nsSet, clusterSet := map[string]bool{}, map[string]bool{}
 	for _, a := range b.Alerts() {
 		ns, cluster := a.Scope()
@@ -274,7 +280,31 @@ func batchScope(b alerts.Batch) string {
 		parts = append(parts, "namespaces "+strings.Join(sortedKeys(nsSet), ", "))
 	}
 	if len(clusterSet) > 0 {
-		parts = append(parts, "clusters "+strings.Join(sortedKeys(clusterSet), ", "))
+		var mapped, unknown []string
+		for _, label := range sortedKeys(clusterSet) {
+			if resolve == nil {
+				mapped = append(mapped, label)
+				continue
+			}
+			name, ok := resolve(label)
+			switch {
+			case !ok:
+				unknown = append(unknown, label)
+			case name == label:
+				mapped = append(mapped, name)
+			default:
+				mapped = append(mapped, fmt.Sprintf("%s (the alert's label for it is %q)", name, label))
+			}
+		}
+		if len(mapped) > 0 {
+			parts = append(parts, "clusters "+strings.Join(mapped, ", ")+" — use the tools tagged with these clusters")
+		}
+		if len(unknown) > 0 {
+			parts = append(parts, fmt.Sprintf("the alert's cluster label %s matches no cluster you have tools for. "+
+				"That is a naming difference, not an access limit: pick the cluster from your tool list it most "+
+				"plausibly denotes, say which you picked, and investigate there",
+				strings.Join(unknown, ", ")))
+		}
 	}
 	return strings.Join(parts, "; ")
 }
