@@ -88,6 +88,11 @@ agent:
   # selfAuthorized: true marks a trusted, identity-aware server (e.g. argocd-mcp):
   # the caller's identity is forwarded as X-Remote-User and the server scopes its
   # own results, so the bot skips namespace filtering for its tools. Off by default.
+  # unscoped: true marks a server whose results every user authorized on the
+  # cluster may see in full (no namespace enforcement, PromQL pinning or result
+  # filtering; allowTools and clusterAdminOnly toolRules still apply). Use it only
+  # for data you are willing to show every tenant, e.g. Prometheus metrics while
+  # investigations need cluster-wide context. Off by default.
   clusters:
     - name: prod-1
       alias: teh1
@@ -97,6 +102,8 @@ agent:
         - url: https://contour-envoy-mcp.prod-1.example.com/mcp
         # - url: https://argocd-mcp.prod-1.example.com/mcp
         #   selfAuthorized: true
+        # - url: https://grafana-mcp.prod-1.example.com/mcp
+        #   unscoped: true          # every tenant sees every metric
     - name: staging-1
       alias: ts3
       servers:

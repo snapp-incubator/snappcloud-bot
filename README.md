@@ -35,7 +35,7 @@ control. This bot is built the other way around.
   receives data the user is not entitled to, so it cannot leak it.
 - **Metrics queries are rewritten, not filtered.** A PromQL result carries no
   namespace to filter on, so every selector is pinned to the caller's namespaces
-  *before* the query runs.
+  *before* the query runs — unless the server is deliberately marked `unscoped`.
 - **Strictly read-only.** It tells you the fix; you apply it.
 
 ## What you need to run it
@@ -115,6 +115,12 @@ Three exemption classes:
   trusting it the same way it trusts mcp-authz. The identity comes from the
   authenticated Mattermost user (never a tool argument, so the model can't spoof
   it); a request with no identity is refused, never sent unscoped (fail-closed).
+- **Unscoped servers** (`servers[].unscoped`): results every user authorized on
+  the cluster may see in full. The bot skips namespace enforcement, PromQL
+  pinning and result filtering for such a server's tools; `allowTools` and
+  `clusterAdminOnly` rules still apply. An operator's deliberate widening —
+  e.g. Prometheus metrics, so an investigation can see the whole cluster — and
+  logged as a warning at startup so it is never forgotten.
 - **Global servers** (the general docs): namespace-agnostic, available to any
   authorized user, not scope-filtered. A global server marked
   `clusterAdminOnly` is served only to callers holding cluster-wide access on
@@ -327,6 +333,19 @@ agent:
 
 Enable it only for servers you trust to enforce the caller's access from the
 forwarded identity — it bypasses the bot's own filtering.
+
+To share a server's results with every tenant of the cluster instead — metrics,
+typically, so an investigation can correlate across namespaces — set
+`unscoped: true`. Nothing is scoped or filtered; `allowTools` still confines the
+server to its read-only tools and `clusterAdminOnly` rules still hold:
+
+```yaml
+        - url: https://grafana-mcp.prod-1.example.com/mcp
+          unscoped: true         # every tenant sees every metric
+          allowTools: [query_prometheus, list_prometheus_metric_names]
+```
+
+The bot logs a warning for each unscoped server at startup.
 
 ## Develop
 

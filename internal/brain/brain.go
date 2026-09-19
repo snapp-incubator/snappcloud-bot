@@ -52,6 +52,10 @@ type Server struct {
 	// caller identity is forwarded as X-Remote-User and its tools are trusted to
 	// self-authorize, so the agent returns their results unfiltered.
 	SelfAuthorized bool
+	// Unscoped marks a server whose results every user authorized on the cluster
+	// may see in full: no namespace enforcement, no PromQL pinning, no result
+	// filtering. allowTools and clusterAdminOnly toolRules still apply.
+	Unscoped bool
 	// ClusterAdminOnly restricts a global server to cluster-admin callers.
 	ClusterAdminOnly bool
 	// AllowTools, when non-empty, is the only set of tools this server may
@@ -100,7 +104,13 @@ func New(o Options, log *slog.Logger) *Brain {
 		mux := mcp.NewMux(log.With("cluster", c.Name))
 		for i, s := range c.Servers {
 			name := fmt.Sprintf("%s-%d", c.Name, i)
-			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout, s.AllowTools...))
+			mux.Add(name, mcp.New(s.URL, s.AuthHeader, s.SelfAuthorized, o.MCPTimeout, s.AllowTools...).SetUnscoped(s.Unscoped))
+			if s.Unscoped {
+				// Deliberate, but a widening of what tenants can see: say so at
+				// startup, where the operator will find it.
+				log.Warn("mcp server is unscoped: every user authorized on the cluster sees its results unfiltered",
+					"cluster", c.Name, "url", s.URL)
+			}
 		}
 		alias := c.Alias
 		if alias == "" {
@@ -297,7 +307,8 @@ func (m muxAdapter) ListTools(ctx context.Context) ([]agent.Tool, error) {
 	}
 	out := make([]agent.Tool, 0, len(ts))
 	for _, t := range ts {
-		out = append(out, agent.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, SelfAuthorized: t.SelfAuthorized})
+		out = append(out, agent.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema,
+			SelfAuthorized: t.SelfAuthorized, Unscoped: t.Unscoped})
 	}
 	return out, nil
 }

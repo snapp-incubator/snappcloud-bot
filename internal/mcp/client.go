@@ -25,6 +25,7 @@ type Client struct {
 	url            string
 	authHeader     string // full Authorization header value ("" = none)
 	selfAuthorized bool   // identity-aware server: forward X-Remote-User, tools self-authorize
+	unscoped       bool   // results shared by every authorized user: no scoping, no filtering
 	// allow, when non-empty, is the only set of tools this server may expose.
 	// Some servers ship far more than the bot should offer — Grafana's, for
 	// instance, can update dashboards, manage alert rules and expire silences,
@@ -75,6 +76,15 @@ func (c *Client) Allowed(name string) bool { return c.allow == nil || c.allow[na
 // authorize the caller from the forwarded identity and their results are trusted
 // unfiltered.
 func (c *Client) SelfAuthorized() bool { return c.selfAuthorized }
+
+// SetUnscoped marks the server's results as shared by every user authorized on
+// the cluster: the agent runs its tools without namespace enforcement or result
+// filtering. It returns c so it can be chained onto New.
+func (c *Client) SetUnscoped(v bool) *Client { c.unscoped = v; return c }
+
+// Unscoped reports whether the server's results are returned to every
+// authorized caller unfiltered. See SetUnscoped.
+func (c *Client) Unscoped() bool { return c.unscoped }
 
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -128,6 +138,10 @@ type Tool struct {
 	// sent by the server): true when the tool comes from an identity-aware server
 	// whose results are trusted unfiltered. See Client.SelfAuthorized.
 	SelfAuthorized bool `json:"-"`
+	// Unscoped is stamped by the Mux from the owning server's config: true when
+	// the tool's results are shared by every authorized caller, unfiltered. See
+	// Client.Unscoped.
+	Unscoped bool `json:"-"`
 }
 
 // ListTools returns the server's tools.

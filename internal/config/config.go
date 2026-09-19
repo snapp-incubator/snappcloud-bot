@@ -221,6 +221,13 @@ type MCPServer struct {
 	// namespace enforcement/filtering and returns their results unfiltered
 	// (trusting the server the same way it trusts mcp-authz). Off by default.
 	SelfAuthorized bool `yaml:"selfAuthorized"`
+	// Unscoped marks a server whose results every user authorized on the cluster
+	// may see in full: the bot skips namespace enforcement, PromQL pinning and
+	// result filtering for its tools. allowTools and clusterAdminOnly toolRules
+	// still apply. Set it only for data you are willing to show every tenant —
+	// e.g. Prometheus metrics while investigations need cluster-wide context.
+	// Off by default.
+	Unscoped bool `yaml:"unscoped"`
 }
 
 // ToolRule overrides where a tool's namespace(s) live (default: arg "namespace",

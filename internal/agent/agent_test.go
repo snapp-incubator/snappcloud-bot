@@ -82,21 +82,25 @@ func (f *fakeLLM) Complete(_ context.Context, req Request) (Response, error) {
 type fakeMCP struct {
 	tools  []string
 	called []string
+	args   []map[string]any // arguments of each call, as the server received them
 	output string
 	// selfAuthorized marks this server identity-aware: its tools skip namespace
 	// enforcement and their results are returned unfiltered (like argocd-mcp).
 	selfAuthorized bool
+	// unscoped marks this server's results as shared by every authorized caller.
+	unscoped bool
 }
 
 func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
 	ts := make([]Tool, 0, len(f.tools))
 	for _, n := range f.tools {
-		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized})
+		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized, Unscoped: f.unscoped})
 	}
 	return ts, nil
 }
-func (f *fakeMCP) CallTool(_ context.Context, name string, _ map[string]any) (string, error) {
+func (f *fakeMCP) CallTool(_ context.Context, name string, args map[string]any) (string, error) {
 	f.called = append(f.called, name)
+	f.args = append(f.args, args)
 	if f.output != "" {
 		return f.output, nil
 	}
@@ -317,5 +321,67 @@ func TestNormalToolStillWithheldOnResolverFailure(t *testing.T) {
 	res := llm.seen[len(llm.seen)-1].Messages[2].Results[0]
 	if !res.IsError {
 		t.Fatal("tenant-data tool must stay fail-closed when resolution is unavailable")
+	}
+}
+
+// An unscoped server (Prometheus, while investigations need cluster-wide
+// context) is neither scoped on the way in nor filtered on the way out: a query
+// naming another tenant's namespace runs as written, and a result full of other
+// tenants' namespaces comes back whole.
+func TestRunUnscopedToolIsNeitherPinnedNorFiltered(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__query_prometheus",
+			Args: map[string]any{"expr": `sum(rate(container_cpu_usage_seconds_total{namespace="other-team"}[5m]))`}}}},
+		{Text: "done"},
+	}}
+	mcp := &fakeMCP{tools: []string{"query_prometheus"}, unscoped: true,
+		output: `{"result":[{"metric":{"namespace":"other-team","pod":"api-1"},"value":[1,"0.7"]}]}`}
+	enforcer := NewEnforcer(map[string]ToolRule{"query_prometheus": {PromQLArgs: []string{"expr"}}})
+	ag := New(llm, enforcer, failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := ag.Run(context.Background(), Input{
+		Query:    "cpu of other-team?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcp.called) != 1 {
+		t.Fatalf("unscoped tool not executed: %v", mcp.called)
+	}
+	if got := mcp.args[0]["expr"]; got != `sum(rate(container_cpu_usage_seconds_total{namespace="other-team"}[5m]))` {
+		t.Fatalf("unscoped query was rewritten: %v", got)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || res[0].IsError {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !strings.Contains(res[0].Content, "other-team") || strings.Contains(res[0].Content, "withheld") {
+		t.Fatalf("unscoped result was filtered: %q", res[0].Content)
+	}
+}
+
+// Unscoped widens what a tenant may see, not who counts as cluster-admin: a
+// tool the rules reserve for admins stays reserved on an unscoped server.
+func TestRunUnscopedStillHonoursClusterAdminOnly(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__list_prometheus_label_names", Args: map[string]any{}}}},
+		{Text: "done"},
+	}}
+	mcp := &fakeMCP{tools: []string{"list_prometheus_label_names"}, unscoped: true}
+	enforcer := NewEnforcer(map[string]ToolRule{"list_prometheus_label_names": {ClusterAdminOnly: true}})
+	ag := New(llm, enforcer, failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := ag.Run(context.Background(), Input{
+		Query:    "labels?",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, MCP: mcp}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mcp.called) != 0 {
+		t.Fatalf("admin-only tool executed for non-admin on unscoped server: %v", mcp.called)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "cluster-admin") {
+		t.Fatalf("expected cluster-admin denial, got: %+v", res)
 	}
 }

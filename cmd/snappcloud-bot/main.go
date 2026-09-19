@@ -289,7 +289,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 				auth = os.Getenv(s.AuthHeaderEnv)
 			}
 			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth,
-				SelfAuthorized: s.SelfAuthorized, AllowTools: s.AllowTools})
+				SelfAuthorized: s.SelfAuthorized, Unscoped: s.Unscoped, AllowTools: s.AllowTools})
 		}
 		clusters = append(clusters, brain.Cluster{Name: c.Name, Alias: c.Alias, Servers: servers})
 	}

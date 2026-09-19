@@ -21,6 +21,10 @@ type Tool struct {
 	// the server authorizes the caller itself from the forwarded identity, so the
 	// agent skips namespace enforcement and returns the result unfiltered.
 	SelfAuthorized bool
+	// Unscoped marks a tool whose results are shared by every user authorized
+	// on the cluster: the agent skips namespace enforcement, PromQL pinning and
+	// result filtering. Cluster-admin-only rules still apply.
+	Unscoped bool
 }
 
 // ToolCall is the model's request to invoke a tool.
@@ -136,6 +140,9 @@ type binding struct {
 	// selfAuthorized: the tool's server authorizes the caller itself (identity-
 	// aware), so the agent skips namespace enforcement and returns it unfiltered.
 	selfAuthorized bool
+	// unscoped: the tool's results are shared by every authorized caller, so
+	// the agent neither scopes the call nor filters the result.
+	unscoped bool
 }
 
 // capResult truncates an oversized tool result, telling the model to narrow
@@ -256,20 +263,24 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 					results = append(results, ToolResult{CallID: call.ID, Content: out})
 					continue
 				}
-				if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
-					denied++
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
-					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
-					continue
-				}
-				// A metrics query is restricted before it runs: its result
-				// cannot be filtered afterwards, because an aggregating query
-				// returns numbers carrying no namespace at all.
-				if err := a.pinPromQL(b.real, call.Args, b.ct.Allowed); err != nil {
-					denied++
-					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
-					results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
-					continue
+				// An unscoped server's results are shared by everyone authorized
+				// on the cluster, so there is nothing to scope the call to.
+				if !b.unscoped {
+					if err := a.enforcer.Check(b.real, call.Args, b.ct.Allowed); err != nil {
+						denied++
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
+						results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
+						continue
+					}
+					// A metrics query is restricted before it runs: its result
+					// cannot be filtered afterwards, because an aggregating query
+					// returns numbers carrying no namespace at all.
+					if err := a.pinPromQL(b.real, call.Args, b.ct.Allowed); err != nil {
+						denied++
+						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
+						results = append(results, errResult(call.ID, "authorization denied: "+err.Error()))
+						continue
+					}
 				}
 			}
 			callStart := time.Now()
@@ -287,6 +298,11 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				// Trusted namespace-agnostic source (docs) — no filtering.
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
 				results = append(results, ToolResult{CallID: call.ID, Content: out})
+			} else if b.unscoped {
+				// Shared by every authorized caller — no filtering, but still
+				// capped like any other result.
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
+				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
 			} else {
 				r, dropped := a.filtered(ctx, b, call.ID, out)
 				if dropped {
@@ -350,7 +366,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		for _, t := range ts {
 			q := qualify(alias, t.Name, reg)
-			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed, selfAuthorized: t.SelfAuthorized}
+			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed, selfAuthorized: t.SelfAuthorized, unscoped: t.Unscoped}
 			// Global (namespace-agnostic) tools are tagged [docs] so the model
 			// treats them as cross-cluster documentation, not a cluster it must
 			// scope. Cluster tools keep the [cluster X] tag.
