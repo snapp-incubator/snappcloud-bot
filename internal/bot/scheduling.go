@@ -137,7 +137,7 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 	}
 
 	lg.Info("scheduled run", "user", e.User, "clusters", scope.Clusters())
-	answer, aerr := s.brain.Answer(ctx, scope, e.User, e.Query, "", reqID)
+	answer, aerr := s.brain.Answer(ctx, scope, e.User, unattended("scheduled report", e.Query), "", reqID)
 	if aerr != nil {
 		return fmt.Errorf("agent: %w", aerr)
 	}
@@ -146,7 +146,7 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 		return errors.New("empty answer")
 	}
 	if err := s.post(ctx, e.ChannelID, e.RootID,
-		fmt.Sprintf("⏰ **%s** — %s\n\n%s", e.Spec, e.Query, clean)); err != nil {
+		fmt.Sprintf("⏰ **%s** — %s\n\n%s", e.Spec, summarizeQuery(e.Query, 200), clean)); err != nil {
 		return fmt.Errorf("deliver answer: %w", err)
 	}
 	metrics.Messages.WithLabelValues("scheduled").Inc()

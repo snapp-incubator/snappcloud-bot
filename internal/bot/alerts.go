@@ -140,7 +140,8 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	// usually one incident, and asking about them separately gets several
 	// partial answers — each blind to the others — plus a message each.
 	start := time.Now()
-	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner, batchQuery(b, s.brain.ResolveCluster), "", reqID)
+	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner,
+		unattended("alert investigation", batchQuery(b, s.brain.ResolveCluster)), "", reqID)
 	metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
 	if aerr != nil {
 		metrics.AlertInvestigations.WithLabelValues("error").Inc()
