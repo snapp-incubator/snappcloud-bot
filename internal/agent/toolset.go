@@ -33,12 +33,15 @@ type clusterTools struct {
 	tools     []Tool
 }
 
-// interleave fits the tool list into max. Clusters the question actually named
-// are served first and in full — a report about one cluster must not lose that
-// cluster's tools to five it never mentioned — and whatever budget is left is
-// shared among the rest by taking one tool from each group in turn, so a
-// cluster with a large server cannot crowd out a small one. It returns the
-// list and, per cluster, how many tools were left out.
+// interleave fits the tool list into max. Clusters the question named are
+// served first — a report about one cluster must not lose that cluster's tools
+// to five it never mentioned — and within every stage tools are taken one per
+// SERVER in turn. That second part is what keeps a cluster's smallest server
+// alive: a cluster whose servers together advertise more than the whole budget
+// would otherwise be truncated in configuration order, and the metrics server,
+// configured last, is the one a report cannot do without.
+//
+// It returns the list and, per cluster, how many tools were left out.
 func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 	total := 0
 	for _, g := range groups {
@@ -54,38 +57,35 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 
 	out := make([]Tool, 0, max)
 	taken := make(map[string]int, len(groups))
-	var rest []clusterTools
+	var preferred, rest []clusterTools
 	for _, g := range groups {
-		if !g.preferred {
+		if g.preferred {
+			preferred = append(preferred, g)
+		} else {
 			rest = append(rest, g)
-			continue
-		}
-		for _, t := range g.tools {
-			if len(out) == max {
-				break
-			}
-			out = append(out, t)
-			taken[g.cluster]++
 		}
 	}
-
-	for round := 0; len(out) < max; round++ {
-		progressed := false
-		for _, g := range rest {
-			if round >= len(g.tools) {
-				continue
+	fill := func(gs []clusterTools) {
+		for round := 0; len(out) < max; round++ {
+			progressed := false
+			for _, g := range gs {
+				if round >= len(g.tools) {
+					continue
+				}
+				progressed = true
+				out = append(out, g.tools[round])
+				taken[g.cluster]++
+				if len(out) == max {
+					break
+				}
 			}
-			progressed = true
-			out = append(out, g.tools[round])
-			taken[g.cluster]++
-			if len(out) == max {
-				break
+			if !progressed {
+				return
 			}
-		}
-		if !progressed {
-			break
 		}
 	}
+	fill(preferred)
+	fill(rest)
 
 	dropped := make(map[string]int)
 	per := make(map[string]int, len(groups))

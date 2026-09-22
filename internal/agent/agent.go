@@ -354,6 +354,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	reg := make(map[string]binding)
 	var groups []clusterTools
 	var present, unreachable []string
+	namedClusters := map[string]bool{}
 	anyOK := false
 	var firstErr error
 	for _, ct := range clusters {
@@ -368,6 +369,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		anyOK = true
 		present = append(present, ct.Cluster)
+		namedClusters[ct.Cluster] = ct.Preferred
 		byServer := map[string][]Tool{}
 		var order []string
 		allowed := make(map[string]bool, len(ct.Allowed))
@@ -411,7 +413,11 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	tools, dropped := interleave(groups, a.budgets.MaxTools)
 	for cluster, n := range dropped {
 		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
-			"cluster", cluster, "dropped", n, "maxTools", a.budgets.MaxTools)
+			"cluster", cluster, "dropped", n, "maxTools", a.budgets.MaxTools,
+			// A cluster the question named losing tools is the one case worth
+			// acting on: raise maxTools if the endpoint carries more, or narrow
+			// a server's allowTools.
+			"named", namedClusters[cluster])
 		metrics.ToolsDropped.WithLabelValues(cluster).Add(float64(n))
 	}
 	a.log.Debug("tools offered", "tools", len(tools), "clusters", len(present), "unreachable", len(unreachable))

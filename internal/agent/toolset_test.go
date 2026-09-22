@@ -181,3 +181,37 @@ func TestInterleaveTrimsEveryServerNotJustTheLast(t *testing.T) {
 		t.Fatalf("the second server kept only %d of 6 tools: %v", fromSmall, names(got))
 	}
 }
+
+// The failure this exists for, in its worst form: ONE cluster whose servers
+// together advertise more than the whole budget. Truncating its list in
+// configuration order empties its last server — which is the metrics server on
+// every cluster here, and every measured number in a report comes from it.
+func TestInterleaveKeepsTheLastServerOfAnOversizedNamedCluster(t *testing.T) {
+	k8s := group("teh1", 60)
+	k8s.preferred = true
+	envoy := group("teh1", 40)
+	envoy.preferred = true
+	metrics := clusterTools{cluster: "teh1", preferred: true, tools: []Tool{
+		{Name: "teh1__query_prometheus"},
+		{Name: "teh1__query_prometheus_histogram"},
+		{Name: "teh1__list_prometheus_metric_names"},
+		{Name: "teh1__list_datasources"},
+	}}
+	got, dropped := interleave([]clusterTools{k8s, envoy, metrics, group("box", 40)}, 60)
+
+	have := map[string]bool{}
+	for _, n := range names(got) {
+		have[n] = true
+	}
+	for _, want := range []string{"teh1__query_prometheus", "teh1__list_datasources"} {
+		if !have[want] {
+			t.Fatalf("%s was trimmed away; the report has no metrics: %v", want, names(got))
+		}
+	}
+	if len(got) != 60 {
+		t.Fatalf("budget not filled: %d", len(got))
+	}
+	if dropped["box"] != 40 {
+		t.Fatalf("the unnamed cluster should yield first: %v", dropped)
+	}
+}

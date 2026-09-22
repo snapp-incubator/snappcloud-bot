@@ -140,3 +140,18 @@ func TestAlertScopeLineNamesAPreferredCluster(t *testing.T) {
 		t.Fatalf("alert scope line did not resolve to one cluster: %v", got)
 	}
 }
+
+// The built-in system prompt is what runs in production — helm overrides the
+// persona and the tool guidance, not this — so the rules that keep an answer
+// an answer have to be in it.
+func TestDefaultSystemForbidsNarrationAndHandCounting(t *testing.T) {
+	for _, want := range []string{
+		"The reply is the result.",
+		"Counting and totals come from a query, never from reading a list.",
+		"Never output your chain-of-thought",
+	} {
+		if !strings.Contains(defaultSystem, want) {
+			t.Errorf("default system prompt is missing: %q", want)
+		}
+	}
+}
