@@ -138,3 +138,46 @@ func TestRunCapsToolsFairlyAcrossClusters(t *testing.T) {
 		t.Fatalf("the small cluster was crowded out: %v", got)
 	}
 }
+
+// A question that names one cluster keeps that cluster's tools whole; the
+// clusters it never mentioned share what is left.
+func TestInterleaveServesTheNamedClusterFirst(t *testing.T) {
+	named := group("teh1", 30)
+	named.preferred = true
+	got, dropped := interleave([]clusterTools{group("box", 40), named, group("ts3", 10)}, 40)
+	var teh1 int
+	for _, n := range names(got) {
+		if strings.HasPrefix(n, "teh1") {
+			teh1++
+		}
+	}
+	if teh1 != 30 {
+		t.Fatalf("named cluster lost tools: %d of 30 (%v)", teh1, names(got))
+	}
+	if dropped["teh1"] != 0 {
+		t.Fatalf("named cluster reported as trimmed: %v", dropped)
+	}
+	if len(got) != 40 {
+		t.Fatalf("budget not filled: %d", len(got))
+	}
+}
+
+// Every server of a cluster is trimmed evenly: the server configured last —
+// in practice the newest one, the metrics server — must not be the one that
+// always disappears.
+func TestInterleaveTrimsEveryServerNotJustTheLast(t *testing.T) {
+	big := group("teh1", 30)
+	small := group("teh1", 6) // same cluster, a second server
+	got, _ := interleave([]clusterTools{big, small}, 12)
+	var fromSmall int
+	for _, tl := range got {
+		for _, s := range small.tools {
+			if tl.Name == s.Name {
+				fromSmall++
+			}
+		}
+	}
+	if fromSmall < 5 {
+		t.Fatalf("the second server kept only %d of 6 tools: %v", fromSmall, names(got))
+	}
+}

@@ -142,6 +142,10 @@ type Tool struct {
 	// the tool's results are shared by every authorized caller, unfiltered. See
 	// Client.Unscoped.
 	Unscoped bool `json:"-"`
+	// Server is the name of the server that advertised the tool, stamped by the
+	// Mux. The agent trims a long tool list per server, so that a cluster's
+	// last-configured server is not the one that always loses its tools.
+	Server string `json:"-"`
 }
 
 // ListTools returns the server's tools.

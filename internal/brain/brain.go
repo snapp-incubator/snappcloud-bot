@@ -200,6 +200,11 @@ func sortedKeys(m map[string]agent.MCP) []string {
 // aware servers); history is a prior-conversation transcript ("" for a fresh
 // thread) used for memory; reqID correlates the turn's log lines.
 func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query, history, reqID string) (string, error) {
+	// Which clusters the question is actually about. Every cluster's tools are
+	// re-sent on every round and the list has a ceiling, so a question naming
+	// one cluster must not lose that cluster's tools to the ones it did not
+	// mention.
+	named := b.clustersNamedIn(query)
 	var cts []agent.ClusterTools
 	for _, c := range scope.Clusters() {
 		cm, ok := b.clusters[c]
@@ -213,6 +218,7 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 			Allowed:      scope[c].Namespaces,
 			ClusterAdmin: scope[c].ClusterWide,
 			MCP:          cm.mcp,
+			Preferred:    named[c],
 		})
 	}
 	// Global tools are available to any authorized user, unfiltered, grouped by

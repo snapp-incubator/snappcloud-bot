@@ -70,6 +70,7 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 			// agent can skip namespace enforcement for self-authorized servers.
 			t.SelfAuthorized = s.client.SelfAuthorized()
 			t.Unscoped = s.client.Unscoped()
+			t.Server = s.name
 			tools = append(tools, t)
 		}
 	}

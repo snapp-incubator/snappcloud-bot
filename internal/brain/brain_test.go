@@ -104,3 +104,39 @@ func TestSystemPromptNamesAliasesAndAdminAndForbidsAccessVerdicts(t *testing.T) 
 		}
 	}
 }
+
+func TestClustersNamedInQuery(t *testing.T) {
+	b := namedBrain()
+	cases := map[string][]string{
+		"Daily platform report for cluster okd4-teh-1 only": {"okd4-teh-1"},
+		"compare snappgroup-teh-1 and box":                  {"okd4-snappgroup", "okd4-box"},
+		"why is my pod restarting in team-a":                nil,
+		"the box is full":                                   {"okd4-box"}, // a real word that is also a cluster name
+		"check teh1 and TEH-2":                              {"okd4-teh-1", "okd4-teh-2"},
+		"sandbox namespaces are noisy":                      nil, // substring must not match
+	}
+	for q, want := range cases {
+		got := b.clustersNamedIn(q)
+		if len(got) != len(want) {
+			t.Errorf("clustersNamedIn(%q) = %v, want %v", q, got, want)
+			continue
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("clustersNamedIn(%q) = %v, missing %s", q, got, w)
+			}
+		}
+	}
+}
+
+// The cluster an alert names must be the preferred one, so an investigation
+// keeps that cluster's tools when the list is trimmed. The alert prompt writes
+// the cluster under its configured name, which is what must match.
+func TestAlertScopeLineNamesAPreferredCluster(t *testing.T) {
+	b := namedBrain()
+	q := "Scope: namespaces team-a; clusters okd4-snappgroup (the alert's label for it is \"snappgroup-teh-1\")"
+	got := b.clustersNamedIn(q)
+	if !got["okd4-snappgroup"] || len(got) != 1 {
+		t.Fatalf("alert scope line did not resolve to one cluster: %v", got)
+	}
+}

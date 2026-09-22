@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -97,4 +98,50 @@ func normalizeClusterName(s string) string {
 		}
 	}
 	return sb.String()
+}
+
+// clusterWordRe finds the words in a question that could name a cluster: the
+// shapes cluster names and alert labels take (teh-1, okd4-teh-1, teh1,
+// snappgroup-teh-1), not every word in the text.
+var clusterWordRe = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\b`)
+
+// clustersNamedIn reports which configured clusters a question names, under
+// any of their names. Used to keep a named cluster's tools whole when the tool
+// list has to be trimmed.
+func (b *Brain) clustersNamedIn(query string) map[string]bool {
+	if len(b.clusters) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, w := range clusterWordRe.FindAllString(query, -1) {
+		if len(w) < 3 {
+			continue
+		}
+		for name, cm := range b.clusters {
+			for _, known := range cm.names {
+				if matchesClusterWord(w, known) {
+					out[name] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// matchesClusterWord reports whether one word of a question names the cluster
+// called known. A whole-word match, or the name followed by a separator, as a
+// region label writes it (snappgroup-teh-1, box-teh-2). Never a bare substring:
+// "sandbox" does not name the box cluster, and a question about a sandbox
+// namespace should not quietly reshape the tool list around it.
+func matchesClusterWord(word, known string) bool {
+	k := normalizeClusterName(known)
+	if k == "" {
+		return false
+	}
+	if normalizeClusterName(word) == k {
+		return true
+	}
+	w := strings.TrimPrefix(strings.ToLower(word), "okd4-")
+	kr := strings.TrimPrefix(strings.ToLower(known), "okd4-")
+	return kr != "" && (strings.HasPrefix(w, kr+"-") || strings.HasPrefix(w, kr+"."))
 }

@@ -21,16 +21,24 @@ import (
 // to the model, because a silently short list is exactly the failure being
 // fixed.
 
-// clusterTools is one cluster's share of the tool list, in the order its
-// servers advertised them (a server's own order is its priority).
+// clusterTools is one server's share of the tool list, in the order that
+// server advertised them (a server's own order is its priority). Grouping by
+// server matters: a cluster's servers are configured in some order, and
+// trimming a flat per-cluster list would always take from whichever server was
+// configured last — which is how the metrics server, added most recently,
+// would be the first thing to disappear from a report about metrics.
 type clusterTools struct {
-	cluster string
-	tools   []Tool
+	cluster   string
+	preferred bool // the question named this cluster: keep its tools whole
+	tools     []Tool
 }
 
-// interleave takes tools from each cluster in turn until max is reached,
-// preserving each cluster's own order. It returns the interleaved list and,
-// per cluster, how many tools were left out.
+// interleave fits the tool list into max. Clusters the question actually named
+// are served first and in full — a report about one cluster must not lose that
+// cluster's tools to five it never mentioned — and whatever budget is left is
+// shared among the rest by taking one tool from each group in turn, so a
+// cluster with a large server cannot crowd out a small one. It returns the
+// list and, per cluster, how many tools were left out.
 func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 	total := 0
 	for _, g := range groups {
@@ -43,11 +51,27 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 		}
 		return out, nil
 	}
+
 	out := make([]Tool, 0, max)
 	taken := make(map[string]int, len(groups))
+	var rest []clusterTools
+	for _, g := range groups {
+		if !g.preferred {
+			rest = append(rest, g)
+			continue
+		}
+		for _, t := range g.tools {
+			if len(out) == max {
+				break
+			}
+			out = append(out, t)
+			taken[g.cluster]++
+		}
+	}
+
 	for round := 0; len(out) < max; round++ {
 		progressed := false
-		for _, g := range groups {
+		for _, g := range rest {
 			if round >= len(g.tools) {
 				continue
 			}
@@ -62,10 +86,15 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 			break
 		}
 	}
+
 	dropped := make(map[string]int)
+	per := make(map[string]int, len(groups))
 	for _, g := range groups {
-		if n := len(g.tools) - taken[g.cluster]; n > 0 {
-			dropped[g.cluster] = n
+		per[g.cluster] += len(g.tools)
+	}
+	for cluster, n := range per {
+		if d := n - taken[cluster]; d > 0 {
+			dropped[cluster] = d
 		}
 	}
 	return out, dropped

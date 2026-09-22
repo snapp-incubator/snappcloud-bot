@@ -25,6 +25,9 @@ type Tool struct {
 	// on the cluster: the agent skips namespace enforcement, PromQL pinning and
 	// result filtering. Cluster-admin-only rules still apply.
 	Unscoped bool
+	// Server names the MCP server that advertised the tool, so a long tool list
+	// can be trimmed evenly across servers rather than by configuration order.
+	Server string
 }
 
 // ToolCall is the model's request to invoke a tool.
@@ -118,6 +121,10 @@ type ClusterTools struct {
 	// docs): its results are passed through unfiltered and it is not tied to any
 	// region's scope. Use only for trusted, tenant-independent content.
 	NoEnforce bool
+	// Preferred marks a cluster the question is actually about, so it keeps its
+	// whole tool list when the list has to be trimmed. A question that names one
+	// cluster should not lose that cluster's tools to five it did not mention.
+	Preferred bool
 }
 
 // Input is one user query, evaluated across every cluster the user can access.
@@ -361,7 +368,8 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		anyOK = true
 		present = append(present, ct.Cluster)
-		var group []Tool
+		byServer := map[string][]Tool{}
+		var order []string
 		allowed := make(map[string]bool, len(ct.Allowed))
 		for _, n := range ct.Allowed {
 			allowed[n] = true
@@ -380,13 +388,22 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			if ct.NoEnforce {
 				desc = fmt.Sprintf("[%s — general documentation, not cluster-scoped] %s", ct.Alias, t.Description)
 			}
-			group = append(group, Tool{
+			if _, seen := byServer[t.Server]; !seen {
+				order = append(order, t.Server)
+			}
+			byServer[t.Server] = append(byServer[t.Server], Tool{
 				Name:        q,
 				Description: desc,
 				InputSchema: t.InputSchema,
 			})
 		}
-		groups = append(groups, clusterTools{cluster: ct.Cluster, tools: group})
+		for _, srv := range order {
+			groups = append(groups, clusterTools{
+				cluster:   ct.Cluster,
+				preferred: ct.Preferred,
+				tools:     byServer[srv],
+			})
+		}
 	}
 	if !anyOK && firstErr != nil {
 		return nil, nil, "", firstErr
