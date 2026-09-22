@@ -392,6 +392,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			RoundRunes:        cfg.Agent.Budgets.RoundRunes,
 			ConversationRunes: cfg.Agent.Budgets.ConversationRunes,
 			FilterBytes:       cfg.Agent.Budgets.FilterBytes,
+			MaxTools:          cfg.Agent.Budgets.MaxTools,
 		},
 		MCPTimeout: 5 * time.Minute,
 		Resolver:   resolver,

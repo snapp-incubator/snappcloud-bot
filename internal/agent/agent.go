@@ -177,17 +177,18 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	// forward it as X-Remote-User. Never sourced from a tool argument.
 	ctx = identity.WithUser(ctx, in.User)
 
-	tools, reg, err := a.buildTools(ctx, in.Clusters)
+	tools, reg, notice, err := a.buildTools(ctx, in.Clusters)
 	if err != nil {
 		summary("build-tools-failed", "err", err)
 		return "", fmt.Errorf("list tools: %w", err)
 	}
+	system := in.System + notice
 	msgs := []Turn{{Role: "user", Text: in.Query}}
 
 	for iter := 0; iter < a.maxIter; iter++ {
 		iters = iter + 1
 		llmStart := time.Now()
-		resp, err := a.llm.Complete(ctx, Request{System: in.System, Messages: msgs, Tools: tools})
+		resp, err := a.llm.Complete(ctx, Request{System: system, Messages: msgs, Tools: tools})
 		metrics.LLMDuration.Observe(time.Since(llmStart).Seconds())
 		if err != nil {
 			metrics.LLMRequests.WithLabelValues("error").Inc()
@@ -327,7 +328,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 
 	// Ran out of iterations — ask the model for a final answer with no tools.
 	resp, err := a.llm.Complete(ctx, Request{
-		System:   in.System + "\n\nYou have reached the tool-call limit. Answer now with what you have.",
+		System:   system + "\n\nYou have reached the tool-call limit. Answer now with what you have.",
 		Messages: msgs,
 	})
 	if err != nil {
@@ -337,25 +338,30 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 }
 
 // buildTools lists every authorized cluster's tools, cluster-qualifying their
-// names and tagging descriptions, and returns the LLM tool set plus a registry
-// mapping each qualified name back to its cluster + real tool. A cluster whose
-// MCP servers all fail to list is skipped; only if EVERY cluster fails is an
-// error returned.
-func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]binding, error) {
-	var tools []Tool
+// names and tagging descriptions, and returns the LLM tool set, a registry
+// mapping each qualified name back to its cluster + real tool, and a notice for
+// the system prompt naming the clusters present, unreachable and trimmed. A
+// cluster whose MCP servers all fail to list is skipped; only if EVERY cluster
+// fails is an error returned.
+func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]binding, string, error) {
 	reg := make(map[string]binding)
+	var groups []clusterTools
+	var present, unreachable []string
 	anyOK := false
 	var firstErr error
 	for _, ct := range clusters {
 		ts, err := ct.MCP.ListTools(ctx)
 		if err != nil {
 			a.log.Error("list cluster tools", "cluster", ct.Cluster, "err", err)
+			unreachable = append(unreachable, ct.Cluster)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s: %w", ct.Cluster, err)
 			}
 			continue
 		}
 		anyOK = true
+		present = append(present, ct.Cluster)
+		var group []Tool
 		allowed := make(map[string]bool, len(ct.Allowed))
 		for _, n := range ct.Allowed {
 			allowed[n] = true
@@ -374,17 +380,26 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			if ct.NoEnforce {
 				desc = fmt.Sprintf("[%s — general documentation, not cluster-scoped] %s", ct.Alias, t.Description)
 			}
-			tools = append(tools, Tool{
+			group = append(group, Tool{
 				Name:        q,
 				Description: desc,
 				InputSchema: t.InputSchema,
 			})
 		}
+		groups = append(groups, clusterTools{cluster: ct.Cluster, tools: group})
 	}
 	if !anyOK && firstErr != nil {
-		return nil, nil, firstErr
+		return nil, nil, "", firstErr
 	}
-	return tools, reg, nil
+	tools, dropped := interleave(groups, a.budgets.MaxTools)
+	for cluster, n := range dropped {
+		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
+			"cluster", cluster, "dropped", n, "maxTools", a.budgets.MaxTools)
+		metrics.ToolsDropped.WithLabelValues(cluster).Add(float64(n))
+	}
+	a.log.Debug("tools offered", "tools", len(tools), "clusters", len(present), "unreachable", len(unreachable))
+	metrics.ToolsOffered.Set(float64(len(tools)))
+	return tools, reg, toolNotice(present, unreachable, dropped), nil
 }
 
 // filtered enforces namespace scope on a raw tool result before the model sees

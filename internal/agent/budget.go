@@ -35,6 +35,13 @@ type Budgets struct {
 	// a result twice and JSON becomes Go values at several times the size of its
 	// text, so this is a memory bound.
 	FilterBytes int
+	// MaxTools caps how many tools are offered to the model in one request.
+	// Every tool definition is sent on every round, and an endpoint that will
+	// not carry them all drops the tail SILENTLY — the model then reports, in
+	// perfect good faith, that a cluster has no tools. So the bot does the
+	// trimming itself, fairly and visibly, rather than discovering it in an
+	// answer.
+	MaxTools int
 }
 
 // DefaultBudgets are sized for a 1Gi container and a large-context model.
@@ -44,6 +51,7 @@ func DefaultBudgets() Budgets {
 		RoundRunes:        200_000,
 		ConversationRunes: 400_000,
 		FilterBytes:       4 << 20,
+		MaxTools:          120,
 	}
 }
 
@@ -60,6 +68,9 @@ func (b *Budgets) applyDefaults() {
 	}
 	if b.FilterBytes <= 0 {
 		b.FilterBytes = d.FilterBytes
+	}
+	if b.MaxTools <= 0 {
+		b.MaxTools = d.MaxTools
 	}
 }
 

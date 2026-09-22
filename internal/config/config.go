@@ -148,6 +148,10 @@ type Budgets struct {
 	RoundRunes        int `yaml:"roundRunes"`
 	ConversationRunes int `yaml:"conversationRunes"`
 	FilterBytes       int `yaml:"filterBytes"`
+	// MaxTools caps how many tools one request may offer the model. An endpoint
+	// that will not carry them all drops the tail silently, and the model then
+	// reports that a cluster has no tools at all.
+	MaxTools int `yaml:"maxTools"`
 }
 
 // LLM points at an Anthropic-style Messages endpoint (e.g. llm.snapp.tech).

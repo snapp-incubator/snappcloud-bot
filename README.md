@@ -298,6 +298,15 @@ like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
+`agent.budgets.maxTools` caps how many tools one request offers the model.
+Every tool definition is sent on every round, and an endpoint that will not
+carry them all drops the **tail** without saying so — the clusters listed last
+then appear to have no tools at all, and the model reports exactly that. The
+bot trims the list itself instead: one tool from each cluster in turn, so a
+cluster with a large server cannot crowd out a small one, and the model is told
+which clusters were trimmed and which were unreachable. Watch
+`snappcloud_bot_tools_offered` and `snappcloud_bot_tools_dropped_total`.
+
 A cluster's `names` lists what else it is called outside the bot — the
 `cluster`/`region` label on your alerts, the Grafana datasource, what people
 say. The bot maps those to the configured cluster (exact, then prefix, then

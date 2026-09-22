@@ -20,7 +20,9 @@ func unattended(kind, query string) string {
 		"Do not comment on the size, cost or effort of the task. " +
 		"If everything asked for cannot be done within your tool-call budget, deliver the parts that can, " +
 		"in the order they are asked for, mark each missing cell or section \"n/a\" with the reason, and " +
-		"finish with one line listing what was cut. A partial report delivered is the job; a question is not.\n\n" +
+		"finish with one line listing what was cut. A partial report delivered is the job; a question is not. " +
+		"Post the result only: no narration of your reasoning, no notes about which tools you can see, " +
+		"no thinking out loud. If a tool you need is missing, that is one line in the report, not a discussion.\n\n" +
 		query
 }
 

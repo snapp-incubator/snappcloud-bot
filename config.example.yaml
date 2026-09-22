@@ -73,6 +73,14 @@ agent:
     failureThreshold: 3      # consecutive primary failures before switching
     cooldownPeriod: 5m       # backup serves this long before re-probing
   maxIterations: 8
+  budgets:
+    # maxTools caps how many tools one request offers the model. Every definition
+    # is sent on every round, and an endpoint that will not carry them all drops
+    # the TAIL silently — the model then reports that the clusters listed last
+    # have no tools. The bot trims the list itself instead, taking one tool from
+    # each cluster in turn so a big server cannot crowd out a small one, and
+    # tells the model what was left out.
+    maxTools: 120
   # Bot identity + greeting/help behavior (SnappCloud default if omitted).
   # persona: |
   # systemPrompt: |    # optional; OVERRIDES the built-in default entirely

@@ -200,6 +200,22 @@ var (
 		Help: "Turns where an MCP server failed to list its tools, by server.",
 	}, []string{"server"})
 
+	// ToolsOffered is how many tools the last turn put in front of the model.
+	// Every definition is sent on every round, and an endpoint that will not
+	// carry them all drops the tail silently, so this is the number to watch
+	// when a cluster's tools go missing from answers.
+	ToolsOffered = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "tools_offered",
+		Help: "Tools offered to the model in the most recent turn.",
+	})
+
+	// ToolsDropped counts tools left out of a turn's tool list, by cluster,
+	// because the list exceeded agent.budgets.maxTools.
+	ToolsDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "tools_dropped_total",
+		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
+	}, []string{"cluster"})
+
 	// ConversationTrims counts turns where the oldest tool output had to be
 	// dropped to fit the model's context budget. A rising count means
 	// investigations are outgrowing the window and answers are losing evidence.
@@ -231,7 +247,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r
