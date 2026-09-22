@@ -291,6 +291,7 @@ func TestSanitizeStripsReasoningAndMarkup(t *testing.T) {
 	cases := map[string]string{
 		"<think>plan</think>Hello":             "Hello",
 		"<tool_call>{\"x\":1}</tool_call>Done": "Done",
+		`Mapped.<tools><call tool="a__b" index="1"><argument key="k">1</argument></call></tools>`: "Mapped.",
 		"answer <|special|> here":              "answer  here",
 		"```\nBGP is healthy on 5 nodes.\n```": "BGP is healthy on 5 nodes.", // prose fence unwrapped
 		"plain answer":                         "plain answer",

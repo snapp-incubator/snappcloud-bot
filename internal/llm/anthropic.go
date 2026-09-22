@@ -184,10 +184,21 @@ func (c *Client) stream(ctx context.Context, body []byte) (agent.Response, error
 		return agent.Response{}, e // 4xx (bad request/auth) — permanent
 	}
 	// Fallback for proxies that ignore stream:true and return one JSON body.
+	var out agent.Response
 	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "application/json") {
-		return parseJSON(resp.Body)
+		out, err = parseJSON(resp.Body)
+	} else {
+		out, err = parseStream(resp.Body)
 	}
-	return parseStream(resp.Body)
+	if err != nil {
+		return agent.Response{}, err
+	}
+	// Not retryable on this model: the gateway will fail to translate the
+	// next attempt the same way. The failover serves it from the backup.
+	if leakedToolCall(out.Text, len(out.Calls)) {
+		return agent.Response{}, ErrLeakedToolCall
+	}
+	return out, nil
 }
 
 // parseJSON handles a non-streamed Messages response. A read error (truncated

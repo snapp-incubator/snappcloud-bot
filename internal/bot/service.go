@@ -304,7 +304,7 @@ var (
 	thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
 	// Some models leak tool-call / function-call markup or special control
 	// tokens into the visible text; strip them so the user never sees them.
-	toolCallRe = regexp.MustCompile(`(?is)<(tool_call|function_call|tool_use|antml:[^>]+)>.*?</(tool_call|function_call|tool_use|antml:[^>]+)>`)
+	toolCallRe = regexp.MustCompile(`(?is)<(tools|tool_call|function_call|tool_use|minimax:tool_call|antml:[^>]+)>.*?</(tools|tool_call|function_call|tool_use|minimax:tool_call|antml:[^>]+)>`)
 	ctrlTokRe  = regexp.MustCompile(`<\|[^|>]*\|>`)
 	// A whole answer wrapped in a single fenced block (```...```), which renders
 	// as a code box instead of readable text.
