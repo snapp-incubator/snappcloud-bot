@@ -250,3 +250,18 @@ func TestMuxAdapterReportsPerServerFailures(t *testing.T) {
 		t.Fatalf("per-server failure not forwarded: %v", got)
 	}
 }
+
+// An empty result is a question about where you asked, not only what you
+// asked: the default datasource is not always the complete one, and metric
+// names differ between deployments.
+func TestDefaultSystemTeachesDatasourceAndMetricDiscovery(t *testing.T) {
+	for _, want := range []string{
+		"A metrics backend is not one place",
+		"the one marked default is not necessarily the one that holds what you need",
+		"Do not take a metric name on trust",
+	} {
+		if !strings.Contains(defaultSystem, want) {
+			t.Errorf("default system prompt is missing: %q", want)
+		}
+	}
+}
