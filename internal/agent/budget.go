@@ -55,6 +55,10 @@ func DefaultBudgets() Budgets {
 	}
 }
 
+// ApplyDefaults fills in the zero values, so a caller can report the budgets
+// that will actually be used rather than the ones it happened to configure.
+func (b *Budgets) ApplyDefaults() { b.applyDefaults() }
+
 func (b *Budgets) applyDefaults() {
 	d := DefaultBudgets()
 	if b.ResultRunes <= 0 {

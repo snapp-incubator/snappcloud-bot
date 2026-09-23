@@ -446,3 +446,27 @@ func TestRunAtToolLimitDemandsAnAnswerNotAPlan(t *testing.T) {
 		}
 	}
 }
+
+// An investigation that stopped at the tool limit must say so in the message:
+// it reads exactly like one that finished, and the person who can raise the
+// limit is the one reading it.
+func TestRunAtToolLimitSaysSoInTheAnswer(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "c__t", Args: map[string]any{}}}},
+		{Text: "The listener caps bodies at 1 MiB."},
+	}}
+	ag := New(llm, NewEnforcer(nil), nil, 1, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "why 413?",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"t"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Stopped after 1 tool calls") {
+		t.Fatalf("answer does not say it was cut short: %q", out)
+	}
+	if !strings.Contains(out, "1 MiB") {
+		t.Fatalf("answer lost: %q", out)
+	}
+}

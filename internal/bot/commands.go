@@ -73,6 +73,7 @@ func helpText(schedules, alerts bool) string {
 		b.WriteString("| `alerts status` | whose access it uses, and the current limits |\n")
 	}
 
+	b.WriteString("\nCluster-admins: `diagnostics` shows every MCP server the bot has, its tool count, and anything not answering.\n")
 	b.WriteString("\nIn a channel, @-mention me. In a direct message, just write.")
 	return b.String()
 }

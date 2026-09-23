@@ -40,6 +40,9 @@ type Brain struct {
 	system          string
 	guidance        string // MCP tool-usage guidance ("skills"), appended to every prompt
 	log             *slog.Logger
+	// Reported by Status/Limits: the settings that explain a thin answer.
+	model, backup     string
+	maxIter, maxTools int
 }
 
 type clusterMCP struct {
@@ -165,6 +168,8 @@ func New(o Options, log *slog.Logger) *Brain {
 			"failureThreshold", o.FailoverOpts.FailureThreshold, "cooldown", o.FailoverOpts.CooldownPeriod)
 	}
 	ag := agent.New(model, agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, o.Budgets, log)
+	budgets := o.Budgets
+	budgets.ApplyDefaults()
 	system := o.SystemPrompt
 	if strings.TrimSpace(system) == "" {
 		system = defaultSystem
@@ -173,8 +178,17 @@ func New(o Options, log *slog.Logger) *Brain {
 	if strings.TrimSpace(persona) == "" {
 		persona = defaultPersona
 	}
+	backupModel := ""
+	if o.FallbackLLM.Model != "" {
+		backupModel = o.FallbackLLM.Model
+	}
+	maxIter := o.MaxIter
+	if maxIter <= 0 {
+		maxIter = 6
+	}
 	return &Brain{agent: ag, clusters: clusters, global: global, globalAdminOnly: adminOnly,
-		persona: persona, system: system, guidance: o.ToolGuidance, log: log}
+		persona: persona, system: system, guidance: o.ToolGuidance, log: log,
+		model: o.LLM.Model, backup: backupModel, maxIter: maxIter, maxTools: budgets.MaxTools}
 }
 
 // visibleGlobal returns the global tool aliases a caller may see, sorted for

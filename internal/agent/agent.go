@@ -375,7 +375,10 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			text = t
 		}
 	}
-	return text, nil
+	// Say it in the answer, not only in a log line. An investigation that
+	// stopped at the limit reads exactly like one that finished, and the person
+	// who can do something about it is the one reading the message.
+	return text + fmt.Sprintf("\n\n_Stopped after %d tool calls — the per-question limit._", a.maxIter), nil
 }
 
 // finish completes an answer the model had to stop mid-sentence. It asks for

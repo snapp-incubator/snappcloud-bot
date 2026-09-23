@@ -371,6 +371,16 @@ server to its read-only tools and `clusterAdminOnly` rules still hold:
 
 The bot logs a warning for each unscoped server at startup.
 
+### Diagnosing a thin answer
+
+`diagnostics` (cluster-admins, in chat) lists every MCP server the bot has for
+your clusters, the number of tools each advertises, and the error for any that
+is not answering — a server that is down, one refusing the bot's credentials,
+and one that genuinely lacks a tool are indistinguishable from an answer and
+obvious here. It also reports the model, the per-question tool-call limit and
+the per-request tool limit, which are the other two reasons an answer stops
+early. An answer that ran out of tool calls says so in its own last line.
+
 ## Develop
 
 ```bash

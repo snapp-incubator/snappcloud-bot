@@ -488,5 +488,10 @@ func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, q
 		s.replyTo(ctx, p, reply)
 		return true, "alert_command"
 	}
+
+	if handled, reply := s.diagnosticsCommand(ctx, identity, p, query); handled {
+		s.replyTo(ctx, p, reply)
+		return true, "diagnostics"
+	}
 	return false, ""
 }
