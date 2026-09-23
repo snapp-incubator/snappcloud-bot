@@ -1,6 +1,9 @@
 package brain
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -153,5 +156,62 @@ func TestDefaultSystemForbidsNarrationAndHandCounting(t *testing.T) {
 		if !strings.Contains(defaultSystem, want) {
 			t.Errorf("default system prompt is missing: %q", want)
 		}
+	}
+}
+
+type stubMCP struct{ tools []string }
+
+func (s stubMCP) ListTools(context.Context) ([]agent.Tool, error) {
+	out := make([]agent.Tool, len(s.tools))
+	for i, n := range s.tools {
+		out[i] = agent.Tool{Name: n}
+	}
+	return out, nil
+}
+func (stubMCP) CallTool(context.Context, string, map[string]any) (string, error) { return "", nil }
+
+type recordingAgent struct{ in agent.Input }
+
+func (r *recordingAgent) Run(_ context.Context, in agent.Input) (string, error) {
+	r.in = in
+	return "ok", nil
+}
+
+// A question about one cluster must carry only that cluster's tools. Sending
+// the other five alongside is what pushed the list past what the endpoint
+// carries, and the tools that went missing were the ones the answer needed.
+func TestAnswerOffersOnlyTheNamedClustersTools(t *testing.T) {
+	b := namedBrain()
+	for name, cm := range b.clusters {
+		cm.mcp = stubMCP{tools: []string{"list_pods", "query_prometheus"}}
+		b.clusters[name] = cm
+	}
+	rec := &recordingAgent{}
+	b.agent = rec
+	b.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	scope := authzclient.Scope{
+		"okd4-teh-1":      {Namespaces: []string{"team-a"}},
+		"okd4-teh-2":      {Namespaces: []string{"team-a"}},
+		"okd4-box":        {Namespaces: []string{"team-a"}},
+		"okd4-snappgroup": {Namespaces: []string{"team-a"}},
+	}
+
+	if _, err := b.Answer(context.Background(), scope, "u", "why is payyar failing on teh-1?", "", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.in.Clusters) != 1 || rec.in.Clusters[0].Cluster != "okd4-teh-1" {
+		var got []string
+		for _, c := range rec.in.Clusters {
+			got = append(got, c.Cluster)
+		}
+		t.Fatalf("clusters offered = %v, want only okd4-teh-1", got)
+	}
+
+	// A question naming no cluster still reaches every cluster the user has.
+	if _, err := b.Answer(context.Background(), scope, "u", "are any of my pods crashing?", "", "r2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.in.Clusters) != 4 {
+		t.Fatalf("a question naming no cluster must keep all of them, got %d", len(rec.in.Clusters))
 	}
 }

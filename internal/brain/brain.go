@@ -24,8 +24,14 @@ import (
 var ErrNoClusterTools = errors.New("no MCP tools available for the user's authorized clusters")
 
 // Brain answers user queries via the enforced agent loop.
+// runner is the agent loop; an interface so the Brain's own decisions — which
+// clusters a question reaches — can be tested without an LLM.
+type runner interface {
+	Run(ctx context.Context, in agent.Input) (string, error)
+}
+
 type Brain struct {
-	agent    *agent.Agent
+	agent    runner
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   map[string]agent.MCP   // alias -> namespace-agnostic tools (e.g. docs); empty if none
 	// globalAdminOnly marks global aliases only cluster-admins may see.
@@ -205,11 +211,22 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 	// one cluster must not lose that cluster's tools to the ones it did not
 	// mention.
 	named := b.clustersNamedIn(query)
+	// A question that names its clusters gets THOSE clusters and no others.
+	// Carrying five more clusters' tools into a question about one is what
+	// pushed the list past what the endpoint carries, and the tools that went
+	// missing were the ones the answer needed. Nothing is lost by leaving them
+	// out: the question was not about them.
+	if len(named) > 0 {
+		b.log.Debug("question names clusters; offering only their tools", "clusters", len(named))
+	}
 	var cts []agent.ClusterTools
 	for _, c := range scope.Clusters() {
 		cm, ok := b.clusters[c]
 		if !ok {
 			b.log.Debug("no MCP servers configured for cluster", "cluster", c)
+			continue
+		}
+		if len(named) > 0 && !named[c] {
 			continue
 		}
 		cts = append(cts, agent.ClusterTools{

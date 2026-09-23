@@ -385,3 +385,32 @@ func TestRunUnscopedStillHonoursClusterAdminOnly(t *testing.T) {
 		t.Fatalf("expected cluster-admin denial, got: %+v", res)
 	}
 }
+
+// An answer the model had to stop mid-sentence is not an answer. It is
+// continued, not posted as-is: the reader of a report that stops in the middle
+// of a table has no way to tell anything is missing.
+func TestRunContinuesAnAnswerThatHitTheOutputLimit(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Text: "The 413 comes from the listener's max request bytes, which is", Truncated: true},
+		{Text: " set to 1 MiB on the private ingress class."},
+	}}
+	ag := newAgent(llm)
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "why 413?",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"t"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The 413 comes from the listener's max request bytes, which is set to 1 MiB on the private ingress class."
+	if out != want {
+		t.Fatalf("answer not continued:\n got %q\nwant %q", out, want)
+	}
+	if len(llm.seen) != 2 {
+		t.Fatalf("expected one continuation request, got %d calls", len(llm.seen))
+	}
+	last := llm.seen[1].Messages[len(llm.seen[1].Messages)-1]
+	if !strings.Contains(last.Text, "Continue it from exactly where it broke off") {
+		t.Fatalf("continuation prompt missing: %+v", last)
+	}
+}

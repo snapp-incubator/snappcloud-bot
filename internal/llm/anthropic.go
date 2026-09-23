@@ -209,8 +209,9 @@ func parseJSON(r io.Reader) (agent.Response, error) {
 		return agent.Response{}, &retryable{fmt.Errorf("read body: %w", err)}
 	}
 	var out struct {
-		Content []block `json:"content"`
-		Error   *struct {
+		Content    []block `json:"content"`
+		StopReason string  `json:"stop_reason"`
+		Error      *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
@@ -220,7 +221,7 @@ func parseJSON(r io.Reader) (agent.Response, error) {
 	if out.Error != nil {
 		return agent.Response{}, &retryable{errors.New(out.Error.Message)}
 	}
-	var r2 agent.Response
+	r2 := agent.Response{Truncated: out.StopReason == "max_tokens"}
 	for _, b := range out.Content {
 		switch b.Type {
 		case "text":
@@ -277,6 +278,7 @@ func parseStream(r io.Reader) (agent.Response, error) {
 	blocks := map[int]*blockAcc{}
 	var order []int
 	done := false
+	truncated := false
 
 	for sc.Scan() {
 		line := sc.Text()
@@ -314,6 +316,7 @@ func parseStream(r io.Reader) (agent.Response, error) {
 			}
 		case "message_delta":
 			if ev.Delta != nil && ev.Delta.StopReason != "" {
+				truncated = ev.Delta.StopReason == "max_tokens"
 				done = true
 			}
 		case "message_stop":
@@ -334,7 +337,7 @@ func parseStream(r io.Reader) (agent.Response, error) {
 		return agent.Response{}, &retryable{errors.New("stream ended before completion")}
 	}
 
-	var out agent.Response
+	out := agent.Response{Truncated: truncated}
 	for _, idx := range order {
 		b := blocks[idx]
 		switch b.typ {

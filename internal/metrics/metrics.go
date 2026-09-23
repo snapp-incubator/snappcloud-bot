@@ -216,6 +216,14 @@ var (
 		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
+	// AnswerContinuations counts answers that hit the model's output limit and
+	// had to be continued. A rising count means maxTokens is too small for the
+	// questions being asked — a truncated answer looks complete to the reader.
+	AnswerContinuations = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "answer_continuations_total",
+		Help: "Answers continued after hitting the model's output-token limit.",
+	})
+
 	// ConversationTrims counts turns where the oldest tool output had to be
 	// dropped to fit the model's context budget. A rising count means
 	// investigations are outgrowing the window and answers are losing evidence.
@@ -247,7 +255,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

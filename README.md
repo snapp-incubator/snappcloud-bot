@@ -298,7 +298,9 @@ like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
-`agent.budgets.maxTools` caps how many tools one request offers the model.
+A question that **names its clusters** is given only those clusters' tools —
+carrying every other cluster into a question about one is what made the list
+too long in the first place. `agent.budgets.maxTools` then caps what is left.
 Every tool definition is sent on every round, and an endpoint that will not
 carry them all drops the **tail** without saying so — the clusters listed last
 then appear to have no tools at all, and the model reports exactly that. The

@@ -65,6 +65,10 @@ type Request struct {
 type Response struct {
 	Text  string
 	Calls []ToolCall
+	// Truncated reports that the model stopped because it hit its output
+	// limit, not because it had finished. The text is a sentence cut in half,
+	// which reads as a complete answer to everyone but the model.
+	Truncated bool
 }
 
 // LLM is the reasoning model (Anthropic-style tool use).
@@ -205,6 +209,19 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 		metrics.LLMRequests.WithLabelValues("ok").Inc()
 		msgs = append(msgs, Turn{Role: "assistant", Text: resp.Text, Calls: resp.Calls})
 		if len(resp.Calls) == 0 {
+			if resp.Truncated {
+				// The model ran out of output tokens mid-sentence. Left alone
+				// this is posted as an answer — the reader sees a report that
+				// stops in the middle of a table and no sign that anything is
+				// missing. Ask for the remainder and join it on.
+				text, err := a.finish(ctx, system, msgs, tools, resp.Text)
+				if err != nil {
+					summary("answered-truncated", "err", err)
+					return resp.Text + "\n\n_[answer cut off at the model's output limit]_", nil
+				}
+				summary("answered", "continued", true)
+				return text, nil
+			}
 			summary("answered")
 			return resp.Text, nil // final answer
 		}
@@ -342,6 +359,39 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 		return "", fmt.Errorf("llm (final): %w", err)
 	}
 	return resp.Text, nil
+}
+
+// finish completes an answer the model had to stop mid-sentence. It asks for
+// the remainder rather than the whole answer again: repeating it would cost
+// another full generation and could come back different, and the part already
+// written is fine — it is only unfinished.
+//
+// maxContinuations bounds this: a model that keeps running out of room is a
+// maxTokens setting to raise, not something to paper over indefinitely.
+const maxContinuations = 3
+
+func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []Tool, text string) (string, error) {
+	for i := 0; i < maxContinuations; i++ {
+		a.log.Info("answer hit the model's output limit; asking for the rest",
+			"continuation", i+1, "runes", len([]rune(text)))
+		metrics.AnswerContinuations.Inc()
+		next := append(append([]Turn(nil), msgs...), Turn{
+			Role: "user",
+			Text: "Your answer stopped at the output limit, mid-sentence. Continue it from exactly where it " +
+				"broke off. Do not repeat what you already wrote, do not restate the question, and do not " +
+				"start over — write only the remainder.",
+		})
+		resp, err := a.llm.Complete(ctx, Request{System: system, Messages: next, Tools: tools})
+		if err != nil {
+			return "", err
+		}
+		text += resp.Text
+		if !resp.Truncated {
+			return text, nil
+		}
+		msgs = append(next, Turn{Role: "assistant", Text: resp.Text})
+	}
+	return text + "\n\n_[answer cut off at the model's output limit]_", nil
 }
 
 // buildTools lists every authorized cluster's tools, cluster-qualifying their
