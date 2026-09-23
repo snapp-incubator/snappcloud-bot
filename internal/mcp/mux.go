@@ -18,6 +18,11 @@ type Mux struct {
 	log     *slog.Logger
 	mu      sync.Mutex
 	owner   map[string]*Client // tool name -> owning client
+	// failed names the servers that did not answer the most recent listing.
+	// A cluster whose OTHER servers answered still returns a tool list, so
+	// nothing upstream can tell that part of it is missing — and the model,
+	// seeing no metrics tool, reports that the cluster has none.
+	failed []string
 }
 
 type named struct {
@@ -42,6 +47,7 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 	owner := map[string]*Client{}
 	var tools []Tool
 	var firstErr error
+	var failed []string
 	ok := false
 	for _, s := range m.servers {
 		ts, err := s.client.ListTools(ctx)
@@ -54,6 +60,7 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 			m.log.Warn("mcp server unavailable; its tools are missing this turn",
 				"server", s.name, "url", s.client.URL(), "err", err)
 			metrics.MCPListFailures.WithLabelValues(s.name).Inc()
+			failed = append(failed, s.name)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s: %w", s.name, err)
 			}
@@ -79,8 +86,19 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 	}
 	m.mu.Lock()
 	m.owner = owner
+	m.failed = failed
 	m.mu.Unlock()
 	return tools, nil
+}
+
+// ListFailures names the servers that did not answer the most recent listing.
+// The tool list alone cannot show this: a cluster whose other servers answered
+// still returns tools, so the absence looks like a cluster that never had the
+// tool rather than one whose server is down.
+func (m *Mux) ListFailures() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.failed...)
 }
 
 // CallTool routes to the server that advertised the tool.

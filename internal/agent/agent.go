@@ -406,6 +406,12 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	return text + fmt.Sprintf("\n\n_Stopped after %d tool calls — the per-question limit._", a.maxIter), nil
 }
 
+// partialLister is implemented by a tool source that can report which of its
+// own servers failed. Optional: a source without it is simply assumed whole.
+type partialLister interface {
+	ListFailures() []string
+}
+
 // finish completes an answer the model had to stop mid-sentence. It asks for
 // the remainder rather than the whole answer again: repeating it would cost
 // another full generation and could come back different, and the part already
@@ -448,7 +454,7 @@ func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []
 func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]binding, string, error) {
 	reg := make(map[string]binding)
 	var groups []clusterTools
-	var present, unreachable []string
+	var present, unreachable, degraded []string
 	namedClusters := map[string]bool{}
 	anyOK := false
 	var firstErr error
@@ -464,6 +470,14 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		anyOK = true
 		present = append(present, ct.Cluster)
+		// A cluster can answer with only some of its servers. The tools of the
+		// ones that did not answer are simply absent, and absent is what a
+		// cluster that never had them looks like too.
+		if pl, ok := ct.MCP.(partialLister); ok {
+			for _, srv := range pl.ListFailures() {
+				degraded = append(degraded, ct.Cluster+" ("+srv+")")
+			}
+		}
 		namedClusters[ct.Cluster] = ct.Preferred
 		byServer := map[string][]Tool{}
 		var order []string
@@ -530,7 +544,11 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	}
 	a.log.Debug("tools offered", "tools", len(tools), "clusters", len(present), "unreachable", len(unreachable))
 	metrics.ToolsOffered.Set(float64(len(tools)))
-	return tools, reg, toolNotice(present, unreachable, dropped), nil
+	if len(degraded) > 0 {
+		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
+			"servers", degraded)
+	}
+	return tools, reg, toolNotice(present, unreachable, degraded, dropped), nil
 }
 
 // filtered enforces namespace scope on a raw tool result before the model sees

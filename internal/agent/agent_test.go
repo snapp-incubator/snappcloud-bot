@@ -504,3 +504,31 @@ func TestClusterAdminResultIsUnfilteredButStillCapped(t *testing.T) {
 		t.Fatalf("a capped result must say so: %q", res[0].Content[:200])
 	}
 }
+
+// A cluster whose metrics server is down still returns tools, so nothing
+// upstream can tell part of it is missing. The model must be told, or it
+// reports the cluster as having no metrics at all — which it did, for a whole
+// daily report.
+type partialMCP struct {
+	fakeMCP
+	failures []string
+}
+
+func (p *partialMCP) ListFailures() []string { return p.failures }
+
+func TestRunTellsTheModelWhenOnlySomeOfAClustersServersAnswered(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{{Text: "done"}}}
+	m := &partialMCP{failures: []string{"okd4-teh-1-5"}}
+	m.tools = []string{"list_pods"}
+	ag := New(llm, NewEnforcer(nil), nil, 3, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := ag.Run(context.Background(), Input{
+		System: "SYS", Query: "report",
+		Clusters: []ClusterTools{{Cluster: "okd4-teh-1", Allowed: []string{"team-a"}, MCP: m}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sys := llm.seen[0].System
+	if !strings.Contains(sys, "okd4-teh-1 (okd4-teh-1-5)") || !strings.Contains(sys, "Part of a cluster is missing") {
+		t.Fatalf("a partly-answering cluster was not reported to the model: %q", sys)
+	}
+}

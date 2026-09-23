@@ -105,8 +105,8 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 // are unreachable, and which had tools trimmed — so it never has to infer any
 // of that from the shape of its own tool list, and never reports a transient
 // outage as an absence of access.
-func toolNotice(present, unreachable []string, dropped map[string]int) string {
-	if len(present) == 0 && len(unreachable) == 0 {
+func toolNotice(present, unreachable, degraded []string, dropped map[string]int) string {
+	if len(present) == 0 && len(unreachable) == 0 && len(degraded) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -121,6 +121,14 @@ func toolNotice(present, unreachable []string, dropped map[string]int) string {
 			" did not respond this turn, so their tools are missing. That is an outage on the bot's side, " +
 			"NOT a limit on the user's access and NOT a cluster that lacks tooling: say the cluster could not " +
 			"be reached right now and that it is being retried, and never suggest the user lacks access to it.")
+	}
+	if len(degraded) > 0 {
+		sort.Strings(degraded)
+		b.WriteString(" Part of a cluster is missing this turn: the servers " + strings.Join(degraded, ", ") +
+			" did not answer, so the tools they provide — which may be the metrics tools, the network tools or " +
+			"any other group — are not in your list. Those clusters still HAVE those tools; they are unreachable " +
+			"right now. Say that a tool was unavailable this run and which part of the answer it would have " +
+			"covered. Do not say the cluster has no such tool, has no metrics, or is not configured for it.")
 	}
 	if len(dropped) > 0 {
 		keys := make([]string, 0, len(dropped))

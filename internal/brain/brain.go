@@ -361,6 +361,10 @@ OUTPUT FORMAT — always: reply with the final answer for the user as plain, hum
 // muxAdapter converts an *mcp.Mux (returning mcp.Tool) to agent.MCP.
 type muxAdapter struct{ mux *mcp.Mux }
 
+// ListFailures forwards the mux's per-server failures, so the agent can tell
+// the model that part of a cluster is missing rather than absent.
+func (m muxAdapter) ListFailures() []string { return m.mux.ListFailures() }
+
 func (m muxAdapter) ListTools(ctx context.Context) ([]agent.Tool, error) {
 	ts, err := m.mux.ListTools(ctx)
 	if err != nil {
@@ -369,7 +373,7 @@ func (m muxAdapter) ListTools(ctx context.Context) ([]agent.Tool, error) {
 	out := make([]agent.Tool, 0, len(ts))
 	for _, t := range ts {
 		out = append(out, agent.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema,
-			SelfAuthorized: t.SelfAuthorized, Unscoped: t.Unscoped})
+			SelfAuthorized: t.SelfAuthorized, Unscoped: t.Unscoped, Server: t.Server})
 	}
 	return out, nil
 }

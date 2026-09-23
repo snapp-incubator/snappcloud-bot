@@ -63,7 +63,7 @@ func TestInterleaveGivesEveryClusterAShare(t *testing.T) {
 }
 
 func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
-	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, map[string]int{"okd4-box": 12})
+	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12})
 	for _, want := range []string{
 		"you have tools for okd4-box",
 		"okd4-teh-1 did not respond this turn",
@@ -74,7 +74,7 @@ func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
 	}
-	if toolNotice(nil, nil, nil) != "" {
+	if toolNotice(nil, nil, nil, nil) != "" {
 		t.Fatal("no clusters at all should produce no notice")
 	}
 }
@@ -218,5 +218,22 @@ func TestInterleaveNeverTrimsANamedCluster(t *testing.T) {
 	}
 	if dropped["box"] != 40 {
 		t.Fatalf("the unnamed cluster should yield entirely: %v", dropped)
+	}
+}
+
+// The case that produced a report of empty tables: the cluster answered, but
+// its metrics server did not. The tools are simply absent, which is exactly
+// what a cluster that never had them looks like — so it has to be said.
+func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
+	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil)
+	for _, want := range []string{
+		"Part of a cluster is missing this turn",
+		"okd4-teh-1 (okd4-teh-1-5)",
+		"still HAVE those tools",
+		"Do not say the cluster has no such tool",
+	} {
+		if !strings.Contains(n, want) {
+			t.Fatalf("missing %q in %q", want, n)
+		}
 	}
 }
