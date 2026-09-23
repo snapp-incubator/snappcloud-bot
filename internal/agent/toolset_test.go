@@ -182,36 +182,41 @@ func TestInterleaveTrimsEveryServerNotJustTheLast(t *testing.T) {
 	}
 }
 
-// The failure this exists for, in its worst form: ONE cluster whose servers
-// together advertise more than the whole budget. Truncating its list in
-// configuration order empties its last server — which is the metrics server on
-// every cluster here, and every measured number in a report comes from it.
-func TestInterleaveKeepsTheLastServerOfAnOversizedNamedCluster(t *testing.T) {
+// A cluster the question named is never trimmed, even when its own servers
+// together exceed the whole budget. A subset of the right cluster's tools is
+// what produced answers that were confident and incomplete; an oversized list
+// is at worst the endpoint's problem, and a logged one.
+func TestInterleaveNeverTrimsANamedCluster(t *testing.T) {
 	k8s := group("teh1", 60)
 	k8s.preferred = true
 	envoy := group("teh1", 40)
 	envoy.preferred = true
 	metrics := clusterTools{cluster: "teh1", preferred: true, tools: []Tool{
 		{Name: "teh1__query_prometheus"},
-		{Name: "teh1__query_prometheus_histogram"},
-		{Name: "teh1__list_prometheus_metric_names"},
 		{Name: "teh1__list_datasources"},
 	}}
 	got, dropped := interleave([]clusterTools{k8s, envoy, metrics, group("box", 40)}, 60)
 
+	var teh1 int
 	have := map[string]bool{}
 	for _, n := range names(got) {
 		have[n] = true
+		if strings.HasPrefix(n, "teh1") {
+			teh1++
+		}
+	}
+	if teh1 != 102 {
+		t.Fatalf("the named cluster was trimmed: %d of 102 tools", teh1)
 	}
 	for _, want := range []string{"teh1__query_prometheus", "teh1__list_datasources"} {
 		if !have[want] {
-			t.Fatalf("%s was trimmed away; the report has no metrics: %v", want, names(got))
+			t.Fatalf("%s missing; the report has no metrics", want)
 		}
 	}
-	if len(got) != 60 {
-		t.Fatalf("budget not filled: %d", len(got))
+	if dropped["teh1"] != 0 {
+		t.Fatalf("named cluster reported as trimmed: %v", dropped)
 	}
 	if dropped["box"] != 40 {
-		t.Fatalf("the unnamed cluster should yield first: %v", dropped)
+		t.Fatalf("the unnamed cluster should yield entirely: %v", dropped)
 	}
 }

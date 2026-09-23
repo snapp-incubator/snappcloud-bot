@@ -33,13 +33,16 @@ type clusterTools struct {
 	tools     []Tool
 }
 
-// interleave fits the tool list into max. Clusters the question named are
-// served first — a report about one cluster must not lose that cluster's tools
-// to five it never mentioned — and within every stage tools are taken one per
-// SERVER in turn. That second part is what keeps a cluster's smallest server
-// alive: a cluster whose servers together advertise more than the whole budget
-// would otherwise be truncated in configuration order, and the metrics server,
-// configured last, is the one a report cannot do without.
+// interleave fits the tool list into max, with one rule above the budget: a
+// cluster the question NAMED is never trimmed. Its servers' tools all go in,
+// whatever that costs, because the alternative has been tried — a question
+// about one cluster answered from a subset of that cluster's tools, missing
+// the metrics server, is how answers came back confident and incomplete. An
+// oversized list is at worst the endpoint's problem, and a loud one; a quietly
+// incomplete one is nobody's until the answer is already wrong.
+//
+// Whatever budget is left is shared among the clusters the question did not
+// name, one tool per SERVER in turn, so no server of theirs is emptied either.
 //
 // It returns the list and, per cluster, how many tools were left out.
 func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
@@ -55,37 +58,35 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 		return out, nil
 	}
 
-	out := make([]Tool, 0, max)
+	var out []Tool
 	taken := make(map[string]int, len(groups))
-	var preferred, rest []clusterTools
+	var rest []clusterTools
 	for _, g := range groups {
-		if g.preferred {
-			preferred = append(preferred, g)
-		} else {
+		if !g.preferred {
 			rest = append(rest, g)
+			continue
+		}
+		out = append(out, g.tools...)
+		taken[g.cluster] += len(g.tools)
+	}
+
+	for round := 0; len(out) < max; round++ {
+		progressed := false
+		for _, g := range rest {
+			if round >= len(g.tools) {
+				continue
+			}
+			progressed = true
+			out = append(out, g.tools[round])
+			taken[g.cluster]++
+			if len(out) == max {
+				break
+			}
+		}
+		if !progressed {
+			break
 		}
 	}
-	fill := func(gs []clusterTools) {
-		for round := 0; len(out) < max; round++ {
-			progressed := false
-			for _, g := range gs {
-				if round >= len(g.tools) {
-					continue
-				}
-				progressed = true
-				out = append(out, g.tools[round])
-				taken[g.cluster]++
-				if len(out) == max {
-					break
-				}
-			}
-			if !progressed {
-				return
-			}
-		}
-	}
-	fill(preferred)
-	fill(rest)
 
 	dropped := make(map[string]int)
 	per := make(map[string]int, len(groups))
@@ -136,4 +137,15 @@ func toolNotice(present, unreachable []string, dropped map[string]int) string {
 			"say so plainly rather than answering from another cluster.")
 	}
 	return b.String()
+}
+
+// countFor totals one cluster's tools across its servers.
+func countFor(groups []clusterTools, cluster string) int {
+	n := 0
+	for _, g := range groups {
+		if g.cluster == cluster {
+			n += len(g.tools)
+		}
+	}
+	return n
 }

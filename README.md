@@ -298,9 +298,15 @@ like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
-A question that **names its clusters** is given only those clusters' tools —
-carrying every other cluster into a question about one is what made the list
-too long in the first place. `agent.budgets.maxTools` then caps what is left.
+A question that **names its clusters** is given only those clusters' tools, and
+**all** of them: a named cluster is never trimmed, whatever its servers
+advertise. Carrying every other cluster into a question about one is what made
+the list too long in the first place. `agent.budgets.maxTools` caps only what
+is left over for clusters the question did not name; if a named cluster alone
+exceeds it, the bot says so in a warning and sends the tools anyway — an
+incomplete tool list produces answers that are confident and wrong, which is
+worse than a long request. Watch `snappcloud_bot_tools_per_cluster` to see what
+each cluster actually advertises.
 Every tool definition is sent on every round, and an endpoint that will not
 carry them all drops the **tail** without saying so — the clusters listed last
 then appear to have no tools at all, and the model reports exactly that. The

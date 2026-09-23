@@ -216,6 +216,15 @@ var (
 		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
+	// ToolsPerCluster is how many tools a cluster's MCP servers advertised on
+	// the most recent turn that reached it. A cluster whose count drops is a
+	// server that stopped answering; a cluster whose count exceeds what the
+	// endpoint carries is one to narrow with allowTools.
+	ToolsPerCluster = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Name: "tools_per_cluster",
+		Help: "Tools advertised by a cluster's MCP servers on the most recent turn.",
+	}, []string{"cluster"})
+
 	// AnswerContinuations counts answers that hit the model's output limit and
 	// had to be continued. A rising count means maxTokens is too small for the
 	// questions being asked — a truncated answer looks complete to the reader.
@@ -255,7 +264,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

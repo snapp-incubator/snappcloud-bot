@@ -461,6 +461,18 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		return nil, nil, "", firstErr
 	}
 	tools, dropped := interleave(groups, a.budgets.MaxTools)
+	// Per-cluster counts, every turn: the only way to tell from outside whether
+	// a cluster's servers are all advertising what they should.
+	for _, g := range groups {
+		metrics.ToolsPerCluster.WithLabelValues(g.cluster).Set(float64(countFor(groups, g.cluster)))
+	}
+	if n := len(tools); n > a.budgets.MaxTools {
+		// Deliberate: a named cluster is never trimmed. Say so, loudly, because
+		// past this point it is the endpoint deciding what the model sees.
+		a.log.Warn("tool list exceeds maxTools because a named cluster is never trimmed; "+
+			"narrow a server's allowTools if the endpoint starts dropping tools",
+			"tools", n, "maxTools", a.budgets.MaxTools)
+	}
 	for cluster, n := range dropped {
 		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
 			"cluster", cluster, "dropped", n, "maxTools", a.budgets.MaxTools,
