@@ -89,12 +89,14 @@ type fakeMCP struct {
 	selfAuthorized bool
 	// unscoped marks this server's results as shared by every authorized caller.
 	unscoped bool
+	// schema is advertised with every tool this fake serves.
+	schema map[string]any
 }
 
 func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
 	ts := make([]Tool, 0, len(f.tools))
 	for _, n := range f.tools {
-		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized, Unscoped: f.unscoped})
+		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized, Unscoped: f.unscoped, InputSchema: f.schema})
 	}
 	return ts, nil
 }

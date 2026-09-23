@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -312,11 +313,16 @@ func SetMaxResponseBytes(n int64) {
 	}
 }
 
+// ErrTooLarge marks a response refused for size. The agent recognises it to
+// tell the model which of THAT tool's arguments would narrow it — "narrow the
+// query" is not actionable when the caller cannot see which knobs exist.
+var ErrTooLarge = errors.New("response too large")
+
 // errTooLarge is returned when a tool's response exceeds maxResponseBytes. It
 // reads as instruction rather than failure, because the model can act on it.
 func errTooLarge() error {
-	return fmt.Errorf("tool response exceeded %d MiB and was refused; "+
-		"narrow the query (a namespace, a node, a selector, or a smaller limit)", maxResponseBytes>>20)
+	return fmt.Errorf("tool response exceeded %d MiB and was refused; narrow the query and call it again: %w",
+		maxResponseBytes>>20, ErrTooLarge)
 }
 
 // decodeResponse reads either a single JSON response or an SSE stream, returning

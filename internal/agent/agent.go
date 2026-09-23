@@ -154,6 +154,9 @@ type binding struct {
 	// unscoped: the tool's results are shared by every authorized caller, so
 	// the agent neither scopes the call nor filters the result.
 	unscoped bool
+	// schema is the tool's JSON Schema, kept so a refusal can name the
+	// arguments that would have narrowed the call.
+	schema map[string]any
 }
 
 // capResult truncates an oversized tool result, telling the model to narrow
@@ -317,7 +320,11 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "error").Inc()
 				metrics.ToolErrors.WithLabelValues(b.ct.Cluster, b.real, metrics.ClassifyToolError(cerr.Error())).Inc()
 				lg.Warn("tool failed", "cluster", b.ct.Cluster, "tool", b.real, "err", cerr)
-				results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
+				msg := "tool error: " + cerr.Error()
+				if tooLarge(cerr) {
+					msg += narrowingHint(b.schema, call.Args)
+				}
+				results = append(results, errResult(call.ID, msg))
 				continue
 			}
 			if b.ct.NoEnforce {
@@ -452,7 +459,8 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		}
 		for _, t := range ts {
 			q := qualify(alias, t.Name, reg)
-			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed, selfAuthorized: t.SelfAuthorized, unscoped: t.Unscoped}
+			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed,
+				selfAuthorized: t.SelfAuthorized, unscoped: t.Unscoped, schema: t.InputSchema}
 			// Global (namespace-agnostic) tools are tagged [docs] so the model
 			// treats them as cross-cluster documentation, not a cluster it must
 			// scope. Cluster tools keep the [cluster X] tag.
