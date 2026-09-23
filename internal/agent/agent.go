@@ -287,9 +287,13 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 						results = append(results, errResult(call.ID, "tool error: "+cerr.Error()))
 						continue
 					}
-					// Cluster-admin caller: infrastructure output, returned unfiltered.
+					// Cluster-admin caller: infrastructure output, returned
+					// unfiltered — but still capped. Unfiltered is about
+					// authorization, not size: an uncapped 30 MiB config dump
+					// takes the whole round's budget with it, and the results
+					// of every tool called beside it are dropped to make room.
 					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-					results = append(results, ToolResult{CallID: call.ID, Content: out})
+					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
 					continue
 				}
 				// An unscoped server's results are shared by everyone authorized
@@ -328,9 +332,10 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				continue
 			}
 			if b.ct.NoEnforce {
-				// Trusted namespace-agnostic source (docs) — no filtering.
+				// Trusted namespace-agnostic source (docs) — no filtering, and
+				// capped like everything else for the same reason.
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-				results = append(results, ToolResult{CallID: call.ID, Content: out})
+				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
 			} else if b.unscoped {
 				// Shared by every authorized caller — no filtering, but still
 				// capped like any other result.

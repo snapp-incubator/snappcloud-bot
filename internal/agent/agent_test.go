@@ -472,3 +472,35 @@ func TestRunAtToolLimitSaysSoInTheAnswer(t *testing.T) {
 		t.Fatalf("answer lost: %q", out)
 	}
 }
+
+// "Unfiltered" is about authorization, not size. An uncapped infrastructure
+// dump takes the whole round's budget with it, and the results of every tool
+// called beside it are dropped to make room for one blob nobody can read.
+func TestClusterAdminResultIsUnfilteredButStillCapped(t *testing.T) {
+	big := strings.Repeat("x", 300_000)
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "okd4-ts-3__envoy_config_dump", Args: map[string]any{}}}},
+		{Text: "done"},
+	}}
+	m := &fakeMCP{tools: []string{"envoy_config_dump"}, output: big}
+	enforcer := NewEnforcer(map[string]ToolRule{"envoy_config_dump": {ClusterAdminOnly: true}})
+	b := DefaultBudgets()
+	b.ResultRunes = 1000
+	ag := New(llm, enforcer, failingResolver{}, 4, b, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := ag.Run(context.Background(), Input{
+		Query:    "dump",
+		Clusters: []ClusterTools{{Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, ClusterAdmin: true, MCP: m}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || res[0].IsError {
+		t.Fatalf("admin tool did not run: %+v", res)
+	}
+	if n := len([]rune(res[0].Content)); n > 1200 {
+		t.Fatalf("admin result was not capped: %d runes", n)
+	}
+	if !strings.Contains(res[0].Content, "truncated") {
+		t.Fatalf("a capped result must say so: %q", res[0].Content[:200])
+	}
+}
