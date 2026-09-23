@@ -30,6 +30,7 @@ func TestDiagnosticsReportShowsFailingServersAndCounts(t *testing.T) {
 		"39 tools across 2 clusters",
 		"1 server(s) not answering",
 		"minimax/MiniMax-M3", "zai/glm-5.3-flash", "25 tool calls", "150 tools",
+		"Build ", "commit",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

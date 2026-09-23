@@ -8,6 +8,7 @@ import (
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
+	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
 
 // Every complaint about a thin or wrong answer so far has been diagnosed by
@@ -85,6 +86,10 @@ func diagnosticsReport(st []brain.ClusterStatus, limits func() (string, string, 
 	}
 	fmt.Fprintf(&b, ". Up to %d tool calls per question, %d tools per request", maxIter, maxTools)
 	b.WriteString(" — a question that names its cluster gets that cluster's tools in full, so the limit applies to the others.")
+	// The build, because the image tag is republished in place: "1.7.0" does
+	// not say which 1.7.0, and a pod that has not been restarted since a fix
+	// answers exactly like one that has.
+	fmt.Fprintf(&b, "\n\nBuild %s.", version.String())
 	return b.String()
 }
 
