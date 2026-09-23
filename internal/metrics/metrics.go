@@ -233,6 +233,14 @@ var (
 		Help: "Tools advertised by a cluster's MCP servers on the most recent turn.",
 	}, []string{"cluster"})
 
+	// AnswerNudges counts turns sent back because the model ended by announcing
+	// tool calls it did not make. Without this the half-finished text is posted
+	// as the answer, which reads exactly like a complete one.
+	AnswerNudges = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "answer_nudges_total",
+		Help: "Turns sent back because the model announced work it did not do.",
+	})
+
 	// AnswerContinuations counts answers that hit the model's output limit and
 	// had to be continued. A rising count means maxTokens is too small for the
 	// questions being asked — a truncated answer looks complete to the reader.
@@ -272,7 +280,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, TurnOutcomes, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

@@ -174,7 +174,7 @@ func (a *Agent) capResult(s string) string {
 func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	lg := a.log.With("req", in.ReqID)
 	start := time.Now()
-	var toolCalls, toolErrs, denied, filtered int
+	var toolCalls, toolErrs, denied, filtered, nudges int
 	iters := 0
 	// summary logs one line per user message — the anchor for troubleshooting.
 	summary := func(outcome string, extra ...any) {
@@ -224,6 +224,17 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				}
 				summary("answered", "continued", true)
 				return text, nil
+			}
+			// A turn that ends on "let me check X" and calls nothing is not an
+			// answer; it is an investigation stopped one sentence short. Send
+			// it back rather than posting it.
+			if nudges < maxNudges && iter < a.maxIter-1 && announcesMoreWork(resp.Text) {
+				nudges++
+				lg.Info("model announced work it did not do; asking it to continue",
+					"nudge", nudges, "iteration", iters)
+				metrics.AnswerNudges.Inc()
+				msgs = append(msgs, Turn{Role: "user", Text: nudge})
+				continue
 			}
 			summary("answered")
 			metrics.TurnOutcomes.WithLabelValues("answered").Inc()
