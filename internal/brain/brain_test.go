@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
+	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
 )
 
 func TestSystemPromptIncludesGuidanceAndScope(t *testing.T) {
@@ -229,5 +231,22 @@ func TestDefaultSystemTeachesInvestigationNotCases(t *testing.T) {
 		if !strings.Contains(defaultSystem, want) {
 			t.Errorf("default system prompt is missing: %q", want)
 		}
+	}
+}
+
+// The agent asks its tool source which of its servers failed. If the adapter
+// stops forwarding that, a partly-answering cluster goes back to looking like
+// a cluster that never had the tool — silently, and only in production.
+func TestMuxAdapterReportsPerServerFailures(t *testing.T) {
+	mux := mcp.NewMux(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mux.Add("teh-1-5", mcp.New("http://127.0.0.1:1/mcp", "", false, time.Second))
+	a := muxAdapter{mux}
+
+	var src interface{ ListFailures() []string } = a
+	if _, err := a.ListTools(context.Background()); err == nil {
+		t.Fatal("a mux whose only server is unreachable must return an error")
+	}
+	if got := src.ListFailures(); len(got) != 1 || got[0] != "teh-1-5" {
+		t.Fatalf("per-server failure not forwarded: %v", got)
 	}
 }

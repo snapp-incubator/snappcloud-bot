@@ -81,12 +81,14 @@ func (m *Mux) ListTools(ctx context.Context) ([]Tool, error) {
 			tools = append(tools, t)
 		}
 	}
+	m.mu.Lock()
+	m.failed = failed
+	m.mu.Unlock()
 	if !ok && firstErr != nil {
 		return nil, firstErr // every server failed
 	}
 	m.mu.Lock()
 	m.owner = owner
-	m.failed = failed
 	m.mu.Unlock()
 	return tools, nil
 }
