@@ -414,3 +414,35 @@ func TestRunContinuesAnAnswerThatHitTheOutputLimit(t *testing.T) {
 		t.Fatalf("continuation prompt missing: %+v", last)
 	}
 }
+
+// Out of tool calls, the model must write an answer — not a plan for work it
+// can no longer do. A 413 investigation once ended with "let me also confirm
+// by looking at the Contour configuration", posted to the user as the answer.
+func TestRunAtToolLimitDemandsAnAnswerNotAPlan(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "c__t", Args: map[string]any{}}}},
+		{Calls: []ToolCall{{ID: "2", Name: "c__t", Args: map[string]any{}}}},
+		{Text: "The listener caps request bodies at 1 MiB.\n\nNot checked: the Contour configuration."},
+	}}
+	ag := New(llm, NewEnforcer(nil), nil, 2, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "why 413?",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"t"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Not checked") {
+		t.Fatalf("final answer lost: %q", out)
+	}
+	last := llm.seen[len(llm.seen)-1]
+	if len(last.Tools) != 0 {
+		t.Fatalf("the final request must carry no tools, got %d", len(last.Tools))
+	}
+	msg := last.Messages[len(last.Messages)-1]
+	for _, want := range []string{"you have NO tools", "Not checked:", "Never write that you are about to look at something"} {
+		if !strings.Contains(msg.Text, want) {
+			t.Fatalf("final instruction missing %q: %q", want, msg.Text)
+		}
+	}
+}

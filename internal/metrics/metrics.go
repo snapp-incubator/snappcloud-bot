@@ -216,6 +216,14 @@ var (
 		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
+	// TurnOutcomes counts how a turn ended. "max-iters" is the one to watch:
+	// the model ran out of tool calls mid-investigation, and its answer is
+	// whatever it had — complete-looking, but stopped short.
+	TurnOutcomes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "turn_outcomes_total",
+		Help: "Agent turns by how they ended (answered, max-iters).",
+	}, []string{"outcome"})
+
 	// ToolsPerCluster is how many tools a cluster's MCP servers advertised on
 	// the most recent turn that reached it. A cluster whose count drops is a
 	// server that stopped answering; a cluster whose count exceeds what the
@@ -264,7 +272,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, TurnOutcomes, AnswerContinuations, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

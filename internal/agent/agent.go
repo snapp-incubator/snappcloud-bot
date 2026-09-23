@@ -223,6 +223,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				return text, nil
 			}
 			summary("answered")
+			metrics.TurnOutcomes.WithLabelValues("answered").Inc()
 			return resp.Text, nil // final answer
 		}
 
@@ -349,16 +350,32 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 		}
 	}
 	summary("max-iters")
+	metrics.TurnOutcomes.WithLabelValues("max-iters").Inc()
 
-	// Ran out of iterations — ask the model for a final answer with no tools.
-	resp, err := a.llm.Complete(ctx, Request{
-		System:   system + "\n\nYou have reached the tool-call limit. Answer now with what you have.",
-		Messages: msgs,
+	// Out of iterations. This request carries NO tools, and the instruction has
+	// to say so plainly: told only that it had "reached the tool-call limit",
+	// the model answered a 413 investigation with "let me also confirm by
+	// looking at the Contour configuration" — a plan, posted to the user as an
+	// answer, for work it could no longer do.
+	final := append(append([]Turn(nil), msgs...), Turn{
+		Role: "user",
+		Text: "Stop investigating: you have used every tool call for this question and you have NO tools " +
+			"now — nothing you say you will check can happen. Write the final answer from what you already " +
+			"have. Say what you found and what it means, give the most likely cause and how to confirm it, " +
+			"and say what to do about it. Then one last line, 'Not checked:', listing what you would have " +
+			"looked at next. Never write that you are about to look at something.",
 	})
+	resp, err := a.llm.Complete(ctx, Request{System: system, Messages: final})
 	if err != nil {
 		return "", fmt.Errorf("llm (final): %w", err)
 	}
-	return resp.Text, nil
+	text := resp.Text
+	if resp.Truncated {
+		if t, ferr := a.finish(ctx, system, final, nil, text); ferr == nil {
+			text = t
+		}
+	}
+	return text, nil
 }
 
 // finish completes an answer the model had to stop mid-sentence. It asks for
