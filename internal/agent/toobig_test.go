@@ -77,3 +77,61 @@ func TestRunTellsTheModelHowToNarrowARefusedTool(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingRequiredNamesArgumentsAndDescriptions(t *testing.T) {
+	schema := map[string]any{
+		"required": []any{"datasourceUid", "expr", "endTime"},
+		"properties": map[string]any{
+			"datasourceUid": map[string]any{"description": "The UID of the datasource to query"},
+			"expr":          map[string]any{"description": "The PromQL expression to query"},
+			"endTime":       map[string]any{"description": "The end time. RFC3339 or relative to now (e.g. 'now', 'now-2h')."},
+		},
+	}
+	got := missingRequired(schema, map[string]any{"datasourceUid": "P1", "expr": "up"})
+	if len(got) != 1 || got[0] != "endTime" {
+		t.Fatalf("missing = %v", got)
+	}
+	msg := missingRequiredMessage(schema, got)
+	for _, want := range []string{"requires endTime", "Call it again", "relative to now"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in %q", want, msg)
+		}
+	}
+	if len(missingRequired(schema, map[string]any{"datasourceUid": "P1", "expr": "up", "endTime": "now"})) != 0 {
+		t.Fatal("a complete call must not be reported as missing anything")
+	}
+	if len(missingRequired(map[string]any{}, nil)) != 0 {
+		t.Fatal("a tool with no required arguments never misses any")
+	}
+}
+
+// The call is not spent: the server never sees a request it would only reject
+// in its own vocabulary.
+func TestRunRefusesAToolCallMissingRequiredArgumentsWithoutCallingIt(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "c__query_prometheus",
+			Args: map[string]any{"datasourceUid": "P1", "expr": "count(kube_node_info)"}}}},
+		{Text: "done"},
+	}}
+	m := &fakeMCP{tools: []string{"query_prometheus"}}
+	m.schema = map[string]any{
+		"required": []any{"datasourceUid", "expr", "endTime"},
+		"properties": map[string]any{
+			"endTime": map[string]any{"description": "The end time, e.g. 'now'."},
+		},
+	}
+	ag := New(llm, NewEnforcer(nil), nil, 4, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := ag.Run(context.Background(), Input{
+		Query:    "how many nodes?",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: m}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.called) != 0 {
+		t.Fatalf("an incomplete call must not reach the server: %v", m.called)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "endTime") {
+		t.Fatalf("unhelpful result: %+v", res)
+	}
+}

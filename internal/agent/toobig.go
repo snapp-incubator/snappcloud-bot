@@ -72,3 +72,48 @@ func isEmpty(v any) bool {
 	}
 	return false
 }
+
+// missingRequired lists the arguments a tool declares required that the call
+// left out. The schema is the server's own statement of what it needs, and
+// checking it here costs nothing; not checking it costs a round trip and an
+// error message written in the server's terms rather than the caller's.
+func missingRequired(schema map[string]any, args map[string]any) []string {
+	rs, ok := schema["required"].([]any)
+	if !ok {
+		return nil
+	}
+	var missing []string
+	for _, r := range rs {
+		name, ok := r.(string)
+		if !ok {
+			continue
+		}
+		if v, set := args[name]; !set || isEmpty(v) {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// missingRequiredMessage names each missing argument with the description the
+// server gave it, so the retry has what it needs without another round trip.
+func missingRequiredMessage(schema map[string]any, missing []string) string {
+	props, _ := schema["properties"].(map[string]any)
+	var b strings.Builder
+	b.WriteString("this tool was not called: it requires ")
+	b.WriteString(strings.Join(missing, ", "))
+	b.WriteString(", which you did not provide. Call it again with them set.")
+	for _, name := range missing {
+		p, _ := props[name].(map[string]any)
+		desc, _ := p["description"].(string)
+		if desc == "" {
+			continue
+		}
+		if len([]rune(desc)) > 240 {
+			desc = string([]rune(desc)[:239]) + "…"
+		}
+		fmt.Fprintf(&b, "\n- %s: %s", name, desc)
+	}
+	return b.String()
+}

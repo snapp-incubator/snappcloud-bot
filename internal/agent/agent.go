@@ -238,6 +238,19 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, errResult(call.ID, "unknown tool "+call.Name))
 				continue
 			}
+			// Check the call against the tool's own schema before spending it.
+			// A server asked for a required argument it did not get answers in
+			// its own terms — Grafana's "parsing end time: syntax error:
+			// unexpected $end" for a missing endTime — and a model that reads
+			// that as "the query returned nothing" will report the metric as
+			// unavailable and move on. It did, for a whole daily report.
+			if missing := missingRequired(b.schema, call.Args); len(missing) > 0 {
+				denied++
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "invalid").Inc()
+				lg.Info("tool call missing required arguments", "tool", b.real, "missing", missing)
+				results = append(results, errResult(call.ID, missingRequiredMessage(b.schema, missing)))
+				continue
+			}
 			if !b.ct.NoEnforce {
 				if b.selfAuthorized {
 					// Identity-aware server: it authorizes the caller itself from
