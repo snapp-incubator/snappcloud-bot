@@ -227,9 +227,14 @@ func parseJSON(r io.Reader) (agent.Response, error) {
 		case "text":
 			r2.Text += b.Text
 		case "tool_use":
+			// See parseStream: arguments that do not parse must never become an
+			// empty argument map — the tool would run, and answer, on nothing.
 			args := map[string]any{}
 			if len(b.Input) > 0 {
-				_ = json.Unmarshal(b.Input, &args)
+				if err := json.Unmarshal(b.Input, &args); err != nil {
+					return agent.Response{}, &retryable{fmt.Errorf(
+						"incomplete arguments for tool %s (%d bytes): %w", b.Name, len(b.Input), err)}
+				}
 			}
 			r2.Calls = append(r2.Calls, agent.ToolCall{ID: b.ID, Name: b.Name, Args: args})
 		}
@@ -344,9 +349,20 @@ func parseStream(r io.Reader) (agent.Response, error) {
 		case "text":
 			out.Text += b.text.String()
 		case "tool_use":
+			// A tool call's arguments arrive as streamed JSON fragments. If the
+			// stream was cut — the output limit reached mid-object, a connection
+			// dropped after the last event — the fragments do not parse, and
+			// discarding that error runs the tool with NO arguments: a metrics
+			// query with no expression, a log request with no pod. The model
+			// then reasons from whatever that returns, which is how an answer
+			// ends up confidently wrong. Retry instead; the next attempt
+			// usually streams the object whole.
 			args := map[string]any{}
 			if s := b.partial.String(); s != "" {
-				_ = json.Unmarshal([]byte(s), &args)
+				if err := json.Unmarshal([]byte(s), &args); err != nil {
+					return agent.Response{}, &retryable{fmt.Errorf(
+						"incomplete arguments for tool %s (%d bytes): %w", b.name, len(s), err)}
+				}
 			}
 			out.Calls = append(out.Calls, agent.ToolCall{ID: b.id, Name: b.name, Args: args})
 		}

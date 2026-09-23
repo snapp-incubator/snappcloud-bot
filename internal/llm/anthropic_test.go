@@ -111,3 +111,66 @@ func TestCompleteDoesNotRetry4xx(t *testing.T) {
 		t.Fatalf("4xx must not retry, got %d calls", calls)
 	}
 }
+
+// A tool call whose streamed arguments were cut off must not become a call
+// with NO arguments: the tool would run on nothing — a metrics query with no
+// expression — and the model would reason from whatever came back.
+func TestIncompleteToolArgumentsAreRetriedNotEmptied(t *testing.T) {
+	cut := sse(
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"query_prometheus"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"expr\":\"sum(rate(cont"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`,
+	)
+	whole := sse(
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"query_prometheus"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"expr\":\"up\"}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_stop"}`,
+	)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_, _ = w.Write([]byte(cut))
+			return
+		}
+		_, _ = w.Write([]byte(whole))
+	}))
+	defer srv.Close()
+
+	c := New(Options{BaseURL: srv.URL, APIKey: "k", Model: "m", Timeout: 5 * time.Second})
+	r, err := c.Complete(context.Background(), agent.Request{Messages: []agent.Turn{{Role: "user", Text: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("incomplete arguments must be retried; calls=%d", calls)
+	}
+	if len(r.Calls) != 1 || r.Calls[0].Args["expr"] != "up" {
+		t.Fatalf("arguments not recovered: %+v", r.Calls)
+	}
+}
+
+// The same for a proxy that returns one JSON body.
+func TestIncompleteToolArgumentsInJSONBodyAreNotEmptied(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"t1","name":"get_logs","input":{"ns`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"t1","name":"get_logs","input":{"namespace":"team-a"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(Options{BaseURL: srv.URL, APIKey: "k", Model: "m", Timeout: 5 * time.Second})
+	r, err := c.Complete(context.Background(), agent.Request{Messages: []agent.Turn{{Role: "user", Text: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Calls) != 1 || r.Calls[0].Args["namespace"] != "team-a" {
+		t.Fatalf("arguments not recovered: %+v", r.Calls)
+	}
+}

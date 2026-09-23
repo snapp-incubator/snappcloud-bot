@@ -30,7 +30,12 @@ func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error
 
 	parts := splitMessage(msg, maxPostRunes)
 	if len(parts) > maxPostParts {
+		// Silently posting the first part of an answer is worse than a short
+		// one: nothing tells the reader the rest existed.
+		s.log.Warn("answer exceeded post-part guard, dropping tail",
+			"channel", channelID, "parts", len(parts), "limit", maxPostParts)
 		parts = parts[:maxPostParts]
+		parts[len(parts)-1] += "\n\n_[answer truncated: too long to post]_"
 	}
 	for i, part := range parts {
 		if strings.TrimSpace(part) == "" {
@@ -76,6 +81,7 @@ func (s *Service) replyTo(ctx context.Context, p mattermost.Post, msg string) {
 	if len(parts) > maxPostParts {
 		s.log.Warn("answer exceeded post-part guard, dropping tail", "channel", p.ChannelID, "parts", len(parts))
 		parts = parts[:maxPostParts]
+		parts[len(parts)-1] += "\n\n_[answer truncated: too long to post]_"
 	}
 	for _, part := range parts {
 		if strings.TrimSpace(part) == "" {
