@@ -215,3 +215,19 @@ func TestAnswerOffersOnlyTheNamedClustersTools(t *testing.T) {
 		t.Fatalf("a question naming no cluster must keep all of them, got %d", len(rec.in.Clusters))
 	}
 }
+
+// The prompt must teach a method, not a catalogue of incidents: the next
+// problem will not be one anybody wrote down in advance.
+func TestDefaultSystemTeachesInvestigationNotCases(t *testing.T) {
+	for _, want := range []string{
+		"WHAT THE USER REPORTS IS EVIDENCE",
+		"WHERE ELSE this symptom could be produced",
+		"any of them can answer it",
+		"Aggregate numbers hide the case you are chasing",
+		"not from a list of known cases",
+	} {
+		if !strings.Contains(defaultSystem, want) {
+			t.Errorf("default system prompt is missing: %q", want)
+		}
+	}
+}
