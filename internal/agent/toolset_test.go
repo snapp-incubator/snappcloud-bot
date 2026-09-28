@@ -63,7 +63,7 @@ func TestInterleaveGivesEveryClusterAShare(t *testing.T) {
 }
 
 func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
-	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12})
+	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12}, nil)
 	for _, want := range []string{
 		"you have tools for okd4-box",
 		"okd4-teh-1 did not respond this turn",
@@ -74,7 +74,7 @@ func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
 	}
-	if toolNotice(nil, nil, nil, nil) != "" {
+	if toolNotice(nil, nil, nil, nil, nil) != "" {
 		t.Fatal("no clusters at all should produce no notice")
 	}
 }
@@ -225,12 +225,31 @@ func TestInterleaveNeverTrimsANamedCluster(t *testing.T) {
 // its metrics server did not. The tools are simply absent, which is exactly
 // what a cluster that never had them looks like — so it has to be said.
 func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
-	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil)
+	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil, nil)
 	for _, want := range []string{
 		"Part of a cluster is missing this turn",
 		"okd4-teh-1 (okd4-teh-1-5)",
 		"still HAVE those tools",
 		"Do not say the cluster has no such tool",
+	} {
+		if !strings.Contains(n, want) {
+			t.Fatalf("missing %q in %q", want, n)
+		}
+	}
+}
+
+// A model that decides from memory which tools it "should" have reported a
+// cluster as having no Prometheus while holding the metrics server's tools —
+// and named tools that do not exist anywhere. The notice states the servers
+// that answered and how many tools each gave, which is not arguable.
+func TestToolNoticeNamesTheServersThatAnswered(t *testing.T) {
+	n := toolNotice([]string{"okd4-teh-1"}, nil, nil, nil, map[string][]string{
+		"okd4-teh-1": {"openshift-mcp (17)", "cloud-grafana-mcp (15)"},
+	})
+	for _, want := range []string{
+		"okd4-teh-1 answered with openshift-mcp (17), cloud-grafana-mcp (15).",
+		"under the name it actually has",
+		"not a tool you do not have",
 	} {
 		if !strings.Contains(n, want) {
 			t.Fatalf("missing %q in %q", want, n)

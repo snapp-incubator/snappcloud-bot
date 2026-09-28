@@ -91,12 +91,15 @@ type fakeMCP struct {
 	unscoped bool
 	// schema is advertised with every tool this fake serves.
 	schema map[string]any
+	// server names the MCP server these tools are said to come from.
+	server string
 }
 
 func (f *fakeMCP) ListTools(context.Context) ([]Tool, error) {
 	ts := make([]Tool, 0, len(f.tools))
 	for _, n := range f.tools {
-		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized, Unscoped: f.unscoped, InputSchema: f.schema})
+		ts = append(ts, Tool{Name: n, SelfAuthorized: f.selfAuthorized, Unscoped: f.unscoped,
+			InputSchema: f.schema, Server: f.server})
 	}
 	return ts, nil
 }
@@ -530,5 +533,22 @@ func TestRunTellsTheModelWhenOnlySomeOfAClustersServersAnswered(t *testing.T) {
 	sys := llm.seen[0].System
 	if !strings.Contains(sys, "okd4-teh-1 (okd4-teh-1-5)") || !strings.Contains(sys, "Part of a cluster is missing") {
 		t.Fatalf("a partly-answering cluster was not reported to the model: %q", sys)
+	}
+}
+
+// End to end: the server inventory reaches the model's system prompt.
+func TestRunTellsTheModelWhichServersAnswered(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{{Text: "done"}}}
+	m := &fakeMCP{tools: []string{"query_prometheus", "list_prometheus_metric_names"}}
+	m.server = "cloud-grafana-mcp"
+	ag := New(llm, NewEnforcer(nil), nil, 3, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := ag.Run(context.Background(), Input{
+		System: "SYS", Query: "report",
+		Clusters: []ClusterTools{{Cluster: "okd4-teh-1", Allowed: []string{"team-a"}, MCP: m}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sys := llm.seen[0].System; !strings.Contains(sys, "okd4-teh-1 answered with cloud-grafana-mcp (2)") {
+		t.Fatalf("server inventory missing from the prompt: %q", sys)
 	}
 }

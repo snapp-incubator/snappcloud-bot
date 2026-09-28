@@ -105,7 +105,7 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 // are unreachable, and which had tools trimmed — so it never has to infer any
 // of that from the shape of its own tool list, and never reports a transient
 // outage as an absence of access.
-func toolNotice(present, unreachable, degraded []string, dropped map[string]int) string {
+func toolNotice(present, unreachable, degraded []string, dropped map[string]int, inventory map[string][]string) string {
 	if len(present) == 0 && len(unreachable) == 0 && len(degraded) == 0 {
 		return ""
 	}
@@ -113,6 +113,18 @@ func toolNotice(present, unreachable, degraded []string, dropped map[string]int)
 	b.WriteString("\n\nTools in this turn: ")
 	if len(present) > 0 {
 		b.WriteString("you have tools for " + strings.Join(present, ", ") + ".")
+		// Named and counted per server, because a model that reasons about
+		// its tools from memory rather than from the list will report a
+		// capability missing while holding it.
+		for _, c := range present {
+			if srv := inventory[c]; len(srv) > 0 {
+				fmt.Fprintf(&b, "\n- %s answered with %s.", c, strings.Join(srv, ", "))
+			}
+		}
+		b.WriteString("\nThose servers' tools are in your tool list for this message. Before you report a " +
+			"capability as unavailable, look for it there under the name it actually has — a name you " +
+			"remember from elsewhere may not be the name here, and a tool you do not find under a guessed " +
+			"name is not a tool you do not have.")
 	} else {
 		b.WriteString("no cluster's tools could be listed.")
 	}

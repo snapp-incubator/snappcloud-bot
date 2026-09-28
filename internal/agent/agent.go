@@ -493,6 +493,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	var groups []clusterTools
 	var present, unreachable, degraded []string
 	namedClusters := map[string]bool{}
+	inventory := map[string][]string{}
 	anyOK := false
 	var firstErr error
 	for _, ct := range clusters {
@@ -552,6 +553,13 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 				preferred: ct.Preferred,
 				tools:     byServer[srv],
 			})
+			// The servers a cluster actually answered with, named and counted.
+			// A model that decides from memory which tools it "should" have
+			// will say a cluster has no metrics while holding the metrics
+			// server's tools; an inventory it cannot argue with is cheaper
+			// than hoping it re-reads a list of 138.
+			inventory[ct.Cluster] = append(inventory[ct.Cluster],
+				fmt.Sprintf("%s (%d)", srv, len(byServer[srv])))
 		}
 	}
 	if !anyOK && firstErr != nil {
@@ -585,7 +593,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
 			"servers", degraded)
 	}
-	return tools, reg, toolNotice(present, unreachable, degraded, dropped), nil
+	return tools, reg, toolNotice(present, unreachable, degraded, dropped, inventory), nil
 }
 
 // filtered enforces namespace scope on a raw tool result before the model sees
