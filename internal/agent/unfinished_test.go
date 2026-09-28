@@ -65,7 +65,7 @@ func TestRunSendsBackATurnThatAnnouncesWorkItDidNotDo(t *testing.T) {
 		t.Fatalf("the announced tool call was never made: %v", m.called)
 	}
 	sent := llm.seen[1].Messages[len(llm.seen[1].Messages)-1]
-	if !strings.Contains(sent.Text, "Either make those calls now") {
+	if !strings.Contains(sent.Text, "either make the calls now or write the finished answer") {
 		t.Fatalf("the model was not asked to continue: %q", sent.Text)
 	}
 }
