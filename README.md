@@ -104,10 +104,22 @@ the prompt requires withheld data to be reported as an access limitation, never
 as "does not exist".
 
 Three exemption classes:
-- **Cluster-infrastructure tools** (`toolRules.<tool>.clusterAdminOnly`): nodes,
-  BGP state, agent status. Denied outright for non-admins; returned unfiltered
-  for callers whose cluster-wide SAR passed (`clusterWide` in the mcp-authz
-  scope response). Deterministic RBAC, per cluster.
+- **Cluster-infrastructure tools** (`toolRules.<tool>.clusterAdminOnly`): the
+  Cilium datapath (BGP, BPF maps, identities, monitor, statedb), node tools,
+  `get_resource`, and Grafana's label-enumeration tools. Denied outright for
+  non-admins; returned unfiltered for callers whose cluster-wide SAR passed
+  (`clusterWide` in the mcp-authz scope response). Unfiltered because there is
+  no namespace in the output to filter *to* — not because the caller is
+  trusted with more.
+
+  `clusterWide` is a second SubjectAccessReview with an empty namespace ("may
+  this subject `get pods` at cluster scope?"), resolved per cluster. It gates
+  exactly three things: these tools, global servers marked `clusterAdminOnly`,
+  and the `diagnostics` command. **It is not a filter bypass** — an ordinary
+  tool called by a cluster-admin runs the same namespace enforcement and the
+  same result filter as anyone else's. An admin sees every namespace because
+  their namespace list *contains* every namespace, not because a flag turned
+  the filter off.
 - **Self-authorized servers** (`servers[].selfAuthorized`): trusted,
   identity-aware MCP servers (e.g. argocd-mcp). The caller's SSO identity is
   forwarded as the `X-Remote-User` header and the server authorizes the caller
@@ -120,7 +132,11 @@ Three exemption classes:
   pinning and result filtering for such a server's tools; `allowTools` and
   `clusterAdminOnly` rules still apply. An operator's deliberate widening —
   e.g. Prometheus metrics, so an investigation can see the whole cluster — and
-  logged as a warning at startup so it is never forgotten.
+  logged as a warning at startup so it is never forgotten. Note these are two
+  independent axes: metric *data* is open to every authorized user because the
+  server is `unscoped`, while *label enumeration* on that same server stays
+  `clusterAdminOnly`, since listing every label value would hand one tenant the
+  namespace and pod names of all the others.
 - **Global servers** (the general docs): namespace-agnostic, available to any
   authorized user, not scope-filtered. A global server marked
   `clusterAdminOnly` is served only to callers holding cluster-wide access on
