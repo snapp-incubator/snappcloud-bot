@@ -92,3 +92,32 @@ func TestRunStopsNudgingAfterTwoTries(t *testing.T) {
 		t.Fatalf("expected exactly two nudges, got %d completions", len(llm.seen))
 	}
 }
+
+// The wordings a model actually uses are unbounded, so the detector matches
+// the subject — "let me", "I'll", "I need to" — rather than a list of verbs
+// that is always one entry short. Each of these ended a real turn that called
+// no tool and was posted as an answer.
+func TestAnnouncesMoreWorkMatchesAnyIntent(t *testing.T) {
+	for _, s := range []string{
+		"The HTTPProxy data is enormous. Let me move on and complete the report based on what I have. Let me make a focused final pass to gather the rest with limited budget.",
+		"I have enough to proceed. Next, I compile the tables.",
+		"I'm going to pull the remaining sections together.",
+		"I have to narrow this query first.",
+		"I want to double-check the listener config.",
+		"Let's wrap this up with the storage numbers.",
+	} {
+		if !announcesMoreWork(s) {
+			t.Errorf("not detected: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"The 413 comes from an nginx outside the cluster. Raise client_max_body_size there.",
+		"No packets are dropped for that namespace. Let me know if you want another pod.",
+		"Nothing is pending. Let us know if that changes.",
+		"Pod api-1 is OOMKilled every few minutes; its limit is 256Mi.",
+	} {
+		if announcesMoreWork(s) {
+			t.Errorf("false positive: %q", s)
+		}
+	}
+}

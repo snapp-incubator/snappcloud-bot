@@ -18,12 +18,13 @@ import (
 // itself what to do next. "Let me know" is excluded — that is addressed to the
 // user and ends a turn legitimately.
 var announcement = regexp.MustCompile(`(?i)\b(?:` +
-	`(?:let me|let's|lets|i'll|i will|i am going to|i'm going to|next i'll|next i will|now i'll|now i will|` +
-	`i need to|i should|i want to)\s+(?:now\s+|also\s+|first\s+|quickly\s+|just\s+)*` +
-	`(?:check|look|query|fetch|get|run|verify|confirm|inspect|examine|pull|retrieve|see|find|trace|dig|grab|` +
-	`compile|gather|collect|read|list|call|use|try|start|continue|do)\b` +
-	`|(?:checking|querying|fetching|verifying|looking|inspecting|gathering)\s+(?:this|that|it|these|those|the)\b` +
-	`)`)
+	`let me|let'?s|lets|i'?ll|i will|i am going to|i'?m going to|` +
+	`i need to|i should|i want to|i have to|next,? i|now,? i` +
+	`)\b`)
+
+// addressedToTheUser matches the intent phrases that legitimately END a turn
+// because they are aimed at the reader rather than at the model itself.
+var addressedToTheUser = regexp.MustCompile(`(?i)\blet (?:me|us) know\b`)
 
 // announcesMoreWork reports whether a tool-less response ends by announcing
 // work the model did not do. Only the tail is examined: an answer may narrate
@@ -38,7 +39,12 @@ func announcesMoreWork(text string) bool {
 	if len(r) > 400 {
 		r = r[len(r)-400:]
 	}
-	return announcement.MatchString(string(r))
+	tail := string(r)
+	// Matching the subject rather than the verb: a model announces what it is
+	// about to do in every imaginable wording, and a list of verbs is a list
+	// that is always one entry short. "Let me make a focused final pass to
+	// gather the rest" was the entry that was missing.
+	return announcement.MatchString(tail) && !addressedToTheUser.MatchString(tail)
 }
 
 // maxNudges bounds how often one turn may be sent back for announcing work it
