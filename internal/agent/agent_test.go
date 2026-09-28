@@ -442,7 +442,7 @@ func TestRunAtToolLimitDemandsAnAnswerNotAPlan(t *testing.T) {
 		t.Fatalf("the final request must carry no tools, got %d", len(last.Tools))
 	}
 	msg := last.Messages[len(last.Messages)-1]
-	for _, want := range []string{"you have NO tools", "Not checked:", "Never write that you are about to look at something"} {
+	for _, want := range []string{"You have NO tools", "Not checked:", "Do not describe your own progress"} {
 		if !strings.Contains(msg.Text, want) {
 			t.Fatalf("final instruction missing %q: %q", want, msg.Text)
 		}

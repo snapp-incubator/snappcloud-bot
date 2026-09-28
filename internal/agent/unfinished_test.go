@@ -70,12 +70,14 @@ func TestRunSendsBackATurnThatAnnouncesWorkItDidNotDo(t *testing.T) {
 	}
 }
 
-// A model that keeps promising and never calls must not spin.
+// A model that keeps promising and never calls must not spin: two nudges, then
+// the answer is demanded rather than its deliberation posted.
 func TestRunStopsNudgingAfterTwoTries(t *testing.T) {
 	llm := &fakeLLM{turns: []Response{
 		{Text: "Let me check the routes."},
 		{Text: "Let me check the listener."},
 		{Text: "Let me check the endpoints."},
+		{Text: "The listener caps bodies at 1 MiB.\n\nNot checked: Hubble flows."},
 	}}
 	ag := New(llm, NewEnforcer(nil), nil, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	out, err := ag.Run(context.Background(), Input{
@@ -85,11 +87,12 @@ func TestRunStopsNudgingAfterTwoTries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "Let me check the endpoints." {
-		t.Fatalf("expected the third answer after two nudges, got %q", out)
+	if !strings.Contains(out, "1 MiB") {
+		t.Fatalf("the demanded answer was not returned: %q", out)
 	}
-	if len(llm.seen) != 3 {
-		t.Fatalf("expected exactly two nudges, got %d completions", len(llm.seen))
+	// two nudged rounds, then one demand — four completions, no more.
+	if len(llm.seen) != 4 {
+		t.Fatalf("expected two nudges and one demand, got %d completions", len(llm.seen))
 	}
 }
 
@@ -119,5 +122,56 @@ func TestAnnouncesMoreWorkMatchesAnyIntent(t *testing.T) {
 		if announcesMoreWork(s) {
 			t.Errorf("false positive: %q", s)
 		}
+	}
+}
+
+// Narrating the work is no more an answer than announcing it. This turn was
+// posted verbatim to a channel that had asked for a report.
+func TestAnnouncesMoreWorkCatchesProgressNarration(t *testing.T) {
+	for _, s := range []string{
+		"Stop. I have spent my tool budget on tool exploration and gathered the structural data the user asked for. I'll write what I have, mark what I could not compute within budget, and stop.",
+		"I have gathered the node data. The operational metrics need PromQL I do not have the tool to execute.",
+		"The HTTPProxy data is enormous. Let me move on and complete the report based on what I have.",
+	} {
+		if !announcesMoreWork(s) {
+			t.Errorf("not detected: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"237 nodes are Ready, none NotReady. Three namespaces are above 90% of their CPU quota: team-a, team-b, team-c.",
+		"No metrics tool answered on this cluster, so every measured cell is n/a. Let me know if you want the Kubernetes-side counts instead.",
+	} {
+		if announcesMoreWork(s) {
+			t.Errorf("false positive: %q", s)
+		}
+	}
+}
+
+// After its nudges are spent the model must not have its deliberation posted:
+// the answer is demanded once more, with no tools attached.
+func TestRunDemandsTheAnswerWhenNudgesAreSpent(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Text: "Let me gather the rest."},
+		{Text: "I have spent my tool budget. I'll write what I have."},
+		{Text: "Let me make one more pass."},
+		{Text: "## Daily report\n\n237 nodes Ready. Quotas above 90%: team-a.\n\nNot checked: ingress rates."},
+	}}
+	ag := New(llm, NewEnforcer(nil), nil, 8, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "daily report",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"t"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "237 nodes Ready") {
+		t.Fatalf("deliberation was posted instead of the report: %q", out)
+	}
+	last := llm.seen[len(llm.seen)-1]
+	if len(last.Tools) != 0 {
+		t.Fatalf("the demand must carry no tools, got %d", len(last.Tools))
+	}
+	if !strings.Contains(last.Messages[len(last.Messages)-1].Text, "Do not describe your own progress") {
+		t.Fatalf("demand instruction missing: %q", last.Messages[len(last.Messages)-1].Text)
 	}
 }

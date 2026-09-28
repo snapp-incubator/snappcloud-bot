@@ -236,6 +236,22 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				msgs = append(msgs, Turn{Role: "user", Text: nudge})
 				continue
 			}
+			// Nudged as often as we will, and still talking about the work
+			// rather than doing it: "Stop. I have spent my tool budget…" is
+			// not an answer, and posting it hands the reader a transcript of
+			// the model's deliberation. Ask once more, with no tools, for the
+			// thing that was actually requested.
+			if nudges >= maxNudges && announcesMoreWork(resp.Text) {
+				lg.Info("model still announcing work after its nudges; demanding the answer", "iteration", iters)
+				metrics.TurnOutcomes.WithLabelValues("demanded").Inc()
+				text, derr := a.demandAnswer(ctx, system, msgs)
+				if derr != nil {
+					summary("answered", "demanded", true, "err", derr)
+					return resp.Text, nil
+				}
+				summary("answered", "demanded", true)
+				return text, nil
+			}
 			summary("answered")
 			metrics.TurnOutcomes.WithLabelValues("answered").Inc()
 			return resp.Text, nil // final answer
@@ -387,23 +403,35 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	}
 	summary("max-iters")
 	metrics.TurnOutcomes.WithLabelValues("max-iters").Inc()
+	text, err := a.demandAnswer(ctx, system, msgs)
+	if err != nil {
+		return "", fmt.Errorf("llm (final): %w", err)
+	}
+	// Say it in the answer, not only in a log line. An investigation that
+	// stopped at the limit reads exactly like one that finished, and the person
+	// who can do something about it is the one reading the message.
+	return text + fmt.Sprintf("\n\n_Stopped after %d tool calls — the per-question limit._", a.maxIter), nil
+}
 
-	// Out of iterations. This request carries NO tools, and the instruction has
-	// to say so plainly: told only that it had "reached the tool-call limit",
-	// the model answered a 413 investigation with "let me also confirm by
-	// looking at the Contour configuration" — a plan, posted to the user as an
-	// answer, for work it could no longer do.
+// demandAnswer asks for the final answer with NO tools attached. Told only
+// that it had run out of calls, a model writes what it would do next — a plan,
+// posted to the user as an answer — or narrates its own budget. So the
+// instruction says there are no tools, and says what the reply must contain.
+func (a *Agent) demandAnswer(ctx context.Context, system string, msgs []Turn) (string, error) {
 	final := append(append([]Turn(nil), msgs...), Turn{
 		Role: "user",
-		Text: "Stop investigating: you have used every tool call for this question and you have NO tools " +
-			"now — nothing you say you will check can happen. Write the final answer from what you already " +
-			"have. Say what you found and what it means, give the most likely cause and how to confirm it, " +
-			"and say what to do about it. Then one last line, 'Not checked:', listing what you would have " +
-			"looked at next. Never write that you are about to look at something.",
+		Text: "Stop investigating. You have NO tools for this message — nothing you say you will check can " +
+			"happen, and there is nothing left to decide about how to spend calls. Write the finished answer " +
+			"now, from what you already have: the findings with their numbers, what they mean, the most " +
+			"likely cause and how to confirm it, and what to do. If the question asked for a report with " +
+			"sections, produce every section, filling what you have and marking the rest 'n/a' with the " +
+			"reason in that cell. Then one last line, 'Not checked:', listing what you would have looked at " +
+			"next. Do not describe your own progress, your budget, or what you were about to do: none of " +
+			"that is an answer, and the reader sees only this message.",
 	})
 	resp, err := a.llm.Complete(ctx, Request{System: system, Messages: final})
 	if err != nil {
-		return "", fmt.Errorf("llm (final): %w", err)
+		return "", err
 	}
 	text := resp.Text
 	if resp.Truncated {
@@ -411,10 +439,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			text = t
 		}
 	}
-	// Say it in the answer, not only in a log line. An investigation that
-	// stopped at the limit reads exactly like one that finished, and the person
-	// who can do something about it is the one reading the message.
-	return text + fmt.Sprintf("\n\n_Stopped after %d tool calls — the per-question limit._", a.maxIter), nil
+	return text, nil
 }
 
 // partialLister is implemented by a tool source that can report which of its

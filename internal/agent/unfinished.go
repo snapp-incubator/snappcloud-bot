@@ -19,7 +19,11 @@ import (
 // user and ends a turn legitimately.
 var announcement = regexp.MustCompile(`(?i)\b(?:` +
 	`let me|let'?s|lets|i'?ll|i will|i am going to|i'?m going to|` +
-	`i need to|i should|i want to|i have to|next,? i|now,? i` +
+	`i need to|i should|i want to|i have to|next,? i|now,? i|` +
+	// Talking about the work rather than doing it: a turn spent narrating its
+	// own progress or budget is no more an answer than one announcing a call.
+	`i have (?:spent|gathered|used|run|completed|done)|i (?:cannot|can'?t|do not|don'?t) have the tool|` +
+	`tool budget|my budget|within budget|remaining calls|i'?ve spent` +
 	`)\b`)
 
 // addressedToTheUser matches the intent phrases that legitimately END a turn
@@ -52,6 +56,7 @@ func announcesMoreWork(text string) bool {
 // what it has rather than spun on.
 const maxNudges = 2
 
-const nudge = "You ended without calling any tool, but your last message says you are about to. " +
-	"You still have your tools and there are tool calls left. Either make those calls now, or — if you " +
-	"already have what you need — write the final answer. Do not describe what you are going to do next."
+const nudge = "That message was about the work, not the work. You still have your tools and there are " +
+	"tool calls left, so either make the calls now or write the finished answer. Never post your own " +
+	"progress, your remaining budget, or what you were about to do: the reader sees only the message you " +
+	"send, and a description of the work is not the work."
