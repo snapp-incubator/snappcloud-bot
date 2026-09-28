@@ -134,11 +134,20 @@ Three exemption classes:
   override email → username.
 - **Authorization.** A user with no namespaces on any cluster never reaches the
   MCP servers (hard gate). Group-aware SARs; per-region fail-closed.
-- **Multi-cluster.** Every authorized cluster's tools are exposed at once, tagged
-  `[cluster X]`; the agent calls the right cluster and combines across clusters.
+- **Multi-cluster.** Tools are tagged `[cluster X]`; the agent calls the right
+  cluster and combines across clusters. A question that **names** its clusters
+  is given only those — under any of the names a cluster goes by, including the
+  region label an alert carries, resolved in code rather than inferred — so a
+  question about one cluster carries one cluster's tools. A question naming none
+  reaches every cluster the user can access. See `clusters[].names`.
 - **Thorough tool use.** The system prompt pushes the model to investigate with
   every relevant tool (pods + logs + events + flows + policy + ingress) and
   reconcile them. Extend with your own MCP "skills" via `agent.toolGuidance`.
+- **Unattended runs.** Scheduled reports and alert investigations are told that
+  nobody will reply: no questions, no options, no commentary on effort. What
+  does not fit the budget is marked `n/a` with a reason and listed in one
+  closing line, because a question posted to a channel nobody is reading is a
+  report that never arrives.
 - **Commands.** `help` lists everything the bot understands, and only the
   features that are switched on. Commands are matched on the whole message
   after normalising case, punctuation and politeness (`Alerts On, please` works),
@@ -213,7 +222,20 @@ Three exemption classes:
   filtering) so a verbose dump cannot blow the model's request budget; empty
   content blocks are normalized (the API rejects them).
 - **MCP mux** skips a dead server (best-effort tool listing); a cluster with no
-  reachable servers is dropped, not fatal. SSE responses up to 32 MiB per line.
+  reachable servers is dropped, not fatal. Which servers failed is recorded and
+  told to the model, because a cluster that answered with five of its six
+  servers looks exactly like a cluster that never had the sixth one's tools.
+  SSE responses up to 32 MiB per line.
+- **Answers are finished, not posted half-written.** A response that stopped at
+  the model's output limit is continued from where it broke off and joined on
+  (up to three times). A turn that makes no tool call but whose tail announces
+  work it did not do is sent back — twice at most — rather than posted as the
+  answer. Running out of tool calls produces an answer, not a plan: the final
+  request carries no tools and says so, and the reply ends by saying it stopped.
+- **A tool never runs on arguments that failed to parse.** Streamed tool-call
+  arguments that do not decode are a retryable error naming the tool, never an
+  empty argument map — a metrics query with no expression answers, and the model
+  reasons from whatever comes back.
 - **Crash isolation.** Each message is handled in its own goroutine with a panic
   recover, so one bad message can never take the singleton process down.
 - **Abuse guards** (`limits`): per-user token-bucket rate limit
@@ -274,6 +296,13 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_alerts_received_total` | `disposition` | `queued` / `duplicate` / `cooldown` / `ignored` / `resolved` / `low_severity` — shows whether noise suppression is working |
 | `snappcloud_bot_alert_investigations_total` | `outcome` | `ok` / `error` / `empty` / `unauthorized` |
 | `snappcloud_bot_alert_investigation_duration_seconds` | — | investigation latency |
+| `snappcloud_bot_mcp_list_failures_total` | `server` | an MCP server that failed to list its tools — its tools are missing from every answer until it recovers |
+| `snappcloud_bot_tools_offered`, `_tools_per_cluster` | —, `cluster` | tools put in front of the model last turn, and what each cluster advertised |
+| `snappcloud_bot_tools_dropped_total` | `cluster` | tools omitted to fit `maxTools` — a cluster the question named appearing here is the case worth acting on |
+| `snappcloud_bot_turn_outcomes_total` | `outcome` | `answered` / `max-iters` — the second means the model ran out of tool calls mid-investigation |
+| `snappcloud_bot_answer_continuations_total` | — | answers that hit the model's output limit and had to be continued; climbing means raise `maxTokens` |
+| `snappcloud_bot_answer_nudges_total` | — | turns sent back because the model announced work it did not do |
+| `snappcloud_bot_conversation_trims_total` | — | turns where the oldest tool output was dropped to fit the model's window |
 | `snappcloud_bot_active_conversations`, `_messages_in_flight`, `_handler_panics_total` | — | live state |
 
 Dashboard: `core/dashboards/Network/SnappCloudBot`. Alerts:
@@ -379,7 +408,24 @@ is not answering — a server that is down, one refusing the bot's credentials,
 and one that genuinely lacks a tool are indistinguishable from an answer and
 obvious here. It also reports the model, the per-question tool-call limit and
 the per-request tool limit, which are the other two reasons an answer stops
-early. An answer that ran out of tool calls says so in its own last line.
+early, plus the **running build** — the image tag is republished in place, so a
+pod that has not been restarted since a fix answers exactly like one that has.
+An answer that ran out of tool calls says so in its own last line.
+
+| what you see | where to look | usual cause |
+|---|---|---|
+| "this cluster has no such tool" | `diagnostics` | that server did not answer — token, route, or pod |
+| every metric cell empty | `check_datasources_health` | the metrics backend is refusing the credentials it was given |
+| right cluster, wrong numbers | `list_datasources` | several datasources exist and the default is not always the complete one |
+| a tool missing for one cluster | `tools_dropped_total` | the list was trimmed; `named=true` in the warning is the case worth acting on |
+| answer stops mid-sentence | `answer_continuations_total` | hit `maxTokens`; it is continued, but a climbing count means raise it |
+| answer describes work it did not do | `answer_nudges_total` | the model announced calls and made none |
+| investigation stops early | `turn_outcomes_total{outcome="max-iters"}` | ran out of tool calls |
+| HTTP 400 asking for a shorter prompt | `agent.budgets.conversationRunes` | the transcript exceeded the model's window; it fails identically on every retry |
+
+Worth alerting on: `rate(snappcloud_bot_mcp_list_failures_total[10m]) > 0`. A
+server that stops answering is otherwise invisible until someone reads an answer
+and doubts it.
 
 ## Develop
 
