@@ -135,3 +135,50 @@ func TestRunRefusesAToolCallMissingRequiredArgumentsWithoutCallingIt(t *testing.
 		t.Fatalf("unhelpful result: %+v", res)
 	}
 }
+
+func TestRetryHintTellsTheModelWhatToDoNext(t *testing.T) {
+	if h := retryHint("not_found"); !strings.Contains(h, "Do NOT try another spelling") ||
+		!strings.Contains(h, "take the identifier from what it returns") {
+		t.Fatalf("not_found hint: %q", h)
+	}
+	if h := retryHint("auth"); !strings.Contains(h, "not a missing thing") {
+		t.Fatalf("auth hint: %q", h)
+	}
+	if h := retryHint("timeout"); !strings.Contains(h, "never report its subject") {
+		t.Fatalf("timeout hint: %q", h)
+	}
+	if retryHint("bad_args") != "" || retryHint("other") != "" {
+		t.Fatal("a failure with no useful next move must add nothing")
+	}
+}
+
+// A 404 must reach the model as an instruction to look the identifier up.
+func TestRunTurnsNotFoundIntoALookupInstruction(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "c__get_dashboard_summary", Args: map[string]any{"uid": "cluster-capacity"}}}},
+		{Text: "done"},
+	}}
+	m := &notFoundMCP{}
+	m.tools = []string{"get_dashboard_summary"}
+	ag := New(llm, NewEnforcer(nil), nil, 4, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := ag.Run(context.Background(), Input{
+		Query:    "capacity",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: m}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := lastResults(llm)
+	if len(res) != 1 || !res[0].IsError {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !strings.Contains(res[0].Content, "Do NOT try another spelling") {
+		t.Fatalf("no lookup instruction: %q", res[0].Content)
+	}
+}
+
+type notFoundMCP struct{ fakeMCP }
+
+func (n *notFoundMCP) CallTool(_ context.Context, name string, _ map[string]any) (string, error) {
+	n.called = append(n.called, name)
+	return "", fmt.Errorf(`tool reported error: get dashboard "cluster-capacity": 404 Not Found`)
+}

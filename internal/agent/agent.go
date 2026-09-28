@@ -368,6 +368,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				if tooLarge(cerr) {
 					msg += narrowingHint(b.schema, call.Args)
 				}
+				msg += retryHint(metrics.ClassifyToolError(cerr.Error()))
 				results = append(results, errResult(call.ID, msg))
 				continue
 			}

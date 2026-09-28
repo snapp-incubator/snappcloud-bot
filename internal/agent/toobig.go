@@ -117,3 +117,28 @@ func missingRequiredMessage(schema map[string]any, missing []string) string {
 	}
 	return b.String()
 }
+
+// retryHint turns a classified tool failure into the next move. Without it a
+// model reads "404 not found" as an invitation to try another spelling: one
+// report spent eight of its thirteen tool calls guessing dashboard names —
+// "cluster-capacity", "snappcloud-nodes", "snappcloud-ingress" — none of which
+// existed, when one search would have returned the real ones.
+func retryHint(reason string) string {
+	switch reason {
+	case "not_found":
+		return " The identifier you passed does not exist. Do NOT try another spelling of it: " +
+			"call the tool that lists or searches for these — a search, a list, a names query — and take " +
+			"the identifier from what it returns. If a search comes back empty, say the thing does not " +
+			"exist here rather than guessing further."
+	case "auth":
+		return " This is a permissions or credentials failure, not a missing thing: whatever you were " +
+			"looking for may well exist. Report it as unavailable to you right now, name the tool, and " +
+			"do not conclude from it that the resource, the metric or the cluster is absent."
+	case "timeout", "unreachable":
+		return " The server did not answer. Try once more if the answer matters, and if it fails again " +
+			"say which tool was unreachable and what that leaves unanswered — never report its subject " +
+			"as absent."
+	default:
+		return ""
+	}
+}
