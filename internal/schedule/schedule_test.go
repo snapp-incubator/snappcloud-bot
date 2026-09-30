@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -196,5 +197,53 @@ func TestSkippedRunsDoNotDisableSchedule(t *testing.T) {
 	}
 	if got := s.List("u")[0].Failures; got != 0 {
 		t.Fatalf("skips counted as failures: %d, want 0", got)
+	}
+}
+
+// Sequential ids told a user how many schedules other people had — theirs
+// would be 2, 7 and 9 — and made someone else's id something you could simply
+// type. Ids are now random, and ownership is still what decides access.
+func TestScheduleIDsAreUnguessableAndOwnerScoped(t *testing.T) {
+	st := NewStore(filepath.Join(t.TempDir(), "s.json"), Limits{Total: 50, PerUser: 50, MinInterval: time.Hour})
+	add := func(user string) string {
+		e := &Entry{User: user, ChannelID: "c", Query: "q", Every: Duration(4 * time.Hour), Next: time.Now()}
+		if err := st.Add(e); err != nil {
+			t.Fatal(err)
+		}
+		return e.ID
+	}
+	seen := map[string]bool{}
+	var mine []string
+	for i := 0; i < 20; i++ {
+		id := add("alice@example.com")
+		if seen[id] {
+			t.Fatalf("duplicate id %q", id)
+		}
+		if _, err := strconv.Atoi(id); err == nil {
+			t.Fatalf("id %q is a plain number — it leaks how many schedules exist", id)
+		}
+		seen[id] = true
+		mine = append(mine, id)
+	}
+	bobID := add("bob@example.com")
+
+	// Alice sees only her own, and cannot delete Bob's even knowing its id.
+	if got := st.List("alice@example.com"); len(got) != 20 {
+		t.Fatalf("alice sees %d schedules, want 20", len(got))
+	}
+	for _, e := range st.List("alice@example.com") {
+		if e.User != "alice@example.com" {
+			t.Fatalf("alice was shown %s's schedule", e.User)
+		}
+	}
+	if err := st.Delete("alice@example.com", bobID); err == nil {
+		t.Fatal("alice deleted bob's schedule")
+	}
+	if len(st.List("bob@example.com")) != 1 {
+		t.Fatal("bob's schedule went missing")
+	}
+	// And a deletion she does own still works.
+	if err := st.Delete("alice@example.com", mine[0]); err != nil {
+		t.Fatalf("alice could not delete her own: %v", err)
 	}
 }

@@ -8,6 +8,7 @@
 package schedule
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,7 +119,6 @@ type Store struct {
 	mu     sync.Mutex
 	m      map[string]*Entry
 	dirty  bool
-	nextID int
 }
 
 // NewStore loads any persisted schedules from path ("" = memory only).
@@ -164,8 +164,11 @@ func (s *Store) Add(e *Entry) error {
 	if mine >= s.limits.PerUser {
 		return fmt.Errorf("%w (%d)", ErrTooManyForUser, s.limits.PerUser)
 	}
-	s.nextID++
-	e.ID = fmt.Sprintf("%d", s.nextID)
+	id, err := s.newID()
+	if err != nil {
+		return err
+	}
+	e.ID = id
 	e.Created = time.Now()
 	s.m[e.ID] = e
 	s.dirty = true
@@ -290,9 +293,6 @@ func (s *Store) load() {
 	for i := range list {
 		e := list[i]
 		s.m[e.ID] = &e
-		if n := atoi(e.ID); n > s.nextID {
-			s.nextID = n
-		}
 	}
 }
 
@@ -325,13 +325,30 @@ func (s *Store) Flush() {
 	_ = os.Rename(tmp, s.path)
 }
 
-func atoi(s string) int {
-	n := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
+// idAlphabet leaves out the characters people misread when they type an id
+// back: 0/o, 1/l/i, u/v. What is left is still 27 bits in five characters.
+const idAlphabet = "abcdefghjkmnpqrstwxyz23456789"
+
+// newID returns a short, unguessable identifier for a schedule. Sequential ids
+// were worse than ugly: a user saw their own as 2, 7 and 9, which says how many
+// schedules other people have, and made someone else's id something you could
+// simply type. Random ids leak no count and are not worth guessing — and
+// Delete still checks ownership, so guessing one would achieve nothing anyway.
+//
+// Caller must hold s.mu.
+func (s *Store) newID() (string, error) {
+	buf := make([]byte, 6)
+	for attempt := 0; attempt < 8; attempt++ {
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("generate schedule id: %w", err)
 		}
-		n = n*10 + int(r-'0')
+		id := make([]byte, len(buf))
+		for i, b := range buf {
+			id[i] = idAlphabet[int(b)%len(idAlphabet)]
+		}
+		if _, taken := s.m[string(id)]; !taken {
+			return string(id), nil
+		}
 	}
-	return n
+	return "", errors.New("could not generate a unique schedule id")
 }
