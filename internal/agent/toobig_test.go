@@ -179,7 +179,8 @@ func TestRunTurnsNotFoundIntoALookupInstruction(t *testing.T) {
 	if len(res) != 1 || !res[0].IsError {
 		t.Fatalf("unexpected result: %+v", res)
 	}
-	if !strings.Contains(res[0].Content, "Do NOT try another spelling") {
+	if !strings.Contains(res[0].Content, "a different kind of object") ||
+		!strings.Contains(res[0].Content, "take the identifier from what it returns") {
 		t.Fatalf("no lookup instruction: %q", res[0].Content)
 	}
 }
