@@ -613,7 +613,17 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			"named", namedClusters[cluster])
 		metrics.ToolsDropped.WithLabelValues(cluster).Add(float64(n))
 	}
-	a.log.Debug("tools offered", "tools", len(tools), "clusters", len(present), "unreachable", len(unreachable))
+	// At INFO, every turn: which clusters were carried, whether the question
+	// named them, and what each server contributed. Three reports in a row
+	// claimed a capability was missing, and deciding whether that was a trim,
+	// an outage or a confabulation took a production log each time. This line
+	// answers it without one.
+	for _, c := range present {
+		a.log.Info("cluster tools offered", "cluster", c, "named", namedClusters[c],
+			"tools", countFor(groups, c), "servers", strings.Join(inventory[c], " "))
+	}
+	a.log.Info("tools offered", "tools", len(tools), "clusters", len(present),
+		"unreachable", len(unreachable), "maxTools", a.budgets.MaxTools)
 	metrics.ToolsOffered.Set(float64(len(tools)))
 	if len(degraded) > 0 {
 		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
