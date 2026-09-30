@@ -95,8 +95,11 @@ func TestMissingRequiredNamesArgumentsAndDescriptions(t *testing.T) {
 	for _, want := range []string{
 		"query_prometheus was NOT called",
 		"the tool itself is fine",
+		"You HAVE this tool",
+		"Do not report this capability as missing",
 		"You sent: datasourceUid, expr",
 		"It requires endTime",
+		`{"endTime": <value>}`,
 		"relative to now",
 	} {
 		if !strings.Contains(msg, want) {

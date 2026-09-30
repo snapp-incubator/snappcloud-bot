@@ -106,7 +106,9 @@ func missingRequired(schema map[string]any, args map[string]any) []string {
 func missingRequiredMessage(tool string, schema map[string]any, missing []string, args map[string]any) string {
 	props, _ := schema["properties"].(map[string]any)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s was NOT called — the arguments were wrong, and the tool itself is fine. ", tool)
+	fmt.Fprintf(&b, "%s was NOT called — the arguments were wrong, and the tool itself is fine. "+
+		"You HAVE this tool: you just called it, and only its arguments were refused. Do not report this "+
+		"capability as missing, unavailable, or not exposed — it is none of those. ", tool)
 	if sent := argNames(args); len(sent) > 0 {
 		fmt.Fprintf(&b, "You sent: %s. ", strings.Join(sent, ", "))
 	} else {
@@ -118,6 +120,15 @@ func missingRequiredMessage(tool string, schema map[string]any, missing []string
 	}
 	fmt.Fprintf(&b, "It requires %s. Call %s again with exactly those names:",
 		strings.Join(missing, ", "), tool)
+	if len(missing) > 0 {
+		// A skeleton, so the retry is a fill-in rather than a fresh guess at
+		// the shape of the call.
+		parts := make([]string, 0, len(missing))
+		for _, n := range missing {
+			parts = append(parts, fmt.Sprintf("%q: <value>", n))
+		}
+		fmt.Fprintf(&b, "\n  {%s}", strings.Join(parts, ", "))
+	}
 	for _, name := range missing {
 		p, _ := props[name].(map[string]any)
 		desc, _ := p["description"].(string)
