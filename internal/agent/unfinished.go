@@ -60,3 +60,27 @@ const nudge = "That message was about the work, not the work. You still have you
 	"tool calls left, so either make the calls now or write the finished answer. Never post your own " +
 	"progress, your remaining budget, or what you were about to do: the reader sees only the message you " +
 	"send, and a description of the work is not the work."
+
+// unmeasuredCell matches the ways a model marks a cell it did not fill.
+var unmeasuredCell = regexp.MustCompile(`(?i)\bn/a\b|\bnot run\b|\bnot measured\b|\bnot issued\b|\bqueries pending\b`)
+
+// mostlyUnmeasured reports whether an answer is a shape with nothing in it: a
+// report whose cells are overwhelmingly "n/a" or "not run". A model that
+// stopped after its first few calls writes exactly this, and it reads as a
+// finished report — the tables are all there, correctly laid out, empty.
+//
+// The threshold is deliberately high: one or two unmeasured cells in a real
+// report are honest, and saying so is the behaviour we want.
+func mostlyUnmeasured(text string) bool {
+	if len(unmeasuredCell.FindAllString(text, -1)) < 8 {
+		return false
+	}
+	// Only for answers shaped like a report; a prose answer that says "n/a"
+	// a lot is not this.
+	return strings.Count(text, "|") > 20
+}
+
+const runTheQueries = "That is a report with nothing in it: most of its cells say the measurement was not made, " +
+	"and you still have tools and tool calls left. Go and run those queries now — issue them together in one " +
+	"round, one per cell you left empty — and then write the report from what comes back. A cell may only stay " +
+	"unmeasured if you ran its query and it returned nothing, in which case say what you ran."

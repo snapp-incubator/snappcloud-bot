@@ -236,6 +236,19 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				msgs = append(msgs, Turn{Role: "user", Text: nudge})
 				continue
 			}
+			// A report whose cells all say the measurement was not made is a
+			// shape with nothing in it. It reads as finished — every table
+			// present, correctly laid out, empty — and it is produced by a
+			// model that stopped after its first few calls with rounds still
+			// to spend.
+			if nudges < maxNudges && iter < a.maxIter-2 && mostlyUnmeasured(resp.Text) {
+				nudges++
+				lg.Info("answer is mostly unmeasured with rounds left; asking for the queries",
+					"nudge", nudges, "iteration", iters)
+				metrics.AnswerNudges.Inc()
+				msgs = append(msgs, Turn{Role: "user", Text: runTheQueries})
+				continue
+			}
 			// Nudged as often as we will, and still talking about the work
 			// rather than doing it: "Stop. I have spent my tool budget…" is
 			// not an answer, and posting it hands the reader a transcript of

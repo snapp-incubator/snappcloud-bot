@@ -175,3 +175,64 @@ func TestRunDemandsTheAnswerWhenNudgesAreSpent(t *testing.T) {
 		t.Fatalf("demand instruction missing: %q", last.Messages[len(last.Messages)-1].Text)
 	}
 }
+
+func TestMostlyUnmeasured(t *testing.T) {
+	empty := `## 1. Namespaces
+| metric | value | query |
+|---|---|---|
+| in-scope | n/a | not run |
+| zero pods | n/a | not run |
+## 2. CPU
+| namespace | usage | requests |
+|---|---|---|
+| n/a | n/a | n/a |
+| n/a | n/a | n/a |
+Expression: not run.`
+	if !mostlyUnmeasured(empty) {
+		t.Fatal("an all-unmeasured report was not recognised")
+	}
+	real := `## 1. Namespaces
+| metric | value |
+|---|---|
+| in-scope | 280 |
+| zero pods | 21 |
+## 2. CPU
+| namespace | usage | requests |
+|---|---|---|
+| nats-production | 16.7 | 24.0 |
+| baly-ode-central | 9.1 | 12.0 |
+PV usage is n/a: kubelet_volume_stats_used_bytes returned nothing.`
+	if mostlyUnmeasured(real) {
+		t.Fatal("a filled report with one honest gap was treated as empty")
+	}
+	if mostlyUnmeasured("No metrics tool answered. n/a for everything, n/a, n/a, n/a, n/a, n/a, n/a, n/a, n/a") {
+		t.Fatal("prose is not a report")
+	}
+}
+
+// The run that produced this: probe the datasource, then write every table as
+// "not run" while thirty rounds were still available.
+func TestRunSendsBackAReportWithNothingInIt(t *testing.T) {
+	empty := "| a | n/a | not run |\n| b | n/a | not run |\n| c | n/a | not run |\n" +
+		strings.Repeat("| x | n/a |\n", 8)
+	llm := &fakeLLM{turns: []Response{
+		{Text: empty},
+		{Calls: []ToolCall{{ID: "1", Name: "c__query_prometheus", Args: map[string]any{}}}},
+		{Text: "| ns | cpu |\n| nats-production | 16.7 |\n| baly-ode-central | 9.1 |"},
+	}}
+	ag := New(llm, NewEnforcer(nil), nil, 8, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "daily report",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"query_prometheus"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "nats-production") {
+		t.Fatalf("the empty report was posted: %q", out)
+	}
+	sent := llm.seen[1].Messages[len(llm.seen[1].Messages)-1].Text
+	if !strings.Contains(sent, "report with nothing in it") {
+		t.Fatalf("wrong instruction: %q", sent)
+	}
+}
