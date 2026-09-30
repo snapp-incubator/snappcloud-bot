@@ -91,8 +91,14 @@ func TestMissingRequiredNamesArgumentsAndDescriptions(t *testing.T) {
 	if len(got) != 1 || got[0] != "endTime" {
 		t.Fatalf("missing = %v", got)
 	}
-	msg := missingRequiredMessage(schema, got)
-	for _, want := range []string{"requires endTime", "Call it again", "relative to now"} {
+	msg := missingRequiredMessage("query_prometheus", schema, got, map[string]any{"datasourceUid": "P1", "expr": "up"})
+	for _, want := range []string{
+		"query_prometheus was NOT called",
+		"the tool itself is fine",
+		"You sent: datasourceUid, expr",
+		"It requires endTime",
+		"relative to now",
+	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
 		}
@@ -131,7 +137,8 @@ func TestRunRefusesAToolCallMissingRequiredArgumentsWithoutCallingIt(t *testing.
 		t.Fatalf("an incomplete call must not reach the server: %v", m.called)
 	}
 	res := lastResults(llm)
-	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "endTime") {
+	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "endTime") ||
+		!strings.Contains(res[0].Content, "the tool itself is fine") {
 		t.Fatalf("unhelpful result: %+v", res)
 	}
 }
@@ -181,4 +188,27 @@ type notFoundMCP struct{ fakeMCP }
 func (n *notFoundMCP) CallTool(_ context.Context, name string, _ map[string]any) (string, error) {
 	n.called = append(n.called, name)
 	return "", fmt.Errorf(`tool reported error: get dashboard "cluster-capacity": 404 Not Found`)
+}
+
+// A model reaching for argument names it remembers from another tool is told
+// so: the first version of this message was read as a description of the tool
+// ("it exposes a datasource uid, not a PromQL endpoint") rather than as an
+// instruction, and the capability was reported absent.
+func TestMissingRequiredMessageNamesWrongArguments(t *testing.T) {
+	schema := map[string]any{
+		"required":   []any{"datasourceUid", "expr", "endTime"},
+		"properties": map[string]any{"datasourceUid": map[string]any{}, "expr": map[string]any{}, "endTime": map[string]any{}},
+	}
+	msg := missingRequiredMessage("query_prometheus", schema, []string{"datasourceUid", "endTime", "expr"},
+		map[string]any{"query": "up", "time": "now"})
+	for _, want := range []string{
+		"You sent: query, time",
+		"not arguments of this tool at all: query, time",
+		"names from a different tool",
+		"Call query_prometheus again with exactly those names",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in %q", want, msg)
+		}
+	}
 }

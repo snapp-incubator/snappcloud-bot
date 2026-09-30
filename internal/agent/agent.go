@@ -274,8 +274,9 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			if missing := missingRequired(b.schema, call.Args); len(missing) > 0 {
 				denied++
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "invalid").Inc()
-				lg.Info("tool call missing required arguments", "tool", b.real, "missing", missing)
-				results = append(results, errResult(call.ID, missingRequiredMessage(b.schema, missing)))
+				lg.Info("tool call rejected before it was sent", "tool", b.real,
+					"missing", missing, "sent", argNames(call.Args), "unknown", unknownArgs(b.schema, call.Args))
+				results = append(results, errResult(call.ID, missingRequiredMessage(b.real, b.schema, missing, call.Args)))
 				continue
 			}
 			if !b.ct.NoEnforce {

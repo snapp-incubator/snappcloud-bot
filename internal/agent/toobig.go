@@ -96,26 +96,69 @@ func missingRequired(schema map[string]any, args map[string]any) []string {
 	return missing
 }
 
-// missingRequiredMessage names each missing argument with the description the
-// server gave it, so the retry has what it needs without another round trip.
-func missingRequiredMessage(schema map[string]any, missing []string) string {
+// missingRequiredMessage tells the model exactly how to place the call again.
+// The first version said "this tool was not called: it requires datasourceUid,
+// expr, endTime, which you did not provide" — and a model read that as a
+// description of the tool, concluding query_prometheus "exposes a datasource
+// uid, not a PromQL endpoint", and reported the capability as absent. So the
+// message names the tool, separates what was sent from what is wanted, and is
+// unmistakably an instruction.
+func missingRequiredMessage(tool string, schema map[string]any, missing []string, args map[string]any) string {
 	props, _ := schema["properties"].(map[string]any)
 	var b strings.Builder
-	b.WriteString("this tool was not called: it requires ")
-	b.WriteString(strings.Join(missing, ", "))
-	b.WriteString(", which you did not provide. Call it again with them set.")
+	fmt.Fprintf(&b, "%s was NOT called — the arguments were wrong, and the tool itself is fine. ", tool)
+	if sent := argNames(args); len(sent) > 0 {
+		fmt.Fprintf(&b, "You sent: %s. ", strings.Join(sent, ", "))
+	} else {
+		b.WriteString("You sent no arguments. ")
+	}
+	if unknown := unknownArgs(schema, args); len(unknown) > 0 {
+		fmt.Fprintf(&b, "These are not arguments of this tool at all: %s — you are using names from a "+
+			"different tool or a different version. ", strings.Join(unknown, ", "))
+	}
+	fmt.Fprintf(&b, "It requires %s. Call %s again with exactly those names:",
+		strings.Join(missing, ", "), tool)
 	for _, name := range missing {
 		p, _ := props[name].(map[string]any)
 		desc, _ := p["description"].(string)
-		if desc == "" {
-			continue
-		}
 		if len([]rune(desc)) > 240 {
 			desc = string([]rune(desc)[:239]) + "…"
+		}
+		if desc == "" {
+			fmt.Fprintf(&b, "\n- %s", name)
+			continue
 		}
 		fmt.Fprintf(&b, "\n- %s: %s", name, desc)
 	}
 	return b.String()
+}
+
+// argNames lists the argument names a call actually carried, sorted.
+func argNames(args map[string]any) []string {
+	out := make([]string, 0, len(args))
+	for k := range args {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unknownArgs lists arguments the tool does not declare. A model reaching for
+// a name it remembers from another server is the usual cause, and saying so
+// costs nothing.
+func unknownArgs(schema map[string]any, args map[string]any) []string {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return nil
+	}
+	var out []string
+	for k := range args {
+		if _, declared := props[k]; !declared {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // retryHint turns a classified tool failure into the next move. Without it a
