@@ -44,3 +44,20 @@ func summarizeQuery(q string, max int) string {
 	r := []rune(q)
 	return strings.TrimSpace(string(r[:max-1])) + "…"
 }
+
+// tableCell makes a string safe to put in one cell of a markdown table: no
+// newline can end the row early, and no pipe can open a column that is not
+// there. Long text is cut at a word boundary — a schedule's question can be
+// thousands of characters, and the listing exists to identify it, not to
+// reproduce it.
+func tableCell(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "|", "\\|")), " ")
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	r := []rune(s)[:max]
+	if i := strings.LastIndexByte(string(r), ' '); i > max/2 {
+		return string(r[:i]) + " …"
+	}
+	return string(r) + "…"
+}

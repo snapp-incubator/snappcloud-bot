@@ -102,11 +102,16 @@ func (s *Service) renderSchedules(identity string) string {
 		return "You have no schedules. Create one with " +
 			"`schedule every day at 09:00 <your question>`."
 	}
+	// A scheduled question can be four thousand characters of report spec.
+	// Putting that in a table cell destroys the table — its newlines end the
+	// row — and buries the two things this listing is for: which schedule is
+	// which, and the id to remove it by. One line each, and the full text is
+	// still the user's own message further up the channel.
 	var b strings.Builder
 	b.WriteString("**Your schedules**\n\n| ID | When | Next run | Question |\n| --- | --- | --- | --- |\n")
 	for _, e := range list {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n",
-			e.ID, e.Spec, s.sched.FormatWhen(e.Next), e.Query)
+			e.ID, e.Spec, s.sched.FormatWhen(e.Next), tableCell(e.Query, 90))
 	}
 	lim := s.sched.Limits()
 	fmt.Fprintf(&b, "\nRemove one with `unschedule <id>`. Limits: %d per user, no more often than every %s.",
