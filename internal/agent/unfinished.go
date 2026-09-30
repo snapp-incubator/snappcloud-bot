@@ -84,3 +84,29 @@ const runTheQueries = "That is a report with nothing in it: most of its cells sa
 	"and you still have tools and tool calls left. Go and run those queries now — issue them together in one " +
 	"round, one per cell you left empty — and then write the report from what comes back. A cell may only stay " +
 	"unmeasured if you ran its query and it returned nothing, in which case say what you ran."
+
+// looksLikePreamble reports whether an answer is the sentence that introduces
+// the work rather than the work. "Now the main Prometheus batch (legacy
+// datasource):" was posted to a channel as an entire daily report — a line
+// ending in a colon, promising something that never followed.
+//
+// A colon at the end is the reliable signal: real answers do not end by
+// announcing what comes next. The length test is deliberately narrow, so a
+// genuinely short answer — "No packets are dropped for that namespace." — is
+// only caught when the turn did enough work that a one-line reply cannot be
+// the result of it.
+func looksLikePreamble(text string, toolCalls int) bool {
+	t := strings.TrimRight(strings.TrimSpace(text), "*_` ")
+	if t == "" {
+		return false
+	}
+	if strings.HasSuffix(t, ":") {
+		return true
+	}
+	return toolCalls >= 3 && len([]rune(t)) < 120
+}
+
+const finishTheThought = "That was the sentence before the work, not the work: it reads as an introduction to " +
+	"something that never followed. You still have your tools and tool calls left. Do the thing you were " +
+	"about to do, then send the complete answer — every section the question asked for, filled from what the " +
+	"tools returned."

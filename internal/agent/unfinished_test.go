@@ -236,3 +236,58 @@ func TestRunSendsBackAReportWithNothingInIt(t *testing.T) {
 		t.Fatalf("wrong instruction: %q", sent)
 	}
 }
+
+func TestLooksLikePreamble(t *testing.T) {
+	preambles := []struct {
+		text  string
+		calls int
+	}{
+		{"Now the main Prometheus batch (legacy datasource):", 6},
+		{"Here are the results:", 4},
+		{"**Datasource proved. Running the capacity queries:**", 3},
+		{"Done.", 5},
+	}
+	for _, c := range preambles {
+		if !looksLikePreamble(c.text, c.calls) {
+			t.Errorf("not detected: %q", c.text)
+		}
+	}
+	answers := []struct {
+		text  string
+		calls int
+	}{
+		{"No packets are dropped for that namespace.", 0},
+		{"The 413 comes from an nginx outside the cluster. Raise client_max_body_size there; nothing in the cluster can change it.", 8},
+		{"## Capacity\n\n| ns | cpu |\n|---|---|\n| nats-production | 103.0 |\n\nExpression: sum by (namespace) (rate(container_cpu_usage_seconds_total[5m]))", 9},
+	}
+	for _, c := range answers {
+		if looksLikePreamble(c.text, c.calls) {
+			t.Errorf("false positive: %q", c.text)
+		}
+	}
+}
+
+// The turn that produced this: a daily report posted as one line promising a
+// batch of queries that never ran.
+func TestRunSendsBackAPreamble(t *testing.T) {
+	llm := &fakeLLM{turns: []Response{
+		{Calls: []ToolCall{{ID: "1", Name: "c__query_prometheus", Args: map[string]any{}}}},
+		{Text: "Now the main Prometheus batch (legacy datasource):"},
+		{Text: "## Capacity\n\n| ns | cpu |\n|---|---|\n| nats-production | 103.0 |"},
+	}}
+	ag := New(llm, NewEnforcer(nil), nil, 8, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	out, err := ag.Run(context.Background(), Input{
+		Query:    "capacity report",
+		Clusters: []ClusterTools{{Cluster: "c", Allowed: []string{"team-a"}, MCP: &fakeMCP{tools: []string{"query_prometheus"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "nats-production") {
+		t.Fatalf("the preamble was posted: %q", out)
+	}
+	sent := llm.seen[2].Messages[len(llm.seen[2].Messages)-1].Text
+	if !strings.Contains(sent, "the sentence before the work") {
+		t.Fatalf("wrong instruction: %q", sent)
+	}
+}

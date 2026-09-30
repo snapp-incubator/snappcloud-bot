@@ -241,6 +241,18 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			// present, correctly laid out, empty — and it is produced by a
 			// model that stopped after its first few calls with rounds still
 			// to spend.
+			// An answer that is the sentence before the work: a line ending in
+			// a colon, or a fragment from a turn that had clearly been doing
+			// something. Posting it hands the reader an introduction to a
+			// report that was never written.
+			if nudges < maxNudges && iter < a.maxIter-1 && looksLikePreamble(resp.Text, toolCalls) {
+				nudges++
+				lg.Info("answer is a preamble; asking for the work itself",
+					"nudge", nudges, "iteration", iters, "runes", len([]rune(resp.Text)))
+				metrics.AnswerNudges.Inc()
+				msgs = append(msgs, Turn{Role: "user", Text: finishTheThought})
+				continue
+			}
 			if nudges < maxNudges && iter < a.maxIter-2 && mostlyUnmeasured(resp.Text) {
 				nudges++
 				lg.Info("answer is mostly unmeasured with rounds left; asking for the queries",
