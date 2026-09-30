@@ -169,10 +169,11 @@ func unknownArgs(schema map[string]any, args map[string]any) []string {
 func retryHint(reason string) string {
 	switch reason {
 	case "not_found":
-		return " The identifier you passed does not exist. Do NOT try another spelling of it: " +
-			"call the tool that lists or searches for these — a search, a list, a names query — and take " +
-			"the identifier from what it returns. If a search comes back empty, say the thing does not " +
-			"exist here rather than guessing further."
+		return " The identifier you passed does not exist. Two things it is usually NOT: another spelling " +
+			"of the right one, and an identifier of a different kind of object — a uid that came out of one " +
+			"tool's output names the thing that tool lists, not whatever this tool looks up. Call the tool " +
+			"that lists or searches for THIS kind of thing and take the identifier from what it returns. " +
+			"If that search comes back empty, say the thing does not exist here rather than guessing further."
 	case "auth":
 		return " This is a permissions or credentials failure, not a missing thing: whatever you were " +
 			"looking for may well exist. Report it as unavailable to you right now, name the tool, and " +

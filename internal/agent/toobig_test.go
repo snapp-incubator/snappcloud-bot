@@ -144,7 +144,8 @@ func TestRunRefusesAToolCallMissingRequiredArgumentsWithoutCallingIt(t *testing.
 }
 
 func TestRetryHintTellsTheModelWhatToDoNext(t *testing.T) {
-	if h := retryHint("not_found"); !strings.Contains(h, "Do NOT try another spelling") ||
+	if h := retryHint("not_found"); !strings.Contains(h, "another spelling") ||
+		!strings.Contains(h, "a different kind of object") ||
 		!strings.Contains(h, "take the identifier from what it returns") {
 		t.Fatalf("not_found hint: %q", h)
 	}
