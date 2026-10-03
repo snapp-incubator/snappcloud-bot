@@ -198,6 +198,11 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	}
 	system := in.System + notice
 	msgs := []Turn{{Role: "user", Text: in.Query}}
+	// Identifiers the model is allowed to pass: what the question carried, plus
+	// whatever the results add as the turn goes on.
+	seenIDs := map[string]bool{}
+	noteQuestionWords(seenIDs, in.Query)
+	noteConfiguredIDs(seenIDs, system)
 
 	for iter := 0; iter < a.maxIter; iter++ {
 		iters = iter + 1
@@ -302,6 +307,15 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				lg.Info("tool call rejected before it was sent", "tool", b.real,
 					"missing", missing, "sent", argNames(call.Args), "unknown", unknownArgs(b.schema, call.Args))
 				results = append(results, errResult(call.ID, missingRequiredMessage(b.real, b.schema, missing, call.Args)))
+				continue
+			}
+			// An identifier the model made up is a 404 the model reads as "this
+			// does not exist", so refuse it here and name the lookup instead.
+			if unseen := unseenIDs(b.schema, call.Args, seenIDs); len(unseen) > 0 {
+				denied++
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "invalid").Inc()
+				lg.Info("tool call rejected before it was sent", "tool", b.real, "invented", unseen)
+				results = append(results, errResult(call.ID, unseenIDMessage(b.real, unseen)))
 				continue
 			}
 			if !b.ct.NoEnforce {
@@ -419,7 +433,13 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, r)
 			}
 		}
-		msgs = append(msgs, Turn{Role: "user", Results: capRound(results, a.budgets.RoundRunes)})
+		round := capRound(results, a.budgets.RoundRunes)
+		for _, r := range round {
+			if !r.IsError {
+				noteIDs(seenIDs, r.Content)
+			}
+		}
+		msgs = append(msgs, Turn{Role: "user", Results: round})
 		if n := trimConversation(msgs, a.budgets.ConversationRunes); n > 0 {
 			// Better a model that has forgotten an early dump than a request the
 			// model refuses outright, which fails the same way on every retry.

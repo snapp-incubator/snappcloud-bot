@@ -436,6 +436,7 @@ An answer that ran out of tool calls says so in its own last line.
 | a tool missing for one cluster | `tools_dropped_total` | the list was trimmed; `named=true` in the warning is the case worth acting on |
 | answer stops mid-sentence | `answer_continuations_total` | hit `maxTokens`; it is continued, but a climbing count means raise it |
 | answer describes work it did not do | `answer_nudges_total` | the model announced calls and made none |
+| "no dashboard measures it" with no search in the log | `tool call rejected before it was sent` | the model passed a uid it invented; it is refused before it is spent |
 | investigation stops early | `turn_outcomes_total{outcome="max-iters"}` | ran out of tool calls |
 | HTTP 400 asking for a shorter prompt | `agent.budgets.conversationRunes` | the transcript exceeded the model's window; it fails identically on every retry |
 
