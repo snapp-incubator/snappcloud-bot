@@ -174,8 +174,14 @@ Three exemption classes:
   cache and get their live cluster/namespace list immediately — no wait, no
   restart. Lower `cacheTTL` for faster automatic propagation (more mcp-authz load).
 - **Schedules.** A user can save a recurring query — `schedule every day at
-  09:00 are any pods failing in my-ns?` — plus `schedules` to list and
-  `unschedule <id>` to remove. An interval schedule can name its first run
+  09:00 are any pods failing in my-ns?` — plus `schedules` to list,
+  `run <id>` to run one immediately and `unschedule <id>` to remove.
+  `run` goes through the scheduler, not around it: same unattended framing, same
+  empty history, same timeout, same worker pool, one run of an id at a time, and
+  it does not consume the next scheduled run. Pasting the question into the
+  channel instead is a *different* request — it carries the thread's history and
+  the chat timeout — so it is not a way to reproduce what a schedule did.
+  An interval schedule can name its first run
   (`every 4h starting at 16:10 ...`). Times are read and displayed in
   `schedules.timezone`, not the pod's zone. Bounded by `schedules.perUser` (5) / `total`
   (500) / `minInterval` (4h) — `total ÷ minInterval` is the worst-case hourly
@@ -434,6 +440,8 @@ An answer that ran out of tool calls says so in its own last line.
 | every metric cell empty | `check_datasources_health` | the metrics backend is refusing the credentials it was given |
 | right cluster, wrong numbers | `list_datasources` | several datasources exist and the default is not always the complete one |
 | a tool missing for one cluster | `tools_dropped_total` | the list was trimmed; `named=true` in the warning is the case worth acting on |
+| "this cluster has no metrics tool" while the log shows the server offering them | `tools offered … tools= ceiling=` | the endpoint carries 128 definitions and drops the rest of the array silently; the bot caps itself at that, so a count at the ceiling means something was trimmed |
+| a tool whose result is always cut | `results_truncated_total` | called too broadly: the model is spending a call on a fraction of an answer |
 | answer stops mid-sentence | `answer_continuations_total` | hit `maxTokens`; it is continued, but a climbing count means raise it |
 | answer describes work it did not do | `answer_nudges_total` | the model announced calls and made none |
 | "no dashboard measures it" with no search in the log | `tool call rejected before it was sent` | the model passed a uid it invented; it is refused before it is spent |

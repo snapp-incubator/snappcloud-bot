@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -162,11 +163,25 @@ type binding struct {
 // capResult truncates an oversized tool result, telling the model to narrow
 // the query. Applied AFTER namespace filtering so truncation can never turn
 // filterable JSON into an unfilterable fragment.
-func (a *Agent) capResult(s string) string {
-	if len(s) <= a.budgets.ResultRunes {
+//
+// The budget is in runes and the cut is made on runes: slicing a UTF-8 string
+// at a byte offset can halve a character, and an invalid string travels all the
+// way to the endpoint before failing there.
+//
+// Logged per tool, because how much of a result the model never saw is the
+// difference between "the tool returned nothing useful" and "the tool returned
+// forty times what fits".
+func (a *Agent) capResult(tool, s string) string {
+	r := []rune(s)
+	if len(r) <= a.budgets.ResultRunes {
 		return s
 	}
-	return s[:a.budgets.ResultRunes] + "\n[output truncated — narrow the query (a namespace, a node, or a filter)]"
+	a.log.Info("tool result truncated to the result budget",
+		"tool", tool, "runes", len(r), "kept", a.budgets.ResultRunes,
+		"dropped", len(r)-a.budgets.ResultRunes)
+	metrics.ResultsTruncated.WithLabelValues(tool).Inc()
+	return string(r[:a.budgets.ResultRunes]) +
+		"\n[output truncated — narrow the query (a namespace, a node, or a filter)]"
 }
 
 // Run drives the LLM ↔ MCP loop across every authorized cluster, enforcing each
@@ -345,7 +360,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 						continue
 					}
 					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
+					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(b.real, out)})
 					continue
 				}
 				if a.enforcer.ClusterAdminOnly(b.real) {
@@ -373,7 +388,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 					// takes the whole round's budget with it, and the results
 					// of every tool called beside it are dropped to make room.
 					metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
+					results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(b.real, out)})
 					continue
 				}
 				// An unscoped server's results are shared by everyone authorized
@@ -416,12 +431,12 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				// Trusted namespace-agnostic source (docs) — no filtering, and
 				// capped like everything else for the same reason.
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
+				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(b.real, out)})
 			} else if b.unscoped {
 				// Shared by every authorized caller — no filtering, but still
 				// capped like any other result.
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "ok").Inc()
-				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(out)})
+				results = append(results, ToolResult{CallID: call.ID, Content: a.capResult(b.real, out)})
 			} else {
 				r, dropped := a.filtered(ctx, b, call.ID, out)
 				if dropped {
@@ -611,22 +626,23 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	if !anyOK && firstErr != nil {
 		return nil, nil, "", firstErr
 	}
-	tools, dropped := interleave(groups, a.budgets.MaxTools)
+	// A budget above what the endpoint carries is not a bigger budget, it is a
+	// silently truncated tool array — so the ceiling wins.
+	max := a.budgets.MaxTools
+	if max <= 0 || max > gatewayToolCeiling {
+		a.log.Warn("maxTools is above what the endpoint carries; using the ceiling instead",
+			"maxTools", a.budgets.MaxTools, "ceiling", gatewayToolCeiling)
+		max = gatewayToolCeiling
+	}
+	tools, dropped := interleave(groups, max)
 	// Per-cluster counts, every turn: the only way to tell from outside whether
 	// a cluster's servers are all advertising what they should.
 	for _, g := range groups {
 		metrics.ToolsPerCluster.WithLabelValues(g.cluster).Set(float64(countFor(groups, g.cluster)))
 	}
-	if n := len(tools); n > a.budgets.MaxTools {
-		// Deliberate: a named cluster is never trimmed. Say so, loudly, because
-		// past this point it is the endpoint deciding what the model sees.
-		a.log.Warn("tool list exceeds maxTools because a named cluster is never trimmed; "+
-			"narrow a server's allowTools if the endpoint starts dropping tools",
-			"tools", n, "maxTools", a.budgets.MaxTools)
-	}
 	for cluster, n := range dropped {
 		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
-			"cluster", cluster, "dropped", n, "maxTools", a.budgets.MaxTools,
+			"cluster", cluster, "dropped", n, "maxTools", max,
 			// A cluster the question named losing tools is the one case worth
 			// acting on: raise maxTools if the endpoint carries more, or narrow
 			// a server's allowTools.
@@ -642,8 +658,17 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		a.log.Info("cluster tools offered", "cluster", c, "named", namedClusters[c],
 			"tools", countFor(groups, c), "servers", strings.Join(inventory[c], " "))
 	}
+	// defBytes is what the tool array actually weighs on the wire. The count is
+	// what the endpoint limits, but the size is what makes a turn expensive, and
+	// neither was visible from outside while the model was quietly being sent a
+	// truncated list.
+	defBytes := 0
+	if b, err := json.Marshal(tools); err == nil {
+		defBytes = len(b)
+	}
 	a.log.Info("tools offered", "tools", len(tools), "clusters", len(present),
-		"unreachable", len(unreachable), "maxTools", a.budgets.MaxTools)
+		"unreachable", len(unreachable), "maxTools", max, "ceiling", gatewayToolCeiling,
+		"defBytes", defBytes, "last", lastName(tools))
 	metrics.ToolsOffered.Set(float64(len(tools)))
 	if len(degraded) > 0 {
 		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
@@ -698,7 +723,7 @@ func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (To
 	if removed > 0 {
 		body += fmt.Sprintf("\n\n[authorization: %d record(s) in namespaces you cannot access were withheld]", removed)
 	}
-	return ToolResult{CallID: callID, Content: a.capResult(body)}, removed > 0
+	return ToolResult{CallID: callID, Content: a.capResult(b.real, body)}, removed > 0
 }
 
 func (a *Agent) withheld(callID string, b binding, why string) ToolResult {

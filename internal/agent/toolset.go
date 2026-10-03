@@ -33,16 +33,32 @@ type clusterTools struct {
 	tools     []Tool
 }
 
-// interleave fits the tool list into max, with one rule above the budget: a
-// cluster the question NAMED is never trimmed. Its servers' tools all go in,
-// whatever that costs, because the alternative has been tried — a question
-// about one cluster answered from a subset of that cluster's tools, missing
-// the metrics server, is how answers came back confident and incomplete. An
-// oversized list is at worst the endpoint's problem, and a loud one; a quietly
-// incomplete one is nobody's until the answer is already wrong.
+// gatewayToolCeiling is how many tool definitions the LLM endpoint carries.
+// Past it the tail of the array is dropped and the response says nothing: the
+// model is simply never told those tools exist. Measured against
+// ai.snapp.tech by asking a model whether it holds a sentinel tool placed last
+// — visible at 128 definitions, gone at 129, on minimax-m3, glm-5.3-flash and
+// kimi-k2 alike, and independent of their size (16 KB of definitions truncates
+// at the same count as 100 KB). glm-4.6 answers 400 instead.
 //
-// Whatever budget is left is shared among the clusters the question did not
-// name, one tool per SERVER in turn, so no server of theirs is emptied either.
+// This is a measured property of the endpoint, not a preference, so it bounds
+// maxTools rather than being configured next to it: a budget set above it does
+// not buy tools, it loses the last server's.
+const gatewayToolCeiling = 128
+
+// interleave fits the tool list into max by taking one tool from each SERVER in
+// turn: a server with 64 tools cannot crowd out one with 15, and what is lost
+// is the deep tail of the largest servers rather than everything one server
+// offers. Servers of a cluster the question NAMED go first in each round, so
+// the named cluster keeps the most of its own tools, but it is not exempt from
+// the budget — a named cluster used to be appended whole on the grounds that an
+// oversized list was the endpoint's problem and a loud one. It is not loud.
+// Offering 138 tools for teh-1 under a budget of 150 put grafana-mcp, the
+// server configured last, past the ceiling: the bot logged 15 metrics tools
+// offered, the model was never sent them, and a daily report explained at
+// length that the cluster had no Prometheus tool.
+//
+// A server's own order is its priority, so what each keeps is its head.
 //
 // It returns the list and, per cluster, how many tools were left out.
 func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
@@ -58,35 +74,48 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 		return out, nil
 	}
 
-	var out []Tool
-	taken := make(map[string]int, len(groups))
-	var rest []clusterTools
+	var preferred, rest []clusterTools
 	for _, g := range groups {
-		if !g.preferred {
+		if g.preferred {
+			preferred = append(preferred, g)
+		} else {
 			rest = append(rest, g)
-			continue
 		}
-		out = append(out, g.tools...)
-		taken[g.cluster] += len(g.tools)
 	}
 
-	for round := 0; len(out) < max; round++ {
-		progressed := false
-		for _, g := range rest {
-			if round >= len(g.tools) {
-				continue
+	// Every server of a cluster the question did not name is held one slot, so
+	// a question about teh-1 does not make the docs server disappear — but no
+	// more than a quarter of the budget goes to clusters nobody asked about.
+	reserve := len(rest)
+	if len(preferred) > 0 && reserve > max/4 {
+		reserve = max / 4
+	}
+
+	var out []Tool
+	taken := make(map[string]int, len(groups))
+	// One tool per server per round, so a server with 64 tools cannot crowd out
+	// one with 15, and each server keeps its head rather than a random slice.
+	fill := func(order []clusterTools, limit int) {
+		for round := 0; len(out) < limit; round++ {
+			progressed := false
+			for _, g := range order {
+				if round >= len(g.tools) {
+					continue
+				}
+				progressed = true
+				out = append(out, g.tools[round])
+				taken[g.cluster]++
+				if len(out) == limit {
+					break
+				}
 			}
-			progressed = true
-			out = append(out, g.tools[round])
-			taken[g.cluster]++
-			if len(out) == max {
-				break
+			if !progressed {
+				return
 			}
-		}
-		if !progressed {
-			break
 		}
 	}
+	fill(preferred, max-reserve)
+	fill(rest, max)
 
 	dropped := make(map[string]int)
 	per := make(map[string]int, len(groups))
@@ -168,4 +197,15 @@ func countFor(groups []clusterTools, cluster string) int {
 		}
 	}
 	return n
+}
+
+// lastName is the final tool definition in the array — the one an endpoint that
+// truncates drops first. Logging it turns "the model says it has no metrics
+// tool" into a question with an answer: if the list ends where it should, the
+// tools were sent.
+func lastName(tools []Tool) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	return tools[len(tools)-1].Name
 }

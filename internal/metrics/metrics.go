@@ -216,6 +216,26 @@ var (
 		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
+	// ScheduleQueueWait observes how long a scheduled run waited for a worker
+	// slot. Anything but near-zero means schedules are contending: either more
+	// are due at the same minute than there are slots, or a run ahead is long
+	// enough to matter. A report that arrives late because it queued is
+	// indistinguishable, in the answer, from one that was slow to produce.
+	ScheduleQueueWait = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: ns, Name: "schedule_queue_wait_seconds",
+		Help:    "Time a scheduled run waited for a worker slot.",
+		Buckets: []float64{1, 5, 15, 60, 300, 900, 1800, 3600},
+	})
+
+	// ResultsTruncated counts tool results cut to fit agent.budgets.resultRunes,
+	// by tool. A tool that is always truncated is being called too broadly: the
+	// model is paying a call for a fraction of an answer, and the part it never
+	// sees is the part a narrower call would have put first.
+	ResultsTruncated = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "results_truncated_total",
+		Help: "Tool results truncated to fit the per-result rune budget, by tool.",
+	}, []string{"tool"})
+
 	// TurnOutcomes counts how a turn ended. "max-iters" is the one to watch:
 	// the model ran out of tool calls mid-investigation, and its answer is
 	// whatever it had — complete-looking, but stopped short.
@@ -280,7 +300,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, ResultsTruncated, ScheduleQueueWait, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r

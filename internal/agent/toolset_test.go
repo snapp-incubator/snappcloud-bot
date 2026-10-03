@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -139,26 +140,26 @@ func TestRunCapsToolsFairlyAcrossClusters(t *testing.T) {
 	}
 }
 
-// A question that names one cluster keeps that cluster's tools whole; the
-// clusters it never mentioned share what is left.
+// A question that names one cluster gets the larger share of the budget; the
+// clusters it never mentioned divide what is left.
 func TestInterleaveServesTheNamedClusterFirst(t *testing.T) {
 	named := group("teh1", 30)
 	named.preferred = true
-	got, dropped := interleave([]clusterTools{group("box", 40), named, group("ts3", 10)}, 40)
-	var teh1 int
+	got, _ := interleave([]clusterTools{group("box", 40), named, group("ts3", 10)}, 40)
+	count := map[string]int{}
 	for _, n := range names(got) {
-		if strings.HasPrefix(n, "teh1") {
-			teh1++
-		}
-	}
-	if teh1 != 30 {
-		t.Fatalf("named cluster lost tools: %d of 30 (%v)", teh1, names(got))
-	}
-	if dropped["teh1"] != 0 {
-		t.Fatalf("named cluster reported as trimmed: %v", dropped)
+		count[strings.SplitN(n, "__", 2)[0]]++
 	}
 	if len(got) != 40 {
 		t.Fatalf("budget not filled: %d", len(got))
+	}
+	if count["teh1"] <= count["box"] {
+		t.Fatalf("the named cluster did not get the larger share: %v", count)
+	}
+	// Served first in every round, so it keeps a tool for each round the budget
+	// allows — never a fraction of what an unnamed cluster of the same size got.
+	if count["teh1"] < 14 {
+		t.Fatalf("named cluster kept only %d of 30: %v", count["teh1"], count)
 	}
 }
 
@@ -182,11 +183,15 @@ func TestInterleaveTrimsEveryServerNotJustTheLast(t *testing.T) {
 	}
 }
 
-// A cluster the question named is never trimmed, even when its own servers
-// together exceed the whole budget. A subset of the right cluster's tools is
-// what produced answers that were confident and incomplete; an oversized list
-// is at worst the endpoint's problem, and a logged one.
-func TestInterleaveNeverTrimsANamedCluster(t *testing.T) {
+// The budget is absolute, including for a cluster the question named. A named
+// cluster used to be appended whole, on the reasoning that an oversized list
+// was the endpoint's problem and a loud one — it is not loud. The endpoint
+// carries 128 definitions and drops the rest of the array silently, so going
+// over does not buy tools, it loses whichever server is configured last. What
+// the named cluster gets instead is priority within every round, which keeps
+// each of its servers represented — the metrics server above all, since nothing
+// else can answer a question about a rate or a peak.
+func TestInterleaveKeepsEveryServerOfANamedClusterWithinTheBudget(t *testing.T) {
 	k8s := group("teh1", 60)
 	k8s.preferred = true
 	envoy := group("teh1", 40)
@@ -197,27 +202,28 @@ func TestInterleaveNeverTrimsANamedCluster(t *testing.T) {
 	}}
 	got, dropped := interleave([]clusterTools{k8s, envoy, metrics, group("box", 40)}, 60)
 
-	var teh1 int
+	if len(got) != 60 {
+		t.Fatalf("the budget is absolute: got %d tools for a budget of 60", len(got))
+	}
 	have := map[string]bool{}
 	for _, n := range names(got) {
 		have[n] = true
-		if strings.HasPrefix(n, "teh1") {
-			teh1++
-		}
 	}
-	if teh1 != 102 {
-		t.Fatalf("the named cluster was trimmed: %d of 102 tools", teh1)
-	}
+	// The whole point: the smallest server of the named cluster survives a
+	// budget its siblings could have eaten on their own.
 	for _, want := range []string{"teh1__query_prometheus", "teh1__list_datasources"} {
 		if !have[want] {
 			t.Fatalf("%s missing; the report has no metrics", want)
 		}
 	}
-	if dropped["teh1"] != 0 {
-		t.Fatalf("named cluster reported as trimmed: %v", dropped)
+	if dropped["teh1"] == 0 {
+		t.Fatal("the named cluster was over budget and must be reported as trimmed")
 	}
-	if dropped["box"] != 40 {
-		t.Fatalf("the unnamed cluster should yield entirely: %v", dropped)
+	// The unnamed cluster yields all but its one reserved slot: a question about
+	// teh-1 must not make another cluster's server vanish from the list
+	// entirely, because "no tools for box" and "box is down" read the same.
+	if dropped["box"] != 39 {
+		t.Fatalf("the unnamed cluster should yield all but its reserve: %v", dropped)
 	}
 }
 
@@ -254,5 +260,51 @@ func TestToolNoticeNamesTheServersThatAnswered(t *testing.T) {
 		if !strings.Contains(n, want) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
+	}
+}
+
+// teh-1's real shape on 2026-10-03: six servers advertising 64, 11, 25, 17, 6
+// and 15 tools, 138 in all, with grafana-mcp configured last. Under the old
+// rule the named cluster went in whole and the endpoint dropped everything past
+// its 128th definition — so the bot logged "okd4-teh-1-5 (15)" while the model
+// was never sent a single metrics tool, and the daily report explained that the
+// cluster had no Prometheus.
+func TestInterleaveKeepsTheMetricsServerAtTehOnesRealShape(t *testing.T) {
+	sizes := []int{64, 11, 25, 17, 6, 15}
+	var groups []clusterTools
+	for i, n := range sizes {
+		g := clusterTools{cluster: "okd4-teh-1", preferred: true}
+		for j := 0; j < n; j++ {
+			g.tools = append(g.tools, Tool{Name: fmt.Sprintf("teh1__s%d_t%02d", i, j)})
+		}
+		groups = append(groups, g)
+	}
+	// The two docs servers, which no question names.
+	groups = append(groups,
+		clusterTools{cluster: "docs", tools: []Tool{{Name: "docs__search_docs"}}},
+		clusterTools{cluster: "platform-docs", tools: []Tool{{Name: "pdocs__search_docs"}}})
+
+	got, _ := interleave(groups, gatewayToolCeiling)
+	if len(got) > gatewayToolCeiling {
+		t.Fatalf("offered %d definitions; the endpoint carries %d", len(got), gatewayToolCeiling)
+	}
+	perServer := map[string]int{}
+	for _, tl := range got {
+		if i := strings.Index(tl.Name, "_t"); i > 0 {
+			perServer[tl.Name[:i]]++
+		}
+	}
+	// grafana-mcp is server 5, the last configured and the smallest but one.
+	if perServer["teh1__s5"] != 15 {
+		t.Errorf("grafana-mcp kept %d of 15 tools: %v", perServer["teh1__s5"], perServer)
+	}
+	for i, n := range sizes {
+		if perServer[fmt.Sprintf("teh1__s%d", i)] == 0 {
+			t.Errorf("server %d (%d tools) was emptied: %v", i, n, perServer)
+		}
+	}
+	// Only the largest server pays for the budget.
+	if perServer["teh1__s0"] >= 64 {
+		t.Errorf("the budget came from nowhere: server 0 kept %d of 64", perServer["teh1__s0"])
 	}
 }
