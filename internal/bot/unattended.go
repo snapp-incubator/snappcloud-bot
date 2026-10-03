@@ -20,8 +20,16 @@ func unattended(kind, query string) string {
 		"Do not ask a question, offer options, or wait for a decision — there is no one to answer. " +
 		"Do not comment on the size, cost or effort of the task. " +
 		"If everything asked for cannot be done within your tool-call budget, deliver the parts that can, " +
-		"in the order they are asked for, mark each missing cell or section \"n/a\" with the reason, and " +
-		"finish with one line listing what was cut. A partial report delivered is the job; a question is not. " +
+		"in the order they are asked for, and finish with one line listing what was cut. " +
+		// "Mark each missing cell n/a with the reason" produced reports whose
+		// tables were mostly the word n/a, and rows kept only to carry it: a
+		// quota at 24% of its limit listed as "24.1% (n/a, <90)" in a table of
+		// things above 90%. A cell is unfilled because a measurement is
+		// missing, which is one line under the table — not because a row did
+		// not qualify, which means the row does not belong.
+		"Leave a cell you could not measure empty and give the reason once, under the table. Never write " +
+		"\"n/a\" in a cell to mean a row did not meet a threshold — a row that does not meet the threshold " +
+		"is deleted, not annotated. A partial report delivered is the job; a question is not. " +
 		"Post the result only: no narration of your reasoning, no notes about which tools you can see, " +
 		"no thinking out loud. If a tool you need is missing, that is one line in the report, not a discussion.\n\n" +
 		query

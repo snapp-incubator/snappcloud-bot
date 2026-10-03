@@ -192,6 +192,15 @@ func run(configPath, addr string, log *slog.Logger) error {
 	// their budget by switching entrypoint.
 	limiter := bot.NewRateLimiter(cfg.Limits.RatePerMin, cfg.Limits.RateBurst)
 
+	schedTimeout := 5 * time.Minute
+	if cfg.Schedules.Timeout != "" {
+		d, err := time.ParseDuration(cfg.Schedules.Timeout)
+		if err != nil {
+			return fmt.Errorf("parse schedules.timeout: %w", err)
+		}
+		schedTimeout = d
+	}
+
 	svc := bot.New(mm, theBrain, resolver, bot.Options{
 		ConversationTTL: convTTL,
 		MemoryPath:      cfg.Memory.MemoryPath,
@@ -209,18 +218,13 @@ func run(configPath, addr string, log *slog.Logger) error {
 	go svc.StartSweeper(ctx)
 
 	if schedStore != nil {
-		schedTimeout := 5 * time.Minute
-		if cfg.Schedules.Timeout != "" {
-			d, err := time.ParseDuration(cfg.Schedules.Timeout)
-			if err != nil {
-				return fmt.Errorf("parse schedules.timeout: %w", err)
-			}
-			schedTimeout = d
-		}
 		runner := schedule.NewRunner(schedStore, svc, schedule.RunnerOptions{
 			Concurrency: cfg.Schedules.Concurrency,
 			Timeout:     schedTimeout,
 		}, log)
+		// A manual "run <id>" goes through the runner, so it shares the worker
+		// pool, the timeout and the failure accounting with timed runs.
+		svc.SetScheduleTrigger(runner.Trigger)
 		go runner.Start(ctx)
 		log.Info("schedules enabled", "stored", schedStore.Count(),
 			"perUser", schedStore.Limits().PerUser, "total", schedStore.Limits().Total,

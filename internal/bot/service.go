@@ -62,7 +62,10 @@ type Service struct {
 	alertChannels  *alerts.Channels
 	alertAgg       *alerts.Aggregator
 	maxQueryRunes  int
-	log            *slog.Logger
+	// trigger starts a manual run of a stored schedule on the scheduler's own
+	// worker pool. Nil when schedules are disabled.
+	trigger func(schedule.Entry) error
+	log     *slog.Logger
 }
 
 // Options carries the optional settings for New.
@@ -78,6 +81,7 @@ type Options struct {
 	RateBurst  int
 	// MaxQueryRunes rejects overly long messages (0 = a sane default).
 	MaxQueryRunes int
+
 	// Limiter, when set, is shared with the HTTP API so one identity has a
 	// single budget across both entrypoints. Nil builds one from RatePerMin.
 	Limiter *RateLimiter
@@ -115,6 +119,13 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		log:            log,
 	}
 }
+
+// SetScheduleTrigger supplies the function that starts a manual run of a stored
+// schedule. It is set after construction because the scheduler needs the service
+// (to answer) and the service needs the scheduler (to run on its worker pool).
+// Until it is set, "run <id>" says schedules are not running rather than
+// starting work outside the pool.
+func (s *Service) SetScheduleTrigger(f func(schedule.Entry) error) { s.trigger = f }
 
 // StartSweeper runs the conversation-store eviction loop until ctx is cancelled.
 func (s *Service) StartSweeper(ctx context.Context) {

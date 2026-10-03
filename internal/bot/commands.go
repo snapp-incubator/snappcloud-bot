@@ -62,6 +62,7 @@ func helpText(schedules, alerts bool) string {
 		b.WriteString("| `schedule every day at 09:00 <question>` | ask a question on a schedule |\n")
 		b.WriteString("| `schedule every 12h starting at 08:00 <question>` | …choosing when it first runs |\n")
 		b.WriteString("| `schedules` | list yours, with ids and next run |\n")
+		b.WriteString("| `run <id>` | run one now, exactly as the timer would |\n")
 		b.WriteString("| `unschedule <id>` | remove one |\n")
 	}
 

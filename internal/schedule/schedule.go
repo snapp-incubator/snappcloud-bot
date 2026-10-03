@@ -189,6 +189,20 @@ func (s *Store) List(user string) []Entry {
 	return out
 }
 
+// Owned returns one of the user's own schedules. A user cannot reach another
+// user's, by id or otherwise — the id is the only handle, and a handle that
+// worked across owners would be a way to read someone else's question and run
+// it under their access.
+func (s *Store) Owned(user, id string) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[id]
+	if !ok || e.User != user {
+		return Entry{}, ErrNotFound
+	}
+	return *e, nil
+}
+
 // Delete removes one of the user's schedules. A user can only delete their own.
 func (s *Store) Delete(user, id string) error {
 	s.mu.Lock()

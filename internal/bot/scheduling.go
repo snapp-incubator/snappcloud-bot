@@ -43,6 +43,16 @@ func (s *Service) scheduleCommand(identity string, p mattermost.Post, query stri
 		s.observeSchedules()
 		return true, fmt.Sprintf("🗑️ Removed schedule `%s`.", id)
 
+	// "run <id>" executes a stored schedule now, through the same path the timer
+	// uses. Pasting the question into the channel instead is NOT the same run:
+	// an interactive message carries the thread's history and no unattended
+	// framing, and it is bounded by the chat timeout rather than the schedule
+	// one. Comparing a hand-run report with a scheduled one meant comparing two
+	// different requests, which is no way to tell whether a fix worked.
+	case strings.HasPrefix(low, "run schedule ") || strings.HasPrefix(low, "run "):
+		id := strings.TrimSpace(query[strings.LastIndex(low, " ")+1:])
+		return true, s.runNow(identity, id)
+
 	case strings.HasPrefix(low, "schedule "):
 		return true, s.addSchedule(identity, p, strings.TrimSpace(query[len("schedule "):]))
 	}
@@ -122,6 +132,35 @@ func (s *Service) renderSchedules(identity string) string {
 // RunScheduled executes one saved query and posts the answer. It implements
 // schedule.Answerer.
 //
+// runNow runs one of the caller's own schedules immediately, by the same code
+// path as the timer: same unattended framing, same empty history, same timeout,
+// and the same worker pool, so a manual run queues behind scheduled work
+// instead of competing with it. The per-user rate limit has already been spent
+// to get here, but that is not the protection that matters — a token is cheap
+// and a run is half an hour of agent loop — so the pool and the one-at-a-time
+// guard are what bound it.
+//
+// Another user's id reads as not found rather than refused: whether an id
+// exists is itself something only its owner should learn.
+func (s *Service) runNow(identity, id string) string {
+	e, err := s.sched.Owned(identity, id)
+	if err != nil {
+		return fmt.Sprintf("❔ No schedule `%s` of yours. Say `schedules` to see them.", id)
+	}
+	if s.trigger == nil {
+		return "🚫 Schedules are not running in this instance, so there is nothing to run."
+	}
+	switch err := s.trigger(e); {
+	case errors.Is(err, schedule.ErrBusy):
+		return fmt.Sprintf("⏳ Schedule `%s` is already running. Its answer will post when it finishes.", e.ID)
+	case err != nil:
+		return fmt.Sprintf("🚫 Could not start schedule `%s`: %s.", e.ID, err.Error())
+	}
+	return fmt.Sprintf("▶️ Running schedule `%s` now — the answer posts where the schedule does, "+
+		"and this is the same run the timer makes, so it takes as long as one. "+
+		"Tonight's run still happens.", e.ID)
+}
+
 // The owner's authorization is resolved HERE, at run time, never stored with the
 // schedule: if their access was revoked or narrowed since the schedule was
 // created, the run is scoped to what they can see now (or refused outright).

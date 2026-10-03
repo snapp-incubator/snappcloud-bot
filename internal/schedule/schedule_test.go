@@ -157,6 +157,7 @@ func TestRunnerRespectsConcurrency(t *testing.T) {
 	a := &fakeAnswerer{}
 	r := NewRunner(s, a, RunnerOptions{Concurrency: 2}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r.runDue(context.Background(), now)
+	r.wait()
 
 	if len(a.runs) != 5 {
 		t.Fatalf("ran %d schedules, want 5", len(a.runs))
@@ -190,6 +191,7 @@ func TestSkippedRunsDoNotDisableSchedule(t *testing.T) {
 	r := NewRunner(s, a, RunnerOptions{Concurrency: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for i := 0; i < 5; i++ {
 		r.runDue(context.Background(), now.Add(time.Duration(i)*time.Hour))
+		r.wait()
 	}
 
 	if got := s.Count(); got != 1 {
