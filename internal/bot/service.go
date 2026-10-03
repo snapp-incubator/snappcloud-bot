@@ -316,6 +316,7 @@ func sanitize(s string) string {
 	s = toolCallRe.ReplaceAllString(s, "")
 	s = ctrlTokRe.ReplaceAllString(s, "")
 	s = strings.TrimSpace(s)
+	s = dropLeadingNarration(s)
 	// Unwrap an answer that is entirely one code fence (not real code) so it's
 	// human-readable markdown, not a monospace block.
 	if m := wholeFenceRe.FindStringSubmatch(s); m != nil {

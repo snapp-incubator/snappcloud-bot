@@ -54,3 +54,29 @@ func TestTableCellCannotBreakTheTable(t *testing.T) {
 		t.Fatalf("a short question must pass through unchanged: %q", short)
 	}
 }
+
+// The guards elsewhere catch a turn that is only narration. This is the other
+// half: a real report with four lines of throat-clearing on top, which the
+// reader sees before anything useful.
+func TestDropLeadingNarration(t *testing.T) {
+	in := "Excellent — I have very rich data. Key findings:\n\n" +
+		"I have enough to deliver the report. Now let me produce the report.\n\n" +
+		"# Daily reliability report — okd4-teh-1\n\n| ns | restarts |\n|---|---|\n| baly-ode-central | 96805 |"
+	got := sanitize(in)
+	if strings.HasPrefix(got, "Excellent") || strings.Contains(got, "Now let me produce") {
+		t.Fatalf("narration survived: %q", got[:120])
+	}
+	if !strings.HasPrefix(got, "# Daily reliability report") {
+		t.Fatalf("the report did not become the first line: %q", got[:120])
+	}
+	// A real answer that opens with prose must be untouched.
+	real := "The 413 comes from an nginx outside the cluster, reached through a selectorless Service.\n\nRaise client_max_body_size there."
+	if sanitize(real) != real {
+		t.Fatalf("a prose answer was trimmed: %q", sanitize(real))
+	}
+	// An answer that opens with a finding, not a mood, is untouched.
+	finding := "Good news is not a thing I report: baly-ode-central is at 450/450 replicasets.\n\n| ns | pct |\n|---|---|"
+	if sanitize(finding) != finding {
+		t.Fatalf("a finding was trimmed: %q", sanitize(finding))
+	}
+}

@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -60,4 +61,49 @@ func tableCell(s string, max int) string {
 		return string(r[:i]) + " …"
 	}
 	return string(r) + "…"
+}
+
+// narrationLine matches a line of the model talking about its own progress
+// rather than reporting anything: "Excellent — I have very rich data.",
+// "I have enough to deliver the report. Now let me produce the report."
+var narrationLine = regexp.MustCompile(`(?i)^(?:\*\*|#+\s*)?(?:` +
+	`excellent|great|perfect|good[.,!—-]|ok[.,!—-]|alright|right[.,!—-]|` +
+	`i (?:have|now have|'ve) (?:enough|what i need|rich|plenty|all)|` +
+	`(?:now )?(?:let me|i'?ll|i will|here is|here'?s) (?:produce|write|deliver|compile|put together|assemble|give)|` +
+	`writing the (?:final )?report|producing the report|key findings` +
+	`)\b`)
+
+// dropLeadingNarration removes the model's throat-clearing from the top of an
+// answer that does go on to contain the answer. The guards elsewhere catch a
+// turn that is ONLY narration; this is the other half — a report preceded by
+// four lines of "Excellent, I have very rich data… Now let me produce the
+// report", which the reader sees before anything useful.
+//
+// Only the lines before the first heading, table or bullet are considered, and
+// only while they keep matching, so prose answers are untouched.
+func dropLeadingNarration(s string) string {
+	lines := strings.Split(s, "\n")
+	cut := 0
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			if cut == i {
+				cut = i + 1
+			}
+			continue
+		}
+		// The answer proper has started: stop looking.
+		if strings.HasPrefix(t, "#") || strings.HasPrefix(t, "|") ||
+			strings.HasPrefix(t, "-") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, ">") {
+			break
+		}
+		if !narrationLine.MatchString(t) {
+			break
+		}
+		cut = i + 1
+	}
+	if cut == 0 {
+		return s
+	}
+	return strings.TrimSpace(strings.Join(lines[cut:], "\n"))
 }
