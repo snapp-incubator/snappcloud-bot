@@ -437,6 +437,7 @@ An answer that ran out of tool calls says so in its own last line.
 | what you see | where to look | usual cause |
 |---|---|---|
 | "this cluster has no such tool" | `diagnostics` | that server did not answer — token, route, or pod |
+| `diagnostics` shows 403 on servers that are up | the status cell names the cause | "no credential sent" is a key missing from the bot's Secret, not a sick server; "credential refused" is a token to rotate |
 | every metric cell empty | `check_datasources_health` | the metrics backend is refusing the credentials it was given |
 | right cluster, wrong numbers | `list_datasources` | several datasources exist and the default is not always the complete one |
 | a tool missing for one cluster | `tools_dropped_total` | the list was trimmed; `named=true` in the warning is the case worth acting on |

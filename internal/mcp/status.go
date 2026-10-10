@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"sort"
 )
 
@@ -17,6 +18,11 @@ type ServerStatus struct {
 	URL   string
 	Tools int
 	Err   string // empty when the server answered
+	// Cause classifies a refusal that the status code misattributes to the
+	// server: "no-credential" when the bot sent no Authorization header at all
+	// (a missing Secret key, not a sick server) and "credential-refused" when it
+	// sent one and the server rejected it (an expired token). Empty otherwise.
+	Cause string
 }
 
 // Status lists every server with its current tool count, or the error that
@@ -27,9 +33,14 @@ func (m *Mux) Status(ctx context.Context) []ServerStatus {
 	for _, s := range m.servers {
 		st := ServerStatus{Name: s.name, URL: s.client.URL()}
 		ts, err := s.client.ListTools(ctx)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNoCredential):
+			st.Err, st.Cause = err.Error(), "no-credential"
+		case errors.Is(err, ErrCredentialRefused):
+			st.Err, st.Cause = err.Error(), "credential-refused"
+		case err != nil:
 			st.Err = err.Error()
-		} else {
+		default:
 			st.Tools = len(ts)
 		}
 		out = append(out, st)

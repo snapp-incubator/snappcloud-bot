@@ -284,14 +284,29 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		llmTimeout = d
 	}
 
+	// A server naming an auth env var that holds nothing is misconfiguration, not
+	// a server without auth: a server that needs none simply omits authHeaderEnv.
+	// Starting anyway sends no Authorization header, and the server answers 403
+	// with an empty body — indistinguishable in diagnostics from an outage. Five
+	// servers on each production region read as down for a week that way. Every
+	// offender is collected first, so one restart names them all.
+	var missingAuth []string
+	resolveAuth := func(where, env string) string {
+		if env == "" {
+			return ""
+		}
+		v := os.Getenv(env)
+		if v == "" {
+			missingAuth = append(missingAuth, fmt.Sprintf("%s (%s)", env, where))
+		}
+		return v
+	}
+
 	clusters := make([]brain.Cluster, 0, len(cfg.Agent.Clusters))
 	for _, c := range cfg.Agent.Clusters {
 		servers := make([]brain.Server, 0, len(c.Servers))
 		for _, s := range c.Servers {
-			auth := ""
-			if s.AuthHeaderEnv != "" {
-				auth = os.Getenv(s.AuthHeaderEnv)
-			}
+			auth := resolveAuth(c.Name+" "+s.URL, s.AuthHeaderEnv)
 			servers = append(servers, brain.Server{URL: s.URL, AuthHeader: auth,
 				SelfAuthorized: s.SelfAuthorized, Unscoped: s.Unscoped, AllowTools: s.AllowTools})
 		}
@@ -315,10 +330,7 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 
 	globalServers := make([]brain.Server, 0, len(cfg.Agent.GlobalServers))
 	for _, s := range cfg.Agent.GlobalServers {
-		auth := ""
-		if s.AuthHeaderEnv != "" {
-			auth = os.Getenv(s.AuthHeaderEnv)
-		}
+		auth := resolveAuth("globalServer "+s.Alias, s.AuthHeaderEnv)
 		url := s.URL
 		if s.URLEnv != "" {
 			// The URL is itself a credential (capability token in the path), so it
@@ -333,6 +345,14 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			URL: url, AuthHeader: auth, Alias: s.Alias,
 			ClusterAdminOnly: s.ClusterAdminOnly, AllowTools: s.AllowTools,
 		})
+	}
+
+	if len(missingAuth) > 0 {
+		return nil, fmt.Errorf("%d MCP server(s) name an auth env var that is empty or missing, "+
+			"so the bot would send no Authorization header and the server would answer 403: %s. "+
+			"Add these keys to snappcloud_bot.mcpAuth in the sops secret, or remove authHeaderEnv "+
+			"from a server that needs no auth",
+			len(missingAuth), strings.Join(missingAuth, "; "))
 	}
 
 	// Optional backup model: anything it does not set is inherited from the

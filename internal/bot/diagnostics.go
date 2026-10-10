@@ -60,13 +60,16 @@ func diagnosticsReport(st []brain.ClusterStatus, limits func() (string, string, 
 	b.WriteString("**MCP servers, right now**\n\n")
 	b.WriteString("| cluster | server | tools | status |\n|---|---|---:|---|\n")
 
-	total, failing := 0, 0
+	total, failing, credential := 0, 0, 0
 	for _, c := range st {
 		for _, srv := range c.Servers {
 			status := "ok"
 			if srv.Err != "" {
 				failing++
-				status = "**" + firstLine(srv.Err, 90) + "**"
+				if srv.Cause != "" {
+					credential++
+				}
+				status = "**" + statusOf(srv.Err, srv.Cause) + "**"
 			}
 			total += srv.Tools
 			fmt.Fprintf(&b, "| %s | %s | %d | %s |\n", c.Cluster, hostOf(srv.URL), srv.Tools, status)
@@ -78,7 +81,18 @@ func diagnosticsReport(st []brain.ClusterStatus, limits func() (string, string, 
 
 	fmt.Fprintf(&b, "\n%d tools across %d clusters", total, len(st))
 	if failing > 0 {
-		fmt.Fprintf(&b, "; **%d server(s) not answering** — their tools are missing from every answer until they recover", failing)
+		fmt.Fprintf(&b, "; **%d server(s) not answering** — their tools are missing from every answer", failing)
+		// Saying "until they recover" of a credential problem sends the reader to
+		// look at a server that was never unhealthy. Nothing recovers on its own
+		// here: someone has to add a key or rotate a token.
+		if credential == failing {
+			b.WriteString(". Every one of them is a CREDENTIAL problem, not an outage: " +
+				"those servers are reachable and refusing the bot, so the fix is in the bot's Secret")
+		} else if credential > 0 {
+			fmt.Fprintf(&b, ", and %d of them is a credential problem rather than an outage", credential)
+		} else {
+			b.WriteString(" until they recover")
+		}
 	}
 	fmt.Fprintf(&b, ".\n\nModel `%s`", model)
 	if backup != "" {
@@ -91,6 +105,37 @@ func diagnosticsReport(st []brain.ClusterStatus, limits func() (string, string, 
 	// answers exactly like one that has.
 	fmt.Fprintf(&b, "\n\nBuild %s.", version.String())
 	return b.String()
+}
+
+// statusOf is the status cell: short enough for a table, and naming the action
+// when the cause is known. "http 403" with an empty body reads as a broken
+// server whichever way it was caused, and the two causes need opposite fixes,
+// so the classified cases say which rather than printing the raw refusal.
+func statusOf(errText, cause string) string {
+	code := httpCode(errText)
+	switch cause {
+	case "no-credential":
+		return code + "no credential sent — add this server's auth env var to the bot's Secret"
+	case "credential-refused":
+		return code + "credential refused — rotate this server's token"
+	}
+	return firstLine(errText, 90)
+}
+
+// httpCode pulls the status code out of a client error for the status cell, so
+// a refusal can still be correlated with the server's own logs.
+func httpCode(s string) string {
+	i := strings.Index(s, "http ")
+	if i < 0 || len(s) < i+8 {
+		return ""
+	}
+	n := s[i+5 : i+8]
+	for _, r := range n {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return n + " — "
 }
 
 // hostOf keeps the table readable: the host says which server and which

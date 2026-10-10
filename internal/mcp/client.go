@@ -65,6 +65,22 @@ func New(url, authHeader string, selfAuthorized bool, timeout time.Duration, all
 		allow: allow, http: &http.Client{Timeout: timeout}}
 }
 
+// A server whose credential the bot never sent answers exactly like a server
+// that is down: "http 403" with an empty body. Five servers on each production
+// region read as an outage in diagnostics while every one of them was healthy —
+// the bot was sending no Authorization header, because the env var naming its
+// credential was absent from the Secret and os.Getenv returned "".
+//
+// The two cases need opposite fixes, so they are distinguishable by type rather
+// than by reading the message: add the missing key, or rotate the token.
+var (
+	// ErrNoCredential marks a refusal of a request the bot sent with no
+	// Authorization header at all. The server is not the thing to look at.
+	ErrNoCredential = errors.New("no credential sent")
+	// ErrCredentialRefused marks a refusal of a credential the bot did send.
+	ErrCredentialRefused = errors.New("credential refused")
+)
+
 // URL is the server's endpoint, for logs: the mux names servers by cluster and
 // position, which does not say which server it was.
 func (c *Client) URL() string { return c.url }
@@ -252,7 +268,14 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s: http %d: %s", method, resp.StatusCode, strings.TrimSpace(string(b)))
+		err := fmt.Errorf("%s: http %d: %s", method, resp.StatusCode, strings.TrimSpace(string(b)))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			if c.authHeader == "" {
+				return nil, fmt.Errorf("%w: %w", ErrNoCredential, err)
+			}
+			return nil, fmt.Errorf("%w: %w", ErrCredentialRefused, err)
+		}
+		return nil, err
 	}
 
 	rpc, err := decodeResponse(resp, id)
