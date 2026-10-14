@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
+	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
 func TestNarrowingHintNamesUnsetArguments(t *testing.T) {
@@ -158,8 +159,19 @@ func TestRetryHintTellsTheModelWhatToDoNext(t *testing.T) {
 	if h := retryHint("timeout"); !strings.Contains(h, "never report its subject") {
 		t.Fatalf("timeout hint: %q", h)
 	}
-	if retryHint("bad_args") != "" || retryHint("other") != "" {
-		t.Fatal("a failure with no useful next move must add nothing")
+	// A class with no specific next move still carries the invariant every class
+	// shares: a call that failed found nothing because it never ran, so it is
+	// not evidence that the subject does not exist. Returning "" here is what
+	// let a 402 from the documentation tool be reported as "not documented".
+	for _, reason := range []string{"bad_args", "other", "server_error", "backend_error"} {
+		h := retryHint(reason)
+		if h == "" {
+			t.Fatalf("%s hint is empty: a failure reads as an empty result", reason)
+		}
+		if !strings.Contains(strings.ToLower(h), "does not exist") &&
+			!strings.Contains(strings.ToLower(h), "not report the subject") {
+			t.Fatalf("%s hint does not forbid concluding absence: %q", reason, h)
+		}
 	}
 }
 
@@ -214,6 +226,52 @@ func TestMissingRequiredMessageNamesWrongArguments(t *testing.T) {
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in %q", want, msg)
+		}
+	}
+}
+
+// The 402 that produced a confident wrong answer. A documentation tool whose
+// own model was out of credit failed every query; the error classified as
+// "other", retryHint returned nothing, and the bot reported — three times, with
+// increasing confidence — that the cluster's egress ranges were "not documented
+// anywhere I can reach". They were documented.
+func TestRetryHintNeverLetsAFailureMeanAbsence(t *testing.T) {
+	errors := []string{
+		`Run failed: req_id: 9012784689 PluginInvokeError: {"args":{"description":"[models] Error: ` +
+			`API request failed with status code 402: The model returned an error"}}`,
+		"tools/call: http 429: rate limit exceeded",
+		"tools/call: http 503: upstream connect error",
+		"tools/call: something nobody has classified yet",
+	}
+	for _, e := range errors {
+		hint := retryHint(metrics.ClassifyToolError(e))
+		if hint == "" {
+			t.Errorf("no hint for %q — the model is left to read a failure as an empty result", e[:40])
+			continue
+		}
+		low := strings.ToLower(hint)
+		for _, want := range []string{"not", "exist"} {
+			if !strings.Contains(low, want) {
+				t.Errorf("hint for %q does not forbid concluding absence: %s", e[:40], hint)
+				break
+			}
+		}
+	}
+}
+
+// A paywalled or rate-limited backend behind a tool is the case most easily
+// mistaken for "there is nothing there", so it classifies on its own.
+func TestClassifyBackendFailure(t *testing.T) {
+	for _, tc := range []struct{ err, want string }{
+		{"PluginInvokeError: status code 402", "backend_error"},
+		{"http 429: too many requests", "backend_error"},
+		{"model quota exhausted", "backend_error"},
+		{"http 503: service unavailable", "server_error"},
+		{"http 404: not found", "not_found"},
+		{"http 403: forbidden", "auth"},
+	} {
+		if got := metrics.ClassifyToolError(tc.err); got != tc.want {
+			t.Errorf("ClassifyToolError(%q) = %q, want %q", tc.err, got, tc.want)
 		}
 	}
 }

@@ -329,6 +329,13 @@ func ClassifyToolError(err string) string {
 	case strings.Contains(e, "500") || strings.Contains(e, "502") || strings.Contains(e, "503") ||
 		strings.Contains(e, "internal"):
 		return "server_error"
+	// A backend the server depends on refused it: a paywalled or rate-limited
+	// model behind a RAG tool, an exhausted quota. The tool is reachable and
+	// broken, which is the case most easily mistaken for an empty result.
+	case strings.Contains(e, "402") || strings.Contains(e, "429") ||
+		strings.Contains(e, "quota") || strings.Contains(e, "credit") ||
+		strings.Contains(e, "rate limit") || strings.Contains(e, "plugininvokeerror"):
+		return "backend_error"
 	default:
 		return "other"
 	}

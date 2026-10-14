@@ -193,7 +193,21 @@ func retryHint(reason string) string {
 		return " The server did not answer. Try once more if the answer matters, and if it fails again " +
 			"say which tool was unreachable and what that leaves unanswered — never report its subject " +
 			"as absent."
+	case "server_error", "backend_error":
+		return " The tool is reachable and BROKEN: it failed before it could look anything up, so this " +
+			"result is not an empty result and tells you nothing about whether the thing exists. If this " +
+			"was a search, the search did not run. Say in one line that the tool is failing and answer " +
+			"the rest from your other tools. Do NOT report the subject as missing, absent, undocumented, " +
+			"unsupported or not available — you have not looked, so you do not know."
 	default:
-		return ""
+		// Every classification shares one rule, and the unclassified ones need it
+		// most: a failure had no chance to find anything, so it is not evidence
+		// of absence. A 402 from a documentation tool classified as "other" and
+		// got no hint at all, and the bot reported, three times and with
+		// increasing confidence, that the cluster's egress ranges were "not
+		// documented anywhere I can reach". They were documented.
+		return " This call FAILED, which is not the same as an empty answer: it never got far enough to " +
+			"find anything. Do not conclude from it that what you were looking for does not exist, is not " +
+			"documented, or is not supported. Say which tool failed, and answer what you can from the rest."
 	}
 }

@@ -437,6 +437,7 @@ An answer that ran out of tool calls says so in its own last line.
 | what you see | where to look | usual cause |
 |---|---|---|
 | "this cluster has no such tool" | `diagnostics` | that server did not answer — token, route, or pod |
+| "that is not documented / not supported" | `tool_errors_total{reason="backend_error"}` | a doc or search tool failed before it looked: a failed search is not an empty one, and the answer should say the tool is broken |
 | `diagnostics` shows 403 on servers that are up | the status cell names the cause | "no credential sent" is a key missing from the bot's Secret, not a sick server; "credential refused" is a token to rotate |
 | every metric cell empty | `check_datasources_health` | the metrics backend is refusing the credentials it was given |
 | right cluster, wrong numbers | `list_datasources` | several datasources exist and the default is not always the complete one |
