@@ -2,25 +2,9 @@ package agent
 
 import "fmt"
 
-// The model rejects a conversation that is too large with HTTP 400 ("invalid
-// parameters or conversation shape ... try a shorter prompt"), which is a dead
-// end: it fails identically on every retry, so the alert or question is never
-// answered. Capping ONE tool result is not enough — a loop of many rounds, each
-// with several parallel tool calls, adds up to a transcript no per-result cap
-// can bound.
-//
-// So there are three budgets, each protecting the next:
-//
-//	maxResultRunes  one result, so a single dump cannot dominate a round
-//	maxRoundRunes   all results in one round, so parallel calls cannot either
-//	maxConvRunes    the whole transcript, enforced by dropping the OLDEST
-//	                results — the recent rounds are the ones being reasoned about
-//
-// Budgets bound what one answer may consume. They are configuration rather than
-// constants because the right values depend on two things that differ per
-// deployment: how much memory the container has, and how large a context the
-// model accepts. Raising memory alone does not buy deeper investigations — the
-// transcript still has to fit the model — so the two move together or not at all.
+// Three budgets keep the transcript under the model's context limit:
+// ResultRunes (one result), RoundRunes (one round), ConversationRunes (the
+// whole transcript, oldest results dropped first).
 type Budgets struct {
 	// ResultRunes caps one tool result fed back to the model.
 	ResultRunes int
@@ -35,12 +19,8 @@ type Budgets struct {
 	// a result twice and JSON becomes Go values at several times the size of its
 	// text, so this is a memory bound.
 	FilterBytes int
-	// MaxTools caps how many tools are offered to the model in one request.
-	// Every tool definition is sent on every round, and an endpoint that will
-	// not carry them all drops the tail SILENTLY — the model then reports, in
-	// perfect good faith, that a cluster has no tools. So the bot does the
-	// trimming itself, fairly and visibly, rather than discovering it in an
-	// answer.
+	// MaxTools caps tool definitions per request; set it to what the LLM endpoint
+	// carries, since an endpoint that cannot carry them all drops the tail silently.
 	MaxTools int
 }
 

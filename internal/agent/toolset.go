@@ -6,61 +6,21 @@ import (
 	"strings"
 )
 
-// The tool list is the one part of a request that grows with the number of
-// clusters rather than with the question, and it is sent again on every round.
-// An endpoint that will not carry them all drops the tail without saying so:
-// the clusters listed last simply have no tools, and the model — which cannot
-// tell a trimmed list from a short one — reports that the cluster has none.
-// That is how a report for teh-1 came back saying every tool it could see
-// belonged to box.
-//
-// So the bot trims the list itself. Taking one tool from each cluster in turn
-// until the budget is spent means a cluster with 140 tools cannot crowd out a
-// cluster with 8, and what is lost is the deep tail of the largest servers
-// rather than every tool of the last cluster. What was trimmed is then stated
-// to the model, because a silently short list is exactly the failure being
-// fixed.
+// The tool list grows with the number of clusters and is re-sent every round;
+// an endpoint that cannot carry it all drops the tail silently. The bot trims
+// it itself, fairly, and tells the model what was trimmed.
 
-// clusterTools is one server's share of the tool list, in the order that
-// server advertised them (a server's own order is its priority). Grouping by
-// server matters: a cluster's servers are configured in some order, and
-// trimming a flat per-cluster list would always take from whichever server was
-// configured last — which is how the metrics server, added most recently,
-// would be the first thing to disappear from a report about metrics.
+// clusterTools is one server's tools in its advertised order. Trimming per
+// server, not per cluster, keeps the last-configured server from always losing.
 type clusterTools struct {
 	cluster   string
 	preferred bool // the question named this cluster: keep its tools whole
 	tools     []Tool
 }
 
-// gatewayToolCeiling is how many tool definitions the LLM endpoint carries.
-// Past it the tail of the array is dropped and the response says nothing: the
-// model is simply never told those tools exist. Measured against
-// ai.snapp.tech by asking a model whether it holds a sentinel tool placed last
-// — visible at 128 definitions, gone at 129, on minimax-m3, glm-5.3-flash and
-// kimi-k2 alike, and independent of their size (16 KB of definitions truncates
-// at the same count as 100 KB). glm-4.6 answers 400 instead.
-//
-// This is a measured property of the endpoint, not a preference, so it bounds
-// maxTools rather than being configured next to it: a budget set above it does
-// not buy tools, it loses the last server's.
-const gatewayToolCeiling = 128
-
-// interleave fits the tool list into max by taking one tool from each SERVER in
-// turn: a server with 64 tools cannot crowd out one with 15, and what is lost
-// is the deep tail of the largest servers rather than everything one server
-// offers. Servers of a cluster the question NAMED go first in each round, so
-// the named cluster keeps the most of its own tools, but it is not exempt from
-// the budget — a named cluster used to be appended whole on the grounds that an
-// oversized list was the endpoint's problem and a loud one. It is not loud.
-// Offering 138 tools for teh-1 under a budget of 150 put grafana-mcp, the
-// server configured last, past the ceiling: the bot logged 15 metrics tools
-// offered, the model was never sent them, and a daily report explained at
-// length that the cluster had no Prometheus tool.
-//
-// A server's own order is its priority, so what each keeps is its head.
-//
-// It returns the list and, per cluster, how many tools were left out.
+// interleave fits the list into max, one tool per server per round, so each
+// server keeps its head. Servers of named clusters go first in each round; the
+// budget is absolute for everyone. Returns the list and per-cluster drop counts.
 func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 	total := 0
 	for _, g := range groups {

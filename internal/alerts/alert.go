@@ -1,17 +1,6 @@
-// Package alerts turns Alertmanager notifications posted in a Mattermost
-// channel into investigations.
-//
-// A channel is marked as an alert channel by a user; every subsequent post in
-// it (normally from a webhook account, which has no identity of its own) is
-// parsed as an alert, grouped, and investigated with the MARKING user's
-// authorization, resolved fresh at investigation time.
-//
-// The hard problem is noise, not parsing. Alertmanager repeats a firing alert
-// every repeat_interval, and one incident can fire dozens of distinct alerts at
-// once. Investigating each notification would bury the on-call team under more
-// text than the alerts themselves, so alerts are collapsed on three axes:
-// duplicates within a window, the same alert across windows (cooldown), and a
-// budget per window with the rest merely listed.
+// Package alerts turns Alertmanager notifications posted in a marked channel
+// into investigations, run with the marking user's access. Alerts are collapsed
+// by duplicate window, cooldown and a per-window budget to bound noise.
 package alerts
 
 import (
@@ -47,14 +36,8 @@ type Alert struct {
 // the same name. Order is fixed so the fingerprint is stable.
 var identityLabels = []string{"cluster", "region", "namespace", "node", "pod", "instance", "service", "map"}
 
-// Fingerprint identifies the ALERT, not the notification: the same alert
-// re-sent every repeat_interval has the same fingerprint, which is what the
-// cooldown suppresses.
-//
-// When a template carries none of the identity labels — many do not — the
-// fingerprint falls back to the message skeleton (the text with digits and
-// whitespace normalised away), so repeats of an unrecognised format still
-// collapse instead of being investigated over and over.
+// Fingerprint identifies the alert, not the notification, so repeats collapse.
+// Without identity labels it falls back to the normalised message text.
 func (a Alert) Fingerprint() string {
 	h := sha256.New()
 	h.Write([]byte(strings.ToLower(a.Name)))
@@ -74,13 +57,8 @@ func (a Alert) Fingerprint() string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// severityRank orders alerts for the per-window budget: the worst get
-// investigated when there are more alerts than budget.
-//
-// An UNRECOGNISED severity ranks with warning, not below info. A template that
-// omits severity, or names it something we do not know, must not have its
-// alerts silently filtered out — that would look exactly like the bot ignoring
-// a team, which is the failure mode hardest to notice.
+// severityRank orders alerts for the per-window budget. Unknown severities
+// rank with warning so they are never silently filtered out.
 func severityRank(s string) int {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "critical", "crit", "page", "emergency", "fatal", "p1", "sev1", "high":

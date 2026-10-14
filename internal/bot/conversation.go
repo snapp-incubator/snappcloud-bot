@@ -11,17 +11,8 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
-// convStore maps a conversation key to that thread/DM's memory transcript so
-// follow-up messages carry prior context. Keyed per user AND per context: a
-// Mattermost thread is one conversation; a direct-message channel is one
-// conversation. Including the user keeps each transcript tied to its owner even
-// when several users post in the same thread.
-//
-// Persistence: when path is set, the map is loaded on startup and saved
-// periodically + on shutdown, so users can continue past conversations across
-// bot restarts. The bot is a singleton, so a single file (on a PVC) is enough.
-// Without a path it is in-memory only (lost on restart). Entries expire after a
-// TTL.
+// convStore keeps each user's per-thread (or per-DM) transcript for follow-ups,
+// optionally persisted to path, expiring after a TTL.
 type convStore struct {
 	ttl   time.Duration
 	path  string

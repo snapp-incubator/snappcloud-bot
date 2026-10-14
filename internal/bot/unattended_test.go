@@ -80,3 +80,38 @@ func TestDropLeadingNarration(t *testing.T) {
 		t.Fatalf("a finding was trimmed: %q", sanitize(finding))
 	}
 }
+
+// The opening of the 2026-10-14 daily report, which the phrase list missed:
+// "now" was only allowed on one branch, and "build" and "compose" were not
+// verbs it knew.
+func TestDropLeadingNarrationCatchesTheActOfAnswering(t *testing.T) {
+	in := "Now I have all the key data. Let me build the report. The data is rich but compact " +
+		"enough that I can compose the report directly.\n\n" +
+		"## Daily reliability report — okd4-teh-1\n\n| ns | restarts |\n|---|---|\n| snapp-ode-central | 5346 |"
+	got := sanitize(in)
+	if !strings.HasPrefix(got, "## Daily reliability report") {
+		t.Fatalf("narration survived: %q", got[:80])
+	}
+}
+
+// Prose that answers — including a refusal in the first person — has no body
+// to fall back to and must come through whole.
+func TestDropLeadingNarrationLeavesAProseAnswerAlone(t *testing.T) {
+	for _, in := range []string{
+		"I can't tell you that from the cluster — the egress IPs live upstream.",
+		"Let me be direct: nothing in team-a is failing.",
+	} {
+		if got := sanitize(in); got != in {
+			t.Errorf("a prose answer was trimmed:\n in: %q\nout: %q", in, got)
+		}
+	}
+}
+
+// A line that narrates and then states a finding is kept: one sentence of
+// substance is enough.
+func TestDropLeadingNarrationKeepsAMixedLine(t *testing.T) {
+	in := "Let me build the report. Every quota is below its hard limit.\n\n| ns | pct |\n|---|---|"
+	if got := sanitize(in); got != in {
+		t.Fatalf("a finding was dropped with the narration: %q", got)
+	}
+}

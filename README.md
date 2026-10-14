@@ -349,29 +349,30 @@ like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
-A question that **names its clusters** is given only those clusters' tools, and
-**all** of them: a named cluster is never trimmed, whatever its servers
-advertise. Carrying every other cluster into a question about one is what made
-the list too long in the first place. `agent.budgets.maxTools` caps only what
-is left over for clusters the question did not name; if a named cluster alone
-exceeds it, the bot says so in a warning and sends the tools anyway — an
-incomplete tool list produces answers that are confident and wrong, which is
-worse than a long request. Watch `snappcloud_bot_tools_per_cluster` to see what
-each cluster actually advertises.
-Every tool definition is sent on every round, and an endpoint that will not
-carry them all drops the **tail** without saying so — the clusters listed last
-then appear to have no tools at all, and the model reports exactly that. The
-bot trims the list itself instead: one tool from each cluster in turn, so a
-cluster with a large server cannot crowd out a small one, and the model is told
-which clusters were trimmed and which were unreachable. Watch
+A question that **names its clusters** is given only those clusters' tools.
+Every tool definition is re-sent each round, and an LLM endpoint that cannot
+carry them all drops the tail silently, so set `agent.budgets.maxTools` to what
+your endpoint carries. The bot trims to it, one tool per server per round with
+named clusters first, and tells the model what was trimmed. Watch
 `snappcloud_bot_tools_offered` and `snappcloud_bot_tools_dropped_total`.
 
-A cluster's `names` lists what else it is called outside the bot — the
-`cluster`/`region` label on your alerts, the Grafana datasource, what people
-say. The bot maps those to the configured cluster (exact, then prefix, then
-substring match, longest wins, ignoring case and an `okd4-` prefix) and tells
-the model the mapping, so `snappgroup-teh-1` on an alert is investigated on
-`okd4-snappgroup` rather than reported as a cluster the user cannot access.
+A cluster's `names` lists what else it is called (alert labels, datasource
+names, shorthand); `agent.clusterNamePrefixes` (e.g. `["okd4-"]`) gives every
+cluster its unprefixed name too. Matching is exact, then prefix, then substring,
+longest name winning, ignoring case and punctuation.
+
+Environment knowledge belongs in config, not code: identity in `agent.persona`,
+platform facts and tool usage in `agent.toolGuidance`. The built-in system
+prompt holds only the investigation method and output rules.
+
+**Review.** Scheduled reports and alert investigations are re-checked against
+their own tool results before posting — figures that disagree between summary
+and table, numbers no result contains, causes stated without evidence. It is one
+extra model call per unattended answer, never applied to chat, and the draft is
+kept whenever the review would drop content. `agent.reviewUnattended: false`
+turns it off; `agent.reviewPrompt` replaces the instruction. Watch
+`snappcloud_bot_answer_reviews_total{outcome}`: a rising share of `shrank` or
+`lost-structure` means the review is not helping.
 
 ### Adding a new MCP server
 

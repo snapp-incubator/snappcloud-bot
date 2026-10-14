@@ -13,6 +13,8 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
 )
 
+var testPrefixes = []string{"okd4-"}
+
 func TestSystemPromptIncludesGuidanceAndScope(t *testing.T) {
 	b := &Brain{persona: "PERSONA", system: "SYSTEM", guidance: "TOOL_SKILLS"}
 	out := b.systemPrompt(authzclient.Scope{"okd4-teh-1": {Namespaces: []string{"team-a", "team-b"}}}, "")
@@ -53,10 +55,10 @@ func TestHasClusterWide(t *testing.T) {
 
 func namedBrain() *Brain {
 	return &Brain{clusters: map[string]*clusterMCP{
-		"okd4-teh-1":      {alias: "teh1", names: clusterNames("okd4-teh-1", "teh1", nil)},
-		"okd4-teh-2":      {alias: "teh2", names: clusterNames("okd4-teh-2", "teh2", nil)},
-		"okd4-snappgroup": {alias: "snappgroup", names: clusterNames("okd4-snappgroup", "snappgroup", []string{"sg"})},
-		"okd4-box":        {alias: "box", names: clusterNames("okd4-box", "box", nil)},
+		"okd4-teh-1":      {alias: "teh1", names: clusterNames("okd4-teh-1", "teh1", nil, testPrefixes)},
+		"okd4-teh-2":      {alias: "teh2", names: clusterNames("okd4-teh-2", "teh2", nil, testPrefixes)},
+		"okd4-snappgroup": {alias: "snappgroup", names: clusterNames("okd4-snappgroup", "snappgroup", []string{"sg"}, testPrefixes)},
+		"okd4-box":        {alias: "box", names: clusterNames("okd4-box", "box", nil, testPrefixes)},
 	}}
 }
 
@@ -263,5 +265,22 @@ func TestDefaultSystemTeachesDatasourceAndMetricDiscovery(t *testing.T) {
 		if !strings.Contains(defaultSystem, want) {
 			t.Errorf("default system prompt is missing: %q", want)
 		}
+	}
+}
+
+// Short names come from configured prefixes, so another naming scheme needs
+// config, not code.
+func TestClusterNamesFollowConfiguredPrefixes(t *testing.T) {
+	b := &Brain{clusters: map[string]*clusterMCP{
+		"k8s-prod-eu": {names: clusterNames("k8s-prod-eu", "", nil, []string{"k8s-"})},
+	}}
+	if c, ok := b.ResolveCluster("prod-eu"); !ok || c != "k8s-prod-eu" {
+		t.Fatalf("prefix k8s- not applied: %q %v", c, ok)
+	}
+	none := &Brain{clusters: map[string]*clusterMCP{
+		"okd4-teh-1": {names: clusterNames("okd4-teh-1", "", nil, nil)},
+	}}
+	if c, ok := none.ResolveCluster("teh-1"); ok {
+		t.Fatalf("no prefix configured, yet teh-1 resolved to %q", c)
 	}
 }

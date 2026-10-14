@@ -284,12 +284,8 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 		llmTimeout = d
 	}
 
-	// A server naming an auth env var that holds nothing is misconfiguration, not
-	// a server without auth: a server that needs none simply omits authHeaderEnv.
-	// Starting anyway sends no Authorization header, and the server answers 403
-	// with an empty body — indistinguishable in diagnostics from an outage. Five
-	// servers on each production region read as down for a week that way. Every
-	// offender is collected first, so one restart names them all.
+	// A named auth env var that is empty is misconfiguration (a server needing no
+	// auth omits authHeaderEnv). Collect every offender so one restart names them all.
 	var missingAuth []string
 	resolveAuth := func(where, env string) string {
 		if env == "" {
@@ -418,8 +414,11 @@ func buildBrain(cfg *config.Config, llmKey string, resolver agent.Resolver, log 
 			FilterBytes:       cfg.Agent.Budgets.FilterBytes,
 			MaxTools:          cfg.Agent.Budgets.MaxTools,
 		},
-		MCPTimeout: 5 * time.Minute,
-		Resolver:   resolver,
+		MCPTimeout:          5 * time.Minute,
+		Resolver:            resolver,
+		ReviewUnattended:    cfg.Agent.ReviewUnattended == nil || *cfg.Agent.ReviewUnattended,
+		ReviewPrompt:        cfg.Agent.ReviewPrompt,
+		ClusterNamePrefixes: cfg.Agent.ClusterNamePrefixes,
 	}, log)
 	log.Info("agent ready", "model", cfg.Agent.LLM.Model, "clusters", len(clusters), "globalServers", len(globalServers), "maxIter", cfg.Agent.MaxIterations)
 	return b, nil

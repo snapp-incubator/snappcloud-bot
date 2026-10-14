@@ -10,17 +10,9 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
 
-// Failover serves requests from a primary model and falls back to a backup when
-// the primary is failing, then returns to the primary on its own.
-//
-// It is a circuit breaker, not a per-request retry: the underlying client
-// already retries transient errors, so reaching Failover means those retries
-// were exhausted. After FailureThreshold consecutive primary failures the
-// breaker OPENS and every request goes to the backup for CooldownPeriod. When
-// the cooldown expires the next request PROBES the primary once (half-open): if
-// it succeeds the breaker closes and normal service resumes; if it fails the
-// cooldown restarts. A single success on the primary always resets the counter,
-// so isolated errors never trip it.
+// Failover is a circuit breaker between a primary and a backup model:
+// FailureThreshold consecutive failures open it for CooldownPeriod, then one
+// probe decides whether to close it.
 type Failover struct {
 	primary   agent.LLM
 	backup    agent.LLM

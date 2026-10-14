@@ -20,12 +20,8 @@ type Invalidator interface {
 	Invalidate(user string)
 }
 
-// CachedResolver caches a user's aggregated Scope for a TTL so the bot does not
-// re-query every region's mcp-authz API on each chat message.
-//
-//   - singleflight collapses concurrent misses for one user into a single sweep.
-//   - a background sweeper drops expired entries so memory tracks active users.
-//   - errors are never cached.
+// CachedResolver caches a user's Scope for a TTL. Concurrent misses collapse
+// into one sweep, expired entries are swept, errors are never cached.
 type CachedResolver struct {
 	inner Resolver
 	ttl   time.Duration

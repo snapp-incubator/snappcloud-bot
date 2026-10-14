@@ -7,19 +7,9 @@ import (
 	"strings"
 )
 
-// An opaque identifier is one the model cannot derive: a Grafana dashboard or
-// datasource uid is a random string, not a name, so there is nothing to reason
-// from. Asked for a dashboard it had not searched for, a model does not stop —
-// it supplies a plausible-looking value. A daily report spent two of its calls
-// on get_dashboard_panel_queries(uid="test") and get_dashboard_property(uid=
-// "test"), got 404 from both, and reported the metrics as unavailable.
-//
-// Prose did not hold it: the tool guidance already says a uid "is never
-// something you can guess, only something a search returns". So the loop checks
-// it. An identifier argument must have appeared in an earlier result of this
-// turn (or in the question itself, where a user may paste one); otherwise the
-// call is refused before it is spent, and the refusal names the tool to call
-// instead.
+// Opaque identifiers (uids) cannot be derived, so a value the model never saw
+// in a result or in the question is invented: refuse the call and name the
+// lookup that produces a real one.
 
 // isIDArg reports whether an argument name holds an opaque identifier: uid,
 // datasourceUid, dashboard_uid, UIDs. The boundary matters — "liquid" also ends

@@ -221,12 +221,8 @@ func (a *Aggregator) Due(now time.Time) []Batch {
 	return out
 }
 
-// Failed returns a batch's alerts to the pool: the cooldown is stamped when a
-// batch is handed out, to stop the same alert being investigated twice at once,
-// but an investigation that FAILED has answered nothing. Leaving the stamp in
-// place would silence those alerts for a full cooldown over a transient error —
-// an LLM blip, an authorization hiccup, a failed delivery — which looks exactly
-// like the bot ignoring the channel.
+// Failed returns a batch's alerts to the pool: a failed investigation answered
+// nothing, so its cooldown must not silence the alerts.
 func (a *Aggregator) Failed(b Batch) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

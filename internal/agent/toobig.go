@@ -9,16 +9,8 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
 )
 
-// A tool whose whole output is refused for size is not a dead end — it is a
-// call made too broadly. But "narrow the query (a namespace, a node, a
-// selector, or a smaller limit)" describes a generic tool, and the model is
-// holding a specific one: envoy_config_dump takes a resource_type, envoy_
-// listeners takes an ingress class. Told only to narrow, it retried the same
-// call and lost the round; twice, on teh-1, in one investigation.
-//
-// The bot has each tool's JSON Schema. When a call is refused for size, it can
-// say which of THAT tool's arguments were left unset — turning a dead end into
-// the next call.
+// A size refusal is a call made too broadly. Name the tool's own unset
+// arguments so the refusal becomes the next call.
 
 // tooLarge reports whether a tool error is a size refusal.
 func tooLarge(err error) bool { return errors.Is(err, mcp.ErrTooLarge) }
@@ -96,13 +88,8 @@ func missingRequired(schema map[string]any, args map[string]any) []string {
 	return missing
 }
 
-// missingRequiredMessage tells the model exactly how to place the call again.
-// The first version said "this tool was not called: it requires datasourceUid,
-// expr, endTime, which you did not provide" — and a model read that as a
-// description of the tool, concluding query_prometheus "exposes a datasource
-// uid, not a PromQL endpoint", and reported the capability as absent. So the
-// message names the tool, separates what was sent from what is wanted, and is
-// unmistakably an instruction.
+// missingRequiredMessage tells the model how to place the call again, phrased
+// as an instruction so it is not read as a description of the tool.
 func missingRequiredMessage(tool string, schema map[string]any, missing []string, args map[string]any) string {
 	props, _ := schema["properties"].(map[string]any)
 	var b strings.Builder
@@ -172,11 +159,7 @@ func unknownArgs(schema map[string]any, args map[string]any) []string {
 	return out
 }
 
-// retryHint turns a classified tool failure into the next move. Without it a
-// model reads "404 not found" as an invitation to try another spelling: one
-// report spent eight of its thirteen tool calls guessing dashboard names —
-// "cluster-capacity", "snappcloud-nodes", "snappcloud-ingress" — none of which
-// existed, when one search would have returned the real ones.
+// retryHint turns a classified tool failure into the next move.
 func retryHint(reason string) string {
 	switch reason {
 	case "not_found":
@@ -200,12 +183,8 @@ func retryHint(reason string) string {
 			"the rest from your other tools. Do NOT report the subject as missing, absent, undocumented, " +
 			"unsupported or not available — you have not looked, so you do not know."
 	default:
-		// Every classification shares one rule, and the unclassified ones need it
-		// most: a failure had no chance to find anything, so it is not evidence
-		// of absence. A 402 from a documentation tool classified as "other" and
-		// got no hint at all, and the bot reported, three times and with
-		// increasing confidence, that the cluster's egress ranges were "not
-		// documented anywhere I can reach". They were documented.
+		// Shared by every class: a failed call found nothing, so it is not evidence
+		// of absence.
 		return " This call FAILED, which is not the same as an empty answer: it never got far enough to " +
 			"find anything. Do not conclude from it that what you were looking for does not exist, is not " +
 			"documented, or is not supported. Say which tool failed, and answer what you can from the rest."

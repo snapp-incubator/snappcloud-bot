@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"strings"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
@@ -43,12 +44,8 @@ func (s *Service) scheduleCommand(identity string, p mattermost.Post, query stri
 		s.observeSchedules()
 		return true, fmt.Sprintf("🗑️ Removed schedule `%s`.", id)
 
-	// "run <id>" executes a stored schedule now, through the same path the timer
-	// uses. Pasting the question into the channel instead is NOT the same run:
-	// an interactive message carries the thread's history and no unattended
-	// framing, and it is bounded by the chat timeout rather than the schedule
-	// one. Comparing a hand-run report with a scheduled one meant comparing two
-	// different requests, which is no way to tell whether a fix worked.
+	// run <id> executes a stored schedule through the timer's path: same framing,
+	// history, timeout and pool.
 	case strings.HasPrefix(low, "run schedule ") || strings.HasPrefix(low, "run "):
 		id := strings.TrimSpace(query[strings.LastIndex(low, " ")+1:])
 		return true, s.runNow(identity, id)
@@ -129,19 +126,8 @@ func (s *Service) renderSchedules(identity string) string {
 	return b.String()
 }
 
-// RunScheduled executes one saved query and posts the answer. It implements
-// schedule.Answerer.
-//
-// runNow runs one of the caller's own schedules immediately, by the same code
-// path as the timer: same unattended framing, same empty history, same timeout,
-// and the same worker pool, so a manual run queues behind scheduled work
-// instead of competing with it. The per-user rate limit has already been spent
-// to get here, but that is not the protection that matters — a token is cheap
-// and a run is half an hour of agent loop — so the pool and the one-at-a-time
-// guard are what bound it.
-//
-// Another user's id reads as not found rather than refused: whether an id
-// exists is itself something only its owner should learn.
+// runNow starts one of the caller's schedules on the scheduler's pool. Another
+// user's id reads as not found.
 func (s *Service) runNow(identity, id string) string {
 	e, err := s.sched.Owned(identity, id)
 	if err != nil {
@@ -161,9 +147,8 @@ func (s *Service) runNow(identity, id string) string {
 		"Tonight's run still happens.", e.ID)
 }
 
-// The owner's authorization is resolved HERE, at run time, never stored with the
-// schedule: if their access was revoked or narrowed since the schedule was
-// created, the run is scoped to what they can see now (or refused outright).
+// RunScheduled runs one saved query and posts the answer (schedule.Answerer).
+// The owner's access is resolved now, never stored with the schedule.
 func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 	reqID := newReqID()
 	lg := s.log.With("req", reqID, "src", "schedule", "id", e.ID)
@@ -181,7 +166,7 @@ func (s *Service) RunScheduled(ctx context.Context, e schedule.Entry) error {
 	}
 
 	lg.Info("scheduled run", "user", e.User, "clusters", scope.Clusters())
-	answer, aerr := s.brain.Answer(ctx, scope, e.User, unattended("scheduled report", e.Query), "", reqID)
+	answer, aerr := s.brain.Answer(brain.WithReview(ctx), scope, e.User, unattended("scheduled report", e.Query), "", reqID)
 	if aerr != nil {
 		return fmt.Errorf("agent: %w", aerr)
 	}

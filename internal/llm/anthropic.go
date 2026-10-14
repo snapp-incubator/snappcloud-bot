@@ -1,8 +1,5 @@
-// Package llm is an Anthropic Messages API client (tool use, streaming) that
-// implements the agent.LLM interface. It streams the response over SSE — so no
-// part of a long answer is lost to a cut body, periodic pings keep the
-// connection alive — and retries transient failures (network errors, 429, 5xx,
-// or a stream that ended before the model finished).
+// Package llm is an Anthropic Messages API client that streams over SSE and
+// retries transient failures.
 package llm
 
 import (
@@ -349,14 +346,8 @@ func parseStream(r io.Reader) (agent.Response, error) {
 		case "text":
 			out.Text += b.text.String()
 		case "tool_use":
-			// A tool call's arguments arrive as streamed JSON fragments. If the
-			// stream was cut — the output limit reached mid-object, a connection
-			// dropped after the last event — the fragments do not parse, and
-			// discarding that error runs the tool with NO arguments: a metrics
-			// query with no expression, a log request with no pod. The model
-			// then reasons from whatever that returns, which is how an answer
-			// ends up confidently wrong. Retry instead; the next attempt
-			// usually streams the object whole.
+			// Unparseable streamed arguments mean a cut stream; retry rather than run the
+			// tool with no arguments.
 			args := map[string]any{}
 			if s := b.partial.String(); s != "" {
 				if err := json.Unmarshal([]byte(s), &args); err != nil {

@@ -1,12 +1,5 @@
-// Package api is the bot's HTTP query interface: the same enforced agent loop
-// Mattermost uses, reachable programmatically.
-//
-// The caller presents their OWN OpenShift token (a user token or a
-// ServiceAccount token) as a bearer. The bot holds no cluster credentials, so
-// the token is verified by mcp-authz via TokenReview; the identity that comes
-// back is scoped exactly like a Mattermost user's, and every tool result is
-// filtered against it. A caller can therefore never see more through this API
-// than they can see with `oc`.
+// Package api serves the agent over HTTP. Callers present their own OpenShift
+// token, verified via mcp-authz TokenReview, and are scoped exactly like chat users.
 package api
 
 import (

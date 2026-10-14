@@ -126,13 +126,8 @@ type Identity struct {
 	Region string
 }
 
-// Authenticate verifies a bearer token against every configured region and
-// returns the identity of the first cluster that recognizes it. A token is
-// issued by one cluster, so at most one region authenticates it. The bot holds
-// no cluster credentials — mcp-authz performs the TokenReview.
-//
-// Fail-closed: if no region authenticates the token, an error is returned and
-// the caller is refused.
+// Authenticate verifies a bearer token against every region and returns the
+// first identity found. Fails closed.
 func (c *Client) Authenticate(ctx context.Context, token string) (Identity, error) {
 	if strings.TrimSpace(token) == "" {
 		return Identity{}, fmt.Errorf("empty token")

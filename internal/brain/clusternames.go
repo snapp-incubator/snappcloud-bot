@@ -6,20 +6,12 @@ import (
 	"strings"
 )
 
-// A cluster goes by several names. The bot configures okd4-snappgroup; the
-// alert's cluster label says snappgroup-teh-1; the Grafana datasource says
-// snappgroup; the user says "sg". Handed a name it did not recognise, the model
-// concluded the user had no access to that cluster — an access statement with
-// no basis — so the mapping is done here, deterministically, and the model is
-// told the answer rather than left to infer it.
+// Clusters have several names (config, alert labels, datasources, shorthand).
+// Resolve them here so the model is told, not left to guess.
 
-// ResolveCluster maps a cluster name as it appears outside the bot — an alert's
-// cluster/region label, a datasource, a user's shorthand — to the configured
-// cluster it denotes. Exact match on any known name wins; failing that, a label
-// that starts with a known name (snappgroup-teh-1 → snappgroup) and, failing
-// that, one that merely contains it, the longest known name winning either
-// way so "teh1" inside "snappgroup-teh-1" does not beat "snappgroup". The
-// comparison ignores case, the okd4- prefix and punctuation.
+// ResolveCluster maps an outside name to a configured cluster: exact match,
+// then prefix, then substring, longest known name winning; case, the okd4-
+// prefix and punctuation ignored.
 func (b *Brain) ResolveCluster(label string) (string, bool) {
 	want := normalizeClusterName(label)
 	if want == "" {
@@ -74,23 +66,22 @@ func (b *Brain) KnownNames(cluster string) []string {
 }
 
 // clusterNames is everything a cluster may be called: its configured name and
-// alias, the operator-supplied extra names, and the name without its okd4-
-// prefix, which is how people and alert rules mostly write it.
-func clusterNames(name, alias string, extra []string) []string {
+// alias, the name without any configured prefix, and the extra names.
+func clusterNames(name, alias string, extra, prefixes []string) []string {
 	out := []string{name}
 	if alias != "" {
 		out = append(out, alias)
 	}
-	if short := strings.TrimPrefix(name, "okd4-"); short != name {
-		out = append(out, short)
+	for _, p := range prefixes {
+		if short := strings.TrimPrefix(name, p); p != "" && short != name && short != "" {
+			out = append(out, short)
+		}
 	}
-	out = append(out, extra...)
-	return out
+	return append(out, extra...)
 }
 
 func normalizeClusterName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.TrimPrefix(s, "okd4-")
 	var sb strings.Builder
 	for _, r := range s {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
@@ -128,11 +119,8 @@ func (b *Brain) clustersNamedIn(query string) map[string]bool {
 	return out
 }
 
-// matchesClusterWord reports whether one word of a question names the cluster
-// called known. A whole-word match, or the name followed by a separator, as a
-// region label writes it (snappgroup-teh-1, box-teh-2). Never a bare substring:
-// "sandbox" does not name the box cluster, and a question about a sandbox
-// namespace should not quietly reshape the tool list around it.
+// matchesClusterWord reports whether a word names the cluster: whole word or
+// name followed by a separator, never a bare substring.
 func matchesClusterWord(word, known string) bool {
 	k := normalizeClusterName(known)
 	if k == "" {
@@ -141,7 +129,6 @@ func matchesClusterWord(word, known string) bool {
 	if normalizeClusterName(word) == k {
 		return true
 	}
-	w := strings.TrimPrefix(strings.ToLower(word), "okd4-")
-	kr := strings.TrimPrefix(strings.ToLower(known), "okd4-")
+	w, kr := strings.ToLower(word), strings.ToLower(known)
 	return kr != "" && (strings.HasPrefix(w, kr+"-") || strings.HasPrefix(w, kr+"."))
 }

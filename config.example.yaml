@@ -73,6 +73,11 @@ agent:
     failureThreshold: 3      # consecutive primary failures before switching
     cooldownPeriod: 5m       # backup serves this long before re-probing
   maxIterations: 8
+  # Stripped to give each cluster a short name (okd4-teh-1 -> teh-1).
+  clusterNamePrefixes: []
+  # Re-check scheduled and alert answers against their tool results (default on).
+  reviewUnattended: true
+  # reviewPrompt: "..."   # replaces the built-in review instruction
   budgets:
     # maxTools caps how many tools one request offers the model. Every definition
     # is sent on every round, and an endpoint that will not carry them all drops

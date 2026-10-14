@@ -216,16 +216,21 @@ var (
 		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
-	// ScheduleQueueWait observes how long a scheduled run waited for a worker
-	// slot. Anything but near-zero means schedules are contending: either more
-	// are due at the same minute than there are slots, or a run ahead is long
-	// enough to matter. A report that arrives late because it queued is
-	// indistinguishable, in the answer, from one that was slow to produce.
+	// ScheduleQueueWait: time a scheduled run waited for a worker slot.
 	ScheduleQueueWait = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: ns, Name: "schedule_queue_wait_seconds",
 		Help:    "Time a scheduled run waited for a worker slot.",
 		Buckets: []float64{1, 5, 15, 60, 300, 900, 1800, 3600},
 	})
+
+	// AnswerReviews counts how an unattended answer's review ended. "revised" is
+	// a draft corrected against its evidence; every other outcome kept the draft
+	// — "shrank" and "lost-structure" are reviews that would have dropped content,
+	// and a rising share of them means the review is doing harm, not good.
+	AnswerReviews = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "answer_reviews_total",
+		Help: "Reviews of unattended answers against their tool results, by outcome.",
+	}, []string{"outcome"})
 
 	// ResultsTruncated counts tool results cut to fit agent.budgets.resultRunes,
 	// by tool. A tool that is always truncated is being called too broadly: the
@@ -300,7 +305,7 @@ var registry = func() *prometheus.Registry {
 		Messages, APIRequests, MessageDuration, TurnIterations, ToolCalls, ToolErrors, ToolDuration,
 		LLMRequests, LLMByModel, LLMFailover, LLMDuration, AuthzRequests, AuthzDuration,
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
-		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, ResultsTruncated, ScheduleQueueWait, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
+		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, ResultsTruncated, AnswerReviews, ScheduleQueueWait, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
 	)
 	return r
@@ -334,7 +339,7 @@ func ClassifyToolError(err string) string {
 	// broken, which is the case most easily mistaken for an empty result.
 	case strings.Contains(e, "402") || strings.Contains(e, "429") ||
 		strings.Contains(e, "quota") || strings.Contains(e, "credit") ||
-		strings.Contains(e, "rate limit") || strings.Contains(e, "plugininvokeerror"):
+		strings.Contains(e, "rate limit"):
 		return "backend_error"
 	default:
 		return "other"

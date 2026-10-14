@@ -104,14 +104,8 @@ func (r *Runner) observe() {
 	metrics.ScheduleOwners.Set(float64(owners))
 }
 
-// runDue starts everything due at now and returns immediately. The pool bounds
-// how many run at once; the loop must not be one of the things waiting for it.
-//
-// It used to take a slot on this goroutine and then wait for the whole batch to
-// finish. With a 30-minute timeout and two slots, two long reports starting
-// together stopped the ticker for as long as they ran — so a schedule due five
-// minutes later did not fire five minutes later, it fired when the batch ahead
-// of it was done. Nothing in the logs said so: the run simply started late.
+// runDue starts due runs and returns; the pool bounds concurrency, and the
+// scheduling loop never waits on it.
 func (r *Runner) runDue(ctx context.Context, now time.Time) {
 	due := r.store.Due(now)
 	if len(due) == 0 {
@@ -215,13 +209,8 @@ var ErrBusy = errors.New("that schedule is already running")
 // ErrNotStarted reports that the runner is not accepting work yet.
 var ErrNotStarted = errors.New("the scheduler is not running")
 
-// Trigger runs one schedule now, off the caller's goroutine, on the same worker
-// pool and with the same timeout as a timed run. It returns once the run is
-// ACCEPTED, not once it finishes — a report takes minutes, and the caller is a
-// chat message.
-//
-// It does not advance the schedule's next run time: a manual run is an extra
-// run, not a replacement for tonight's.
+// Trigger runs a schedule now on the shared pool and timeout, returning once
+// accepted. It does not move the next scheduled run.
 func (r *Runner) Trigger(e Entry) error {
 	r.mu.Lock()
 	base, busy := r.base, r.inFlight[e.ID]

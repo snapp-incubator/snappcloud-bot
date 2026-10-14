@@ -31,6 +31,8 @@ type runner interface {
 }
 
 type Brain struct {
+	reviewUnattended bool
+
 	agent    runner
 	clusters map[string]*clusterMCP // cluster name -> its tools
 	global   map[string]agent.MCP   // alias -> namespace-agnostic tools (e.g. docs); empty if none
@@ -108,6 +110,13 @@ type Options struct {
 	MCPTimeout time.Duration
 	// Resolver maps IPs -> namespaces for result filtering (the authz client).
 	Resolver agent.Resolver
+	// ReviewUnattended re-checks unattended answers against their evidence.
+	ReviewUnattended bool
+	// ReviewPrompt overrides the built-in review instruction ("" = default).
+	ReviewPrompt string
+	// ClusterNamePrefixes are stripped to give each cluster a short name
+	// (e.g. "okd4-" makes okd4-teh-1 also answer to teh-1).
+	ClusterNamePrefixes []string
 }
 
 // New builds the Brain: the LLM client, the enforcer, and one MCP mux per cluster.
@@ -129,7 +138,7 @@ func New(o Options, log *slog.Logger) *Brain {
 		if alias == "" {
 			alias = c.Name
 		}
-		clusters[c.Name] = &clusterMCP{alias: alias, names: clusterNames(c.Name, c.Alias, c.Names), mcp: muxAdapter{mux}}
+		clusters[c.Name] = &clusterMCP{alias: alias, names: clusterNames(c.Name, c.Alias, c.Names, o.ClusterNamePrefixes), mcp: muxAdapter{mux}}
 	}
 
 	// Group global servers by alias (default "docs"): each alias becomes its own
@@ -168,6 +177,7 @@ func New(o Options, log *slog.Logger) *Brain {
 			"failureThreshold", o.FailoverOpts.FailureThreshold, "cooldown", o.FailoverOpts.CooldownPeriod)
 	}
 	ag := agent.New(model, agent.NewEnforcer(o.Rules), o.Resolver, o.MaxIter, o.Budgets, log)
+	ag.SetReviewPrompt(o.ReviewPrompt)
 	budgets := o.Budgets
 	budgets.ApplyDefaults()
 	system := o.SystemPrompt
@@ -188,7 +198,8 @@ func New(o Options, log *slog.Logger) *Brain {
 	}
 	return &Brain{agent: ag, clusters: clusters, global: global, globalAdminOnly: adminOnly,
 		persona: persona, system: system, guidance: o.ToolGuidance, log: log,
-		model: o.LLM.Model, backup: backupModel, maxIter: maxIter, maxTools: budgets.MaxTools}
+		model: o.LLM.Model, backup: backupModel, maxIter: maxIter, maxTools: budgets.MaxTools,
+		reviewUnattended: o.ReviewUnattended}
 }
 
 // visibleGlobal returns the global tool aliases a caller may see, sorted for
@@ -252,12 +263,8 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 			Preferred:    named[c],
 		})
 	}
-	// Global tools are available to any authorized user, unfiltered, grouped by
-	// alias (e.g. docs). Sorted for stable tool ordering.
-	//
-	// An admin-only group is skipped entirely for non-admins rather than denied
-	// per call: the model never sees the tools, so it cannot propose them, name
-	// them in an answer, or leak what they are.
+	// Global tools, sorted. Admin-only groups are omitted for non-admins so the
+	// model never sees them.
 	for _, alias := range b.visibleGlobal(scope.HasClusterWide()) {
 		cts = append(cts, agent.ClusterTools{Cluster: alias, Alias: alias, MCP: b.global[alias], NoEnforce: true})
 	}
@@ -270,6 +277,7 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 		Query:    query,
 		Clusters: cts,
 		ReqID:    reqID,
+		Review:   b.reviewUnattended && reviewRequested(ctx),
 	})
 }
 
@@ -334,13 +342,13 @@ When a user greets you (e.g. "hi"), thanks you, or asks what you can do or what 
 - "Is my namespace hitting its quota on <cluster>?"
 Do not run tools for a plain greeting — just introduce yourself and invite a question. Keep it short.`
 
-const defaultSystem = `You are the SnappCloud cluster assistant. You answer questions about workloads and networking using the provided MCP tools: Kubernetes/OpenShift (pods, workloads, services, routes, events, logs, quotas, nodes), Cilium/Hubble (observed flows, drops, network policy, endpoints), Envoy/Contour (ingress, routes, upstream clusters), and the docs.
+const defaultSystem = `You are a cluster operations assistant. You answer questions about workloads, networking and the platform using the provided tools. Each tool is tagged with the cluster it belongs to, and the tool list is the authority on what you can do: read the tools' descriptions and schemas rather than assuming what exists.
 
 Be thorough and accurate — a single tool rarely gives the full picture:
-- Investigate before answering. For a connectivity or packet-drop question, look at the actual flows (Hubble), the relevant network policies and endpoints (Cilium), and the ingress/route config (Envoy) as applicable, then reconcile them into one answer.
+- Investigate before answering. For a connectivity or packet-drop question, look at the observed traffic, the policies and endpoints that govern it, and the ingress configuration, as far as your tools reach, then reconcile them into one answer.
 - Call every tool that could be relevant, in parallel when you can. Do not stop at the first result if another tool would confirm, explain the cause, or complete the picture.
 - Resolve the resources a question is about even when the user does not name a namespace or exact object: find the pod/service/IP, then query around it.
-- Do not ask the user for something you can obtain yourself. When a node- or agent-scoped tool needs a pod to resolve the node (e.g. Cilium BGP/status/datapath tools), pick any pod from a namespace the user is authorized for and use it — do not ask the user to supply one.
+- Do not ask the user for something you can obtain yourself. When a node- or agent-scoped tool needs a pod to resolve the node, pick any pod from a namespace the user is authorized for and use it — do not ask the user to supply one.
 - Do not refuse based on assumptions about access. Call the tool; the platform enforces authorization and automatically withholds anything the user may not see. Only report an authorization limit AFTER a tool actually returns a withheld/denied result — then say which namespaces they may query.
 - If tools disagree or data is missing, gather more rather than guessing; state any uncertainty.
 - WHAT THE USER REPORTS IS EVIDENCE, NOT A CLAIM TO CHECK. A status code they are seeing, an error string they pasted, a timeout they hit — those happened. Your job is to explain them. "I cannot see it in the data I looked at" is a fact about where you looked; it is never a finding that the problem is not real. When your queries come back clean, the next question is WHERE ELSE this symptom could be produced, not whether the user is mistaken.
@@ -352,7 +360,6 @@ Be thorough and accurate — a single tool rarely gives the full picture:
 - When a result is withheld or a call is denied for authorization, report that as an access limitation on that specific data — NEVER conclude that the thing does not exist or is not configured. Absence of evidence you were not allowed to see is not evidence of absence.
 - Cluster-infrastructure tools (nodes, BGP state, agent status) require cluster-admin access; if denied, tell the user those need cluster-admin rather than trying workarounds.
 - Each tool is tagged [cluster X]; use the correct cluster's tools. For a cross-cluster question, query each cluster and combine.
-- "Project" is ambiguous on this platform: users almost always mean an OpenShift project, which IS a Kubernetes namespace. Treat it as a namespace (OpenShift/Kubernetes tools; pass it as namespace=). An ArgoCD AppProject is a different object (GitOps policy: source repos, destinations, roles) — use ArgoCD project tools/arguments ONLY when the user explicitly means ArgoCD. If a project= lookup finds nothing, retry it as a namespace before concluding it does not exist, and state which meaning you used.
 
 Answer concisely and factually. Do not narrate your reasoning or restate the question. Nothing of your working belongs in the reply: not "let me check", not a list of the tools you have, not a note about what you are about to do next. The reply is the result.
 

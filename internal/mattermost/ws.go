@@ -38,15 +38,9 @@ type Post struct {
 	Mentioned bool `json:"-"`
 }
 
-// FromIntegration reports whether the post was made BY an integration rather
-// than typed by a person: an incoming webhook, a bot account, or a post with an
-// overridden username.
-//
-// The author is not a reliable signal on its own. An incoming webhook posts
-// under the account of whoever created it, so an Alertmanager integration set up
-// by a real engineer arrives with that engineer's user id and email — a genuine
-// SSO identity. Mattermost marks the post itself instead, and these props are
-// set by the server, so a person cannot fake them by typing.
+// FromIntegration reports whether a post was made by an integration (webhook,
+// bot, overridden username). Server-set props, so a person cannot fake them;
+// the author alone is unreliable since webhooks post as their creator.
 func (p Post) FromIntegration() bool {
 	if p.propIsTrue("from_webhook") || p.propIsTrue("from_bot") || p.propIsTrue("from_oauth_app") {
 		return true

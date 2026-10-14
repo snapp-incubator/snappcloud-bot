@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"sort"
 	"strings"
 	"time"
@@ -112,13 +113,8 @@ func outcomeLabel(accepted bool, reason string) string {
 	return "queued"
 }
 
-// Investigate runs one batch of alerts and posts the findings. It implements
-// alerts.Investigator.
-//
-// Authorization is resolved HERE, at investigation time, from the identity that
-// marked the channel — never stored with the mark. If that person's access was
-// revoked or narrowed, the investigation is scoped to what they can see now, or
-// refused outright.
+// Investigate runs one alert batch with the marking user's access, resolved
+// now rather than stored, and posts the findings.
 func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.Batch) error {
 	reqID := newReqID()
 	lg := s.log.With("req", reqID, "src", "alert", "channel", b.ChannelID)
@@ -140,7 +136,7 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	// usually one incident, and asking about them separately gets several
 	// partial answers — each blind to the others — plus a message each.
 	start := time.Now()
-	answer, aerr := s.brain.Answer(ctx, scope, ch.Owner,
+	answer, aerr := s.brain.Answer(brain.WithReview(ctx), scope, ch.Owner,
 		unattended("alert investigation", batchQuery(b, s.brain.ResolveCluster)), "", reqID)
 	metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
 	if aerr != nil {
@@ -257,14 +253,9 @@ func batchQuery(b alerts.Batch, resolve func(string) (string, bool)) string {
 	return q.String()
 }
 
-// batchScope collects the namespaces and clusters the alerts name, so the
-// investigation starts where the incident is.
-//
-// The cluster label is resolved to the bot's own cluster name here, not left
-// to the model: an alert saying snappgroup-teh-1 against a tool list saying
-// okd4-snappgroup once produced "the user has no access to that cluster" — an
-// access verdict from a naming difference. Told the mapping, the model has
-// nothing to infer; told a label matched nothing, it is told what that means.
+// batchScope collects the namespaces and clusters the alerts name, resolving
+// cluster labels to configured names so the model never infers access from a
+// naming difference.
 func batchScope(b alerts.Batch, resolve func(string) (string, bool)) string {
 	nsSet, clusterSet := map[string]bool{}, map[string]bool{}
 	for _, a := range b.Alerts() {
@@ -347,10 +338,7 @@ func uniq(in []string) []string {
 	return out
 }
 
-// maxAlertRunes bounds one alert's contribution to the prompt. An alert is a
-// notification, not a payload: a template that inlines a long summary, a table,
-// or a stack trace would otherwise let ten of them push the request past what
-// the model accepts, which fails with HTTP 400 on every retry.
+// maxAlertRunes bounds one alert's share of the prompt.
 const maxAlertRunes = 2_000
 
 func clampAlertText(s string) string {

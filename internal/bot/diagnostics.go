@@ -11,12 +11,8 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
 
-// Every complaint about a thin or wrong answer so far has been diagnosed by
-// reading the answer's wording and guessing: a server that is down, one
-// refusing the bot's credentials, one whose tools were trimmed to fit the
-// request, and one that genuinely lacks a tool all look the same from chat.
-// They look completely different here. `diagnostics` puts that in front of the
-// person asking, in the same place they noticed the problem.
+// diagnostics shows each MCP server's state, the cases that look identical
+// from a chat answer.
 
 var diagnosticVerbs = map[string]bool{
 	"diagnostics": true, "diagnostic": true, "tools": true,
@@ -107,10 +103,7 @@ func diagnosticsReport(st []brain.ClusterStatus, limits func() (string, string, 
 	return b.String()
 }
 
-// statusOf is the status cell: short enough for a table, and naming the action
-// when the cause is known. "http 403" with an empty body reads as a broken
-// server whichever way it was caused, and the two causes need opposite fixes,
-// so the classified cases say which rather than printing the raw refusal.
+// statusOf renders the status cell, naming the action when the cause is known.
 func statusOf(errText, cause string) string {
 	code := httpCode(errText)
 	switch cause {

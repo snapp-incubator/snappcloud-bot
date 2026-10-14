@@ -28,11 +28,6 @@ type Client struct {
 	selfAuthorized bool   // identity-aware server: forward X-Remote-User, tools self-authorize
 	unscoped       bool   // results shared by every authorized user: no scoping, no filtering
 	// allow, when non-empty, is the only set of tools this server may expose.
-	// Some servers ship far more than the bot should offer — Grafana's, for
-	// instance, can update dashboards, manage alert rules and expire silences,
-	// and the bot is read-only. Configuring the server is the first control;
-	// this is the second, so a server reconfigured elsewhere cannot widen what
-	// the bot will call.
 	allow map[string]bool
 	http  *http.Client
 
@@ -42,12 +37,8 @@ type Client struct {
 	nextID    int
 }
 
-// New builds a client for one MCP server URL. authHeader is the full value of
-// the Authorization header (e.g. "Basic abc..."), or "" for no auth.
-// selfAuthorized marks a trusted, identity-aware server (e.g. argocd-mcp): the
-// caller's identity (carried in the request context) is forwarded as the
-// X-Remote-User header, and the agent trusts the server to scope its own
-// results (see mcp.Tool.SelfAuthorized). Enable it only for such servers.
+// New builds a client. authHeader is the full Authorization value ("" = none).
+// selfAuthorized forwards the caller as X-Remote-User and trusts the server to scope.
 func New(url, authHeader string, selfAuthorized bool, timeout time.Duration, allowTools ...string) *Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -65,14 +56,8 @@ func New(url, authHeader string, selfAuthorized bool, timeout time.Duration, all
 		allow: allow, http: &http.Client{Timeout: timeout}}
 }
 
-// A server whose credential the bot never sent answers exactly like a server
-// that is down: "http 403" with an empty body. Five servers on each production
-// region read as an outage in diagnostics while every one of them was healthy —
-// the bot was sending no Authorization header, because the env var naming its
-// credential was absent from the Secret and os.Getenv returned "".
-//
-// The two cases need opposite fixes, so they are distinguishable by type rather
-// than by reading the message: add the missing key, or rotate the token.
+// A refusal of a request sent without credentials looks like any other 403,
+// but needs a different fix (add the key vs rotate the token), so it is typed.
 var (
 	// ErrNoCredential marks a refusal of a request the bot sent with no
 	// Authorization header at all. The server is not the thing to look at.
@@ -316,15 +301,8 @@ func (c *Client) newRequest(ctx context.Context, body []byte) (*http.Request, er
 	return req, nil
 }
 
-// maxResponseBytes bounds what one tool response may occupy. The bot runs in a
-// small container and fans out across clusters, so several responses are in
-// flight at once — and each is parsed again downstream for filtering, where JSON
-// becomes Go values at several times the size of the text. An unbounded read is
-// therefore an unbounded multiple of itself, which is how a single cluster-wide
-// query ends as an OOMKill rather than an error.
-//
-// The cap is far above any useful answer: a tool result is truncated to 100k
-// runes before the model ever sees it.
+// maxResponseBytes bounds one tool response: responses are parsed again for
+// filtering at several times their size, and several are in flight at once.
 var maxResponseBytes int64 = 8 << 20 // 8 MiB; raised by SetMaxResponseBytes
 
 // SetMaxResponseBytes raises the ceiling on one tool response. It exists so the

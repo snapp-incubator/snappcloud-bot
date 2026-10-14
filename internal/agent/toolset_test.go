@@ -284,9 +284,9 @@ func TestInterleaveKeepsTheMetricsServerAtTehOnesRealShape(t *testing.T) {
 		clusterTools{cluster: "docs", tools: []Tool{{Name: "docs__search_docs"}}},
 		clusterTools{cluster: "platform-docs", tools: []Tool{{Name: "pdocs__search_docs"}}})
 
-	got, _ := interleave(groups, gatewayToolCeiling)
-	if len(got) > gatewayToolCeiling {
-		t.Fatalf("offered %d definitions; the endpoint carries %d", len(got), gatewayToolCeiling)
+	got, _ := interleave(groups, 128)
+	if len(got) > 128 {
+		t.Fatalf("offered %d definitions over a budget of 128", len(got))
 	}
 	perServer := map[string]int{}
 	for _, tl := range got {

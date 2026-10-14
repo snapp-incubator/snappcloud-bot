@@ -1,9 +1,5 @@
-// Package bot is the orchestration core of the SnappCloud bot. For each incoming
-// Mattermost message it resolves the user's SSO identity, asks the per-region
-// mcp-authz APIs which namespaces the user may access on each cluster, and — only
-// if the user is authorized somewhere — runs the in-bot agent (which drives the
-// per-cluster MCP servers and enforces namespace scope), then posts the answer.
-// An unauthorized user never reaches the MCP servers.
+// Package bot handles Mattermost messages: resolve identity and scope, run the
+// agent if authorized, post the answer.
 package bot
 
 import (
@@ -158,12 +154,7 @@ const maxTranscriptRunes = 6000
 
 // OnPost handles one incoming Mattermost post.
 func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
-	// An unaddressed post in a channel marked for alerts is an ALERT, not a
-	// question — when the POST was produced by an integration (Mattermost marks
-	// it on the post itself) rather than typed by a person. That separates an
-	// Alertmanager notification from someone talking in the same channel, and it
-	// holds for any alert format, which is what makes the differences between
-	// teams' templates a non-issue here.
+	// An unaddressed post from an integration in an alert channel is an alert.
 	if !p.IsDirect() && !p.Mentioned && !s.textMentionsBot(p.Message) && s.isAlertChannel(p.ChannelID) {
 		if s.postIsFromAlertSource(ctx, p) {
 			if s.ingestAlert(p) {
@@ -173,12 +164,8 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		}
 	}
 
-	// Answer every direct message; in channels, only when @-mentioned.
-	//
-	// The mention is detected two ways because the event's mention list is a
-	// NOTIFICATION artefact: Mattermost does not populate it for posts made by
-	// other bots and integrations, so a bot that @-mentions us would otherwise
-	// be dropped here without a trace. Matching the text is independent of that.
+	// Answer DMs; in channels only when mentioned. Text is checked too, since
+	// Mattermost omits mentions for posts made by bots.
 	if !p.IsDirect() && s.requireMention && !p.Mentioned && !s.textMentionsBot(p.Message) {
 		metrics.Messages.WithLabelValues("ignored").Inc()
 		s.log.Debug("ignored channel message: bot not mentioned",
@@ -208,12 +195,7 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		metrics.MessageDuration.Observe(time.Since(start).Seconds())
 	}()
 
-	// Show a typing indicator for the whole turn (auth + agent can be slow).
-	// parent_id must be the EXISTING thread root (p.RootID): empty for a
-	// top-level message → channel-level typing (visible in the channel); set when
-	// the user is already in a thread → typing shows in that thread. Using the
-	// post's own id here would make it thread-typing under a not-yet-open thread,
-	// which the channel view never shows.
+	// Typing indicator for the whole turn, in the existing thread if any.
 	typingCtx, stopTyping := context.WithCancel(ctx)
 	go s.mm.Typing(typingCtx, p.ChannelID, p.RootID)
 	defer stopTyping()
@@ -366,15 +348,8 @@ func (s *Service) isAlertChannel(channelID string) bool {
 	return ok
 }
 
-// postIsFromAlertSource reports whether a post was produced by an integration
-// rather than typed by a person.
-//
-// The post's own props decide it. Judging by the AUTHOR does not work: an
-// incoming webhook posts under the account of whoever created it, so an
-// Alertmanager integration set up by an engineer arrives carrying that
-// engineer's identity, and every alert would be mistaken for them talking. The
-// author is still consulted as a fallback for integrations that set no props
-// and have no SSO identity of their own.
+// postIsFromAlertSource: the post's props decide it (webhooks post under their
+// creator's account); the author is only a fallback.
 func (s *Service) postIsFromAlertSource(ctx context.Context, p mattermost.Post) bool {
 	if p.FromIntegration() {
 		return true
@@ -462,13 +437,8 @@ func refreshSummary(scope authzclient.Scope) string {
 	return sb.String()
 }
 
-// runCommand answers the bot's own commands — refresh, help, schedules, alerts
-// — and reports which outcome to record. handled is false for an ordinary
-// question, which then goes to the agent.
-//
-// These live together because they share one property: each manages the bot and
-// none of them needs cluster authorization, so they all run before the scope is
-// resolved.
+// runCommand answers the bot's own commands, which need no cluster
+// authorization. handled is false for an ordinary question.
 func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, query string, lg *slog.Logger) (handled bool, outcome string) {
 	if isRefreshCommand(query) {
 		if inv, ok := s.resolver.(authzclient.Invalidator); ok {

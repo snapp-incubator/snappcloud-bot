@@ -1,10 +1,5 @@
-// Package schedule stores and fires user-defined recurring queries.
-//
-// A schedule is a saved question plus a cadence. When it fires, the bot runs the
-// query exactly as if the user had asked it, and posts the answer where the
-// schedule was created. Authorization is NOT stored: the user's scope is
-// resolved fresh on every run, so a schedule can never outlive the access it
-// was created with.
+// Package schedule stores and fires recurring queries. Authorization is
+// resolved on every run, never stored.
 package schedule
 
 import (
@@ -343,13 +338,7 @@ func (s *Store) Flush() {
 // back: 0/o, 1/l/i, u/v. What is left is still 27 bits in five characters.
 const idAlphabet = "abcdefghjkmnpqrstwxyz23456789"
 
-// newID returns a short, unguessable identifier for a schedule. Sequential ids
-// were worse than ugly: a user saw their own as 2, 7 and 9, which says how many
-// schedules other people have, and made someone else's id something you could
-// simply type. Random ids leak no count and are not worth guessing — and
-// Delete still checks ownership, so guessing one would achieve nothing anyway.
-//
-// Caller must hold s.mu.
+// newID returns a short random id, so ids leak no count. Caller holds s.mu.
 func (s *Store) newID() (string, error) {
 	buf := make([]byte, 6)
 	for attempt := 0; attempt < 8; attempt++ {

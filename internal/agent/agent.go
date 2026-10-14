@@ -91,12 +91,13 @@ type Resolver interface {
 
 // Agent runs the enforced tool-calling loop.
 type Agent struct {
-	llm      LLM
-	enforcer *Enforcer
-	resolver Resolver // may be nil (no IP resolution)
-	maxIter  int
-	budgets  Budgets
-	log      *slog.Logger
+	llm          LLM
+	enforcer     *Enforcer
+	resolver     Resolver // may be nil (no IP resolution)
+	maxIter      int
+	budgets      Budgets
+	log          *slog.Logger
+	reviewPrompt string
 }
 
 // New builds an Agent. maxIter bounds the tool-calling loop (default 6).
@@ -142,6 +143,11 @@ type Input struct {
 	Clusters []ClusterTools
 	// ReqID correlates all log lines for one user message (empty = none).
 	ReqID string
+	// Review asks for the finished answer to be checked against the tool
+	// results before it is returned. Meant for answers nobody can question
+	// back — a scheduled report, an alert investigation — where a figure that
+	// contradicts its own table is read and acted on as it stands.
+	Review bool
 }
 
 // binding maps a cluster-qualified tool name back to its cluster + real name.
@@ -160,17 +166,8 @@ type binding struct {
 	schema map[string]any
 }
 
-// capResult truncates an oversized tool result, telling the model to narrow
-// the query. Applied AFTER namespace filtering so truncation can never turn
-// filterable JSON into an unfilterable fragment.
-//
-// The budget is in runes and the cut is made on runes: slicing a UTF-8 string
-// at a byte offset can halve a character, and an invalid string travels all the
-// way to the endpoint before failing there.
-//
-// Logged per tool, because how much of a result the model never saw is the
-// difference between "the tool returned nothing useful" and "the tool returned
-// forty times what fits".
+// capResult truncates a result to the rune budget (after filtering, so JSON
+// stays filterable), cutting on runes, and logs what was dropped.
 func (a *Agent) capResult(tool, s string) string {
 	r := []rune(s)
 	if len(r) <= a.budgets.ResultRunes {
@@ -187,6 +184,22 @@ func (a *Agent) capResult(tool, s string) string {
 // Run drives the LLM ↔ MCP loop across every authorized cluster, enforcing each
 // tool call against that cluster's scope, and returns the final answer text.
 func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
+	var t transcript
+	text, err := a.run(ctx, in, &t)
+	if err != nil || !in.Review || strings.TrimSpace(text) == "" {
+		return text, err
+	}
+	return a.review(ctx, in.ReqID, t, text), nil
+}
+
+// transcript is what run leaves behind for review: the system prompt it used
+// and every turn, tool results included — the evidence a draft is checked against.
+type transcript struct {
+	system string
+	msgs   []Turn
+}
+
+func (a *Agent) run(ctx context.Context, in Input, out *transcript) (string, error) {
 	lg := a.log.With("req", in.ReqID)
 	start := time.Now()
 	var toolCalls, toolErrs, denied, filtered, nudges int
@@ -213,6 +226,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 	}
 	system := in.System + notice
 	msgs := []Turn{{Role: "user", Text: in.Query}}
+	defer func() { out.system, out.msgs = system, msgs }()
 	// Identifiers the model is allowed to pass: what the question carried, plus
 	// whatever the results add as the turn goes on.
 	seenIDs := map[string]bool{}
@@ -233,10 +247,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 		msgs = append(msgs, Turn{Role: "assistant", Text: resp.Text, Calls: resp.Calls})
 		if len(resp.Calls) == 0 {
 			if resp.Truncated {
-				// The model ran out of output tokens mid-sentence. Left alone
-				// this is posted as an answer — the reader sees a report that
-				// stops in the middle of a table and no sign that anything is
-				// missing. Ask for the remainder and join it on.
+				// Output limit hit mid-answer: ask for the remainder rather than post a cut answer.
 				text, err := a.finish(ctx, system, msgs, tools, resp.Text)
 				if err != nil {
 					summary("answered-truncated", "err", err)
@@ -256,15 +267,8 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				msgs = append(msgs, Turn{Role: "user", Text: nudge})
 				continue
 			}
-			// A report whose cells all say the measurement was not made is a
-			// shape with nothing in it. It reads as finished — every table
-			// present, correctly laid out, empty — and it is produced by a
-			// model that stopped after its first few calls with rounds still
-			// to spend.
-			// An answer that is the sentence before the work: a line ending in
-			// a colon, or a fragment from a turn that had clearly been doing
-			// something. Posting it hands the reader an introduction to a
-			// report that was never written.
+			// An answer that is mostly unmeasured cells, or only the sentence before the
+			// work, while rounds remain: ask for the work.
 			if nudges < maxNudges && iter < a.maxIter-1 && looksLikePreamble(resp.Text, toolCalls) {
 				nudges++
 				lg.Info("answer is a preamble; asking for the work itself",
@@ -281,11 +285,7 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				msgs = append(msgs, Turn{Role: "user", Text: runTheQueries})
 				continue
 			}
-			// Nudged as often as we will, and still talking about the work
-			// rather than doing it: "Stop. I have spent my tool budget…" is
-			// not an answer, and posting it hands the reader a transcript of
-			// the model's deliberation. Ask once more, with no tools, for the
-			// thing that was actually requested.
+			// Still narrating after every nudge: ask once more, without tools, for the answer.
 			if nudges >= maxNudges && announcesMoreWork(resp.Text) {
 				lg.Info("model still announcing work after its nudges; demanding the answer", "iteration", iters)
 				metrics.TurnOutcomes.WithLabelValues("demanded").Inc()
@@ -310,12 +310,8 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 				results = append(results, errResult(call.ID, "unknown tool "+call.Name))
 				continue
 			}
-			// Check the call against the tool's own schema before spending it.
-			// A server asked for a required argument it did not get answers in
-			// its own terms — Grafana's "parsing end time: syntax error:
-			// unexpected $end" for a missing endTime — and a model that reads
-			// that as "the query returned nothing" will report the metric as
-			// unavailable and move on. It did, for a whole daily report.
+			// Check required arguments before spending the call: servers report a missing
+			// argument in their own terms, which reads as an empty result.
 			if missing := missingRequired(b.schema, call.Args); len(missing) > 0 {
 				denied++
 				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "invalid").Inc()
@@ -335,12 +331,8 @@ func (a *Agent) Run(ctx context.Context, in Input) (string, error) {
 			}
 			if !b.ct.NoEnforce {
 				if b.selfAuthorized {
-					// Identity-aware server: it authorizes the caller itself from
-					// the forwarded identity (X-Remote-User), so we skip namespace
-					// enforcement and return its result unfiltered (trusting the
-					// server the same way we trust mcp-authz). The same per-server
-					// flag drives the identity forwarding, so this path is reached
-					// only when the identity is actually sent.
+					// Identity-aware server: it scopes results itself from the forwarded
+					// X-Remote-User, so skip enforcement and filtering.
 					if in.User == "" {
 						denied++
 						metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "denied").Inc()
@@ -486,9 +478,9 @@ func (a *Agent) demandAnswer(ctx context.Context, system string, msgs []Turn) (s
 			"happen, and there is nothing left to decide about how to spend calls. Write the finished answer " +
 			"now, from what you already have: the findings with their numbers, what they mean, the most " +
 			"likely cause and how to confirm it, and what to do. If the question asked for a report with " +
-			"sections, produce every section, filling what you have and marking the rest 'n/a' with the " +
-			"reason in that cell. Then one last line, 'Not checked:', listing what you would have looked at " +
-			"next. Do not describe your own progress, your budget, or what you were about to do: none of " +
+			"sections, produce every section from what you have; leave a cell you could not measure empty and " +
+			"give the reason once under its table, never 'n/a' in the cell. Then one last line, 'Not checked:', " +
+			"listing what you would have looked at next. Do not describe your own progress, your budget, or what you were about to do: none of " +
 			"that is an answer, and the reader sees only this message.",
 	})
 	resp, err := a.llm.Complete(ctx, Request{System: system, Messages: final})
@@ -510,13 +502,8 @@ type partialLister interface {
 	ListFailures() []string
 }
 
-// finish completes an answer the model had to stop mid-sentence. It asks for
-// the remainder rather than the whole answer again: repeating it would cost
-// another full generation and could come back different, and the part already
-// written is fine — it is only unfinished.
-//
-// maxContinuations bounds this: a model that keeps running out of room is a
-// maxTokens setting to raise, not something to paper over indefinitely.
+// finish asks for the remainder of a cut-off answer rather than a fresh one.
+// maxContinuations bounds it; a model that keeps running out needs a larger maxTokens.
 const maxContinuations = 3
 
 func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []Tool, text string) (string, error) {
@@ -543,12 +530,9 @@ func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []
 	return text + "\n\n_[answer cut off at the model's output limit]_", nil
 }
 
-// buildTools lists every authorized cluster's tools, cluster-qualifying their
-// names and tagging descriptions, and returns the LLM tool set, a registry
-// mapping each qualified name back to its cluster + real tool, and a notice for
-// the system prompt naming the clusters present, unreachable and trimmed. A
-// cluster whose MCP servers all fail to list is skipped; only if EVERY cluster
-// fails is an error returned.
+// buildTools lists every authorized cluster's tools under qualified names and
+// returns them, a registry back to cluster and real name, and a notice for the
+// prompt. It errors only when every cluster fails.
 func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]binding, string, error) {
 	reg := make(map[string]binding)
 	var groups []clusterTools
@@ -614,11 +598,8 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 				preferred: ct.Preferred,
 				tools:     byServer[srv],
 			})
-			// The servers a cluster actually answered with, named and counted.
-			// A model that decides from memory which tools it "should" have
-			// will say a cluster has no metrics while holding the metrics
-			// server's tools; an inventory it cannot argue with is cheaper
-			// than hoping it re-reads a list of 138.
+			// Name and count each cluster's servers, so the model reasons from the list it
+			// holds rather than from memory.
 			inventory[ct.Cluster] = append(inventory[ct.Cluster],
 				fmt.Sprintf("%s (%d)", srv, len(byServer[srv])))
 		}
@@ -626,14 +607,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	if !anyOK && firstErr != nil {
 		return nil, nil, "", firstErr
 	}
-	// A budget above what the endpoint carries is not a bigger budget, it is a
-	// silently truncated tool array — so the ceiling wins.
 	max := a.budgets.MaxTools
-	if max <= 0 || max > gatewayToolCeiling {
-		a.log.Warn("maxTools is above what the endpoint carries; using the ceiling instead",
-			"maxTools", a.budgets.MaxTools, "ceiling", gatewayToolCeiling)
-		max = gatewayToolCeiling
-	}
 	tools, dropped := interleave(groups, max)
 	// Per-cluster counts, every turn: the only way to tell from outside whether
 	// a cluster's servers are all advertising what they should.
@@ -667,7 +641,7 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		defBytes = len(b)
 	}
 	a.log.Info("tools offered", "tools", len(tools), "clusters", len(present),
-		"unreachable", len(unreachable), "maxTools", max, "ceiling", gatewayToolCeiling,
+		"unreachable", len(unreachable), "maxTools", max,
 		"defBytes", defBytes, "last", lastName(tools))
 	metrics.ToolsOffered.Set(float64(len(tools)))
 	if len(degraded) > 0 {
@@ -677,22 +651,11 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 	return tools, reg, toolNotice(present, unreachable, degraded, dropped, inventory), nil
 }
 
-// filtered enforces namespace scope on a raw tool result before the model sees
-// it. Resolves any IPs to namespaces (fail-closed: if IPs are present and
-// resolution fails, the whole result is withheld), then drops records touching
-// namespaces outside the tool's cluster scope.
-// filtered returns the scoped result and whether any data was dropped/withheld
-// (for the turn summary). Per-call detail is intentionally not logged here —
-// the summary aggregates it; a dropped result is normal enforcement, not an
-// error worth a line each.
+// filtered enforces namespace scope on a result before the model sees it,
+// failing closed when IPs cannot be resolved. Reports whether anything was dropped.
 func (a *Agent) filtered(ctx context.Context, b binding, callID, out string) (ToolResult, bool) {
-	// Filtering parses the result twice — once to find IP references, once to
-	// drop unauthorized records — and JSON becomes Go values at several times
-	// the size of the text. Past a point that is more memory than the answer is
-	// worth, and the bot fans out across clusters with several of these in
-	// flight. Withhold instead, and say what to do about it: truncating first
-	// would leave invalid JSON, which the filter cannot parse and would pass
-	// through unfiltered.
+	// Too large to filter safely (parsing multiplies memory). Withhold rather than
+	// truncate: truncated JSON cannot be filtered.
 	if len(out) > a.budgets.FilterBytes {
 		metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "filtered").Inc()
 		return errResult(callID, fmt.Sprintf(

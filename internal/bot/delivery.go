@@ -16,14 +16,8 @@ import (
 // postTimeout bounds delivery of an answer that has already been produced.
 const postTimeout = 20 * time.Second
 
-// post writes a message to a channel/thread, splitting long answers.
-//
-// Delivery runs on a context DETACHED from the caller's: a scheduled run and an
-// alert batch are each bounded by a timeout that covers the investigation, and
-// an investigation that used most of its budget would otherwise produce an
-// answer and then fail to post it — the work paid for, the result thrown away,
-// with only a "post answer" error to show for it. The deadline exists to stop
-// runaway investigations, not to discard finished ones.
+// post writes a message, splitting long answers. It runs detached from the
+// caller's deadline so a finished answer is not lost to the run's timeout.
 func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error {
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postTimeout)
 	defer cancel()

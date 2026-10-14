@@ -13,12 +13,7 @@ type ClusterStatus struct {
 	Servers []mcp.ServerStatus
 }
 
-// Status reports, for every cluster the caller can use, which of its MCP
-// servers answer and how many tools each advertises. It is the ground truth
-// behind "the bot says it has no tool for that": a server that is down, one
-// that is refusing the bot's credentials, and one that genuinely does not
-// offer a tool look identical from a chat answer and completely different
-// here.
+// Status reports each cluster's MCP servers and their tool counts.
 func (b *Brain) Status(ctx context.Context, clusters []string) []ClusterStatus {
 	out := make([]ClusterStatus, 0, len(clusters))
 	for _, c := range clusters {

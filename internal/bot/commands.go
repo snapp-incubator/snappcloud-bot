@@ -4,15 +4,8 @@ import (
 	"strings"
 )
 
-// Commands are matched on the WHOLE message, which made them brittle: "alerts
-// on" worked and "alerts on please" fell through to the model, which then
-// answered something plausible instead of turning the feature on. Normalising
-// first — case, punctuation, and the politeness people naturally add — keeps
-// the command surface small without making users type it exactly.
-//
-// Anything that is not a command still goes to the model untouched. The rule is
-// that a command must be the ENTIRE message; a question that merely contains
-// the word "alerts" is a question.
+// Commands must be the whole message, matched after normalising case,
+// punctuation and politeness. Anything else goes to the model.
 
 // politeSuffixes are dropped from the end of a command before matching.
 var politeSuffixes = []string{"please", "pls", "plz", "thanks", "thank you", "ty"}

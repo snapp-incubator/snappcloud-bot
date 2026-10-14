@@ -123,7 +123,14 @@ type Agent struct {
 	// own. Empty = no failover.
 	FallbackLLM FallbackLLM `yaml:"fallbackLLM"`
 	// ToolGuidance is MCP tool-usage guidance ("skills") appended to every prompt.
-	ToolGuidance string         `yaml:"toolGuidance"`
+	ToolGuidance string `yaml:"toolGuidance"`
+	// ReviewUnattended re-checks scheduled and alert answers against their tool
+	// results before posting (one extra model call). Unset = on.
+	ReviewUnattended *bool `yaml:"reviewUnattended"`
+	// ClusterNamePrefixes are stripped to give each cluster a short name.
+	ClusterNamePrefixes []string `yaml:"clusterNamePrefixes"`
+	// ReviewPrompt overrides the built-in review instruction.
+	ReviewPrompt string         `yaml:"reviewPrompt"`
 	Clusters     []AgentCluster `yaml:"clusters"`
 	// GlobalServers are namespace-agnostic MCP servers (e.g. general docs)
 	// available to every authorized user, not tied to a cluster or scope-filtered.
@@ -188,12 +195,8 @@ type FallbackLLM struct {
 type AgentCluster struct {
 	Name  string `yaml:"name"`
 	Alias string `yaml:"alias"`
-	// Names lists what else this cluster is called outside the bot: the
-	// `cluster`/`region` label your alert rules carry, the Grafana datasource
-	// name, what people say. The bot maps them to this cluster so the model is
-	// never left to guess whether "snappgroup-teh-1" is a cluster the user may
-	// use. The configured name, alias and the name without its okd4- prefix
-	// are always recognised.
+	// Names are other names this cluster goes by (alert labels, datasource names,
+	// shorthand). The configured name, alias and unprefixed name always match.
 	Names   []string    `yaml:"names"`
 	Servers []MCPServer `yaml:"servers"`
 }
@@ -210,12 +213,8 @@ type MCPServer struct {
 	// Takes precedence over URL.
 	URLEnv        string `yaml:"urlEnv"`
 	AuthHeaderEnv string `yaml:"authHeaderEnv"`
-	// AllowTools, when set, is the ONLY set of tools the bot will list or call
-	// from this server. Use it for servers that ship more than the bot should
-	// offer: the Grafana MCP server, for example, can update dashboards, manage
-	// alert rules and expire silences, and the bot is read-only. Configuring the
-	// server itself is the first control; this is the second, so a server
-	// reconfigured elsewhere cannot widen what the bot will call.
+	// AllowTools, when set, is the only set of tools the bot lists or calls from
+	// this server — a second control for servers exposing write tools.
 	AllowTools []string `yaml:"allowTools"`
 	// ClusterAdminOnly restricts a globalServer to callers who hold cluster-wide
 	// access on at least one cluster. Its tools are not even listed for anyone
@@ -232,12 +231,9 @@ type MCPServer struct {
 	// namespace enforcement/filtering and returns their results unfiltered
 	// (trusting the server the same way it trusts mcp-authz). Off by default.
 	SelfAuthorized bool `yaml:"selfAuthorized"`
-	// Unscoped marks a server whose results every user authorized on the cluster
-	// may see in full: the bot skips namespace enforcement, PromQL pinning and
-	// result filtering for its tools. allowTools and clusterAdminOnly toolRules
-	// still apply. Set it only for data you are willing to show every tenant —
-	// e.g. Prometheus metrics while investigations need cluster-wide context.
-	// Off by default.
+	// Unscoped: every user authorized on the cluster sees this server's results in
+	// full (no enforcement, pinning or filtering). allowTools and clusterAdminOnly
+	// still apply. Off by default.
 	Unscoped bool `yaml:"unscoped"`
 }
 

@@ -6,12 +6,8 @@ import (
 	"unicode/utf8"
 )
 
-// A scheduled report or an alert investigation runs with nobody at the other
-// end. The first daily report ran for two turns, then stopped to ask the
-// channel which of three smaller deliverables it preferred, and explained what
-// the work was costing. Nothing about the model's behaviour was wrong for a
-// conversation; everything about it was wrong for a post that nobody answers.
-// So an unattended run is told what it is, up front, in terms it acts on.
+// Unattended runs (schedules, alerts) have nobody to answer a question, so the
+// model is told to deliver, not ask.
 
 // unattended frames a query as an unattended run: no questions, no options,
 // no commentary on effort — a delivery, complete or explicitly partial.
@@ -21,12 +17,8 @@ func unattended(kind, query string) string {
 		"Do not comment on the size, cost or effort of the task. " +
 		"If everything asked for cannot be done within your tool-call budget, deliver the parts that can, " +
 		"in the order they are asked for, and finish with one line listing what was cut. " +
-		// "Mark each missing cell n/a with the reason" produced reports whose
-		// tables were mostly the word n/a, and rows kept only to carry it: a
-		// quota at 24% of its limit listed as "24.1% (n/a, <90)" in a table of
-		// things above 90%. A cell is unfilled because a measurement is
-		// missing, which is one line under the table — not because a row did
-		// not qualify, which means the row does not belong.
+		// A missing measurement is a note under the table; a row below the
+		// threshold is deleted.
 		"Leave a cell you could not measure empty and give the reason once, under the table. Never write " +
 		"\"n/a\" in a cell to mean a row did not meet a threshold — a row that does not meet the threshold " +
 		"is deleted, not annotated. A partial report delivered is the job; a question is not. " +
@@ -35,10 +27,7 @@ func unattended(kind, query string) string {
 		query
 }
 
-// summarizeQuery shortens a long scheduled query for a post header: the first
-// sentence or line, capped — the reader saw the whole text when it was
-// scheduled, and a 4000-character question above every answer buries the
-// answer.
+// summarizeQuery shortens a scheduled query to a header line.
 func summarizeQuery(q string, max int) string {
 	q = strings.TrimSpace(q)
 	if i := strings.IndexAny(q, "\n"); i > 0 {
@@ -81,31 +70,45 @@ var narrationLine = regexp.MustCompile(`(?i)^(?:\*\*|#+\s*)?(?:` +
 	`writing the (?:final )?report|producing the report|key findings` +
 	`)\b`)
 
-// dropLeadingNarration removes the model's throat-clearing from the top of an
-// answer that does go on to contain the answer. The guards elsewhere catch a
-// turn that is ONLY narration; this is the other half — a report preceded by
-// four lines of "Excellent, I have very rich data… Now let me produce the
-// report", which the reader sees before anything useful.
-//
-// Only the lines before the first heading, table or bullet are considered, and
-// only while they keep matching, so prose answers are untouched.
+// productionSentence matches a sentence about producing the answer
+// ("Let me build the report.") rather than one that is part of it.
+var productionSentence = regexp.MustCompile(`(?i)` +
+	`\b(?:let me|let's|i'll|i will|i'm going to|i am going to|i can)\s+(?:\w+\s+){0,2}` +
+	`(?:build|compose|produce|write|compile|assemble|put together|deliver|present|draft|format|create|summari[sz]e|give you)\b` +
+	`|\b(?:now )?i (?:now )?(?:have|'ve got|have got|'ve gathered|have gathered|'ve collected|have collected) ` +
+	`(?:all|enough|everything|what i need|the (?:key |necessary |required )?(?:data|information|results))` +
+	`|\bthe (?:data|results?|information) (?:is|are) (?:rich|complete|sufficient|enough|compact|in)\b` +
+	`|^here(?:'s| is) (?:the|your) (?:full |final |complete |daily |weekly )?(?:report|summary|answer)\b`)
+
+// structuralLine is where an answer's body starts: a heading, a table, a list
+// item, a quote, or a bold title line.
+var structuralLine = regexp.MustCompile(`^(?:#|\||[-*>]|\d+[.)]\s)`)
+
+// dropLeadingNarration strips sentences about producing the answer from above
+// its body. It acts only when a structured body follows, and never on a line
+// with a figure in it.
 func dropLeadingNarration(s string) string {
 	lines := strings.Split(s, "\n")
-	cut := 0
+	body := -1
 	for i, ln := range lines {
-		t := strings.TrimSpace(ln)
+		if structuralLine.MatchString(strings.TrimSpace(ln)) {
+			body = i
+			break
+		}
+	}
+	if body < 0 {
+		return s
+	}
+	cut := 0
+	for i := 0; i < body; i++ {
+		t := strings.TrimSpace(lines[i])
 		if t == "" {
 			if cut == i {
 				cut = i + 1
 			}
 			continue
 		}
-		// The answer proper has started: stop looking.
-		if strings.HasPrefix(t, "#") || strings.HasPrefix(t, "|") ||
-			strings.HasPrefix(t, "-") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, ">") {
-			break
-		}
-		if !narrationLine.MatchString(t) {
+		if !isNarration(t) {
 			break
 		}
 		cut = i + 1
@@ -114,4 +117,44 @@ func dropLeadingNarration(s string) string {
 		return s
 	}
 	return strings.TrimSpace(strings.Join(lines[cut:], "\n"))
+}
+
+// isNarration reports whether a whole line is talk about producing the answer.
+// Every sentence on it has to be, so a line that narrates and then states a
+// finding is kept.
+func isNarration(line string) bool {
+	if strings.ContainsAny(line, "0123456789") {
+		return false
+	}
+	if narrationLine.MatchString(line) {
+		return true
+	}
+	sentences := splitSentences(line)
+	if len(sentences) == 0 {
+		return false
+	}
+	for _, sn := range sentences {
+		if !productionSentence.MatchString(sn) {
+			return false
+		}
+	}
+	return true
+}
+
+// splitSentences breaks a line after sentence-ending punctuation.
+func splitSentences(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if (s[i] == '.' || s[i] == '!' || s[i] == '?') && (i+1 == len(s) || s[i+1] == ' ') {
+			if t := strings.TrimSpace(s[start : i+1]); t != "" {
+				out = append(out, t)
+			}
+			start = i + 1
+		}
+	}
+	if t := strings.TrimSpace(s[start:]); t != "" {
+		out = append(out, t)
+	}
+	return out
 }

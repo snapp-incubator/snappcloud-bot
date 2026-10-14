@@ -7,12 +7,8 @@ import (
 	"time"
 )
 
-// Duration formats a duration the way it is spoken: "30m", "1h30m", "4h", "90s".
-//
-// time.Duration.String() renders "30m0s" and "4h0m0s", and trimming the zero
-// suffixes off that text is how "30m" became "3" — TrimSuffix(s, "0m") removes
-// the "0m" from "30m". So build the string from the components instead of
-// editing the stringified form.
+// Duration formats like "30m", "1h30m", "90s", built from components
+// (trimming time.Duration.String() corrupts values like 30m).
 func Duration(d time.Duration) string {
 	if d <= 0 {
 		return "0s"

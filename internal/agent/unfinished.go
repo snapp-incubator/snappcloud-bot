@@ -5,14 +5,7 @@ import (
 	"strings"
 )
 
-// A model sometimes ends its turn saying what it is about to do — "Let me get
-// the Envoy listener filter to see if there are also per-route limits, and
-// check Hubble flows to confirm" — and makes no tool call. The loop has
-// nothing to run, so it treats the text as the final answer and posts it. The
-// reader gets an investigation that stops one sentence before its conclusion,
-// with no sign that anything is missing.
-//
-// The model is not finished and says so. Ask it to go on.
+// A turn that announces work and makes no call is unfinished: ask it to go on.
 
 // announcement matches a self-directed statement of intent: the model telling
 // itself what to do next. "Let me know" is excluded — that is addressed to the
@@ -64,13 +57,8 @@ const nudge = "That message was about the work, not the work. You still have you
 // unmeasuredCell matches the ways a model marks a cell it did not fill.
 var unmeasuredCell = regexp.MustCompile(`(?i)\bn/a\b|\bnot run\b|\bnot measured\b|\bnot issued\b|\bqueries pending\b`)
 
-// mostlyUnmeasured reports whether an answer is a shape with nothing in it: a
-// report whose cells are overwhelmingly "n/a" or "not run". A model that
-// stopped after its first few calls writes exactly this, and it reads as a
-// finished report — the tables are all there, correctly laid out, empty.
-//
-// The threshold is deliberately high: one or two unmeasured cells in a real
-// report are honest, and saying so is the behaviour we want.
+// mostlyUnmeasured reports whether an answer is mostly empty cells. The
+// threshold is high: a few honest gaps are fine.
 func mostlyUnmeasured(text string) bool {
 	if len(unmeasuredCell.FindAllString(text, -1)) < 8 {
 		return false
@@ -85,16 +73,8 @@ const runTheQueries = "That is a report with nothing in it: most of its cells sa
 	"round, one per cell you left empty — and then write the report from what comes back. A cell may only stay " +
 	"unmeasured if you ran its query and it returned nothing, in which case say what you ran."
 
-// looksLikePreamble reports whether an answer is the sentence that introduces
-// the work rather than the work. "Now the main Prometheus batch (legacy
-// datasource):" was posted to a channel as an entire daily report — a line
-// ending in a colon, promising something that never followed.
-//
-// A colon at the end is the reliable signal: real answers do not end by
-// announcing what comes next. The length test is deliberately narrow, so a
-// genuinely short answer — "No packets are dropped for that namespace." — is
-// only caught when the turn did enough work that a one-line reply cannot be
-// the result of it.
+// looksLikePreamble reports whether an answer only introduces the work: it ends
+// in a colon, or is a fragment after a turn that made several calls.
 func looksLikePreamble(text string, toolCalls int) bool {
 	t := strings.TrimRight(strings.TrimSpace(text), "*_` ")
 	if t == "" {
