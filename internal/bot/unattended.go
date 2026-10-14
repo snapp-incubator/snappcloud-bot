@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -58,103 +57,4 @@ func tableCell(s string, max int) string {
 		return string(r[:i]) + " …"
 	}
 	return string(r) + "…"
-}
-
-// narrationLine matches a line of the model talking about its own progress
-// rather than reporting anything: "Excellent — I have very rich data.",
-// "I have enough to deliver the report. Now let me produce the report."
-var narrationLine = regexp.MustCompile(`(?i)^(?:\*\*|#+\s*)?(?:` +
-	`excellent|great|perfect|good[.,!—-]|ok[.,!—-]|alright|right[.,!—-]|` +
-	`i (?:have|now have|'ve) (?:enough|what i need|rich|plenty|all)|` +
-	`(?:now )?(?:let me|i'?ll|i will|here is|here'?s) (?:produce|write|deliver|compile|put together|assemble|give)|` +
-	`writing the (?:final )?report|producing the report|key findings` +
-	`)\b`)
-
-// productionSentence matches a sentence about producing the answer
-// ("Let me build the report.") rather than one that is part of it.
-var productionSentence = regexp.MustCompile(`(?i)` +
-	`\b(?:let me|let's|i'll|i will|i'm going to|i am going to|i can)\s+(?:\w+\s+){0,2}` +
-	`(?:build|compose|produce|write|compile|assemble|put together|deliver|present|draft|format|create|summari[sz]e|give you)\b` +
-	`|\b(?:now )?i (?:now )?(?:have|'ve got|have got|'ve gathered|have gathered|'ve collected|have collected) ` +
-	`(?:all|enough|everything|what i need|the (?:key |necessary |required )?(?:data|information|results))` +
-	`|\bthe (?:data|results?|information) (?:is|are) (?:rich|complete|sufficient|enough|compact|in)\b` +
-	`|^here(?:'s| is) (?:the|your) (?:full |final |complete |daily |weekly )?(?:report|summary|answer)\b`)
-
-// structuralLine is where an answer's body starts: a heading, a table, a list
-// item, a quote, or a bold title line.
-var structuralLine = regexp.MustCompile(`^(?:#|\||[-*>]|\d+[.)]\s)`)
-
-// dropLeadingNarration strips sentences about producing the answer from above
-// its body. It acts only when a structured body follows, and never on a line
-// with a figure in it.
-func dropLeadingNarration(s string) string {
-	lines := strings.Split(s, "\n")
-	body := -1
-	for i, ln := range lines {
-		if structuralLine.MatchString(strings.TrimSpace(ln)) {
-			body = i
-			break
-		}
-	}
-	if body < 0 {
-		return s
-	}
-	cut := 0
-	for i := 0; i < body; i++ {
-		t := strings.TrimSpace(lines[i])
-		if t == "" {
-			if cut == i {
-				cut = i + 1
-			}
-			continue
-		}
-		if !isNarration(t) {
-			break
-		}
-		cut = i + 1
-	}
-	if cut == 0 {
-		return s
-	}
-	return strings.TrimSpace(strings.Join(lines[cut:], "\n"))
-}
-
-// isNarration reports whether a whole line is talk about producing the answer.
-// Every sentence on it has to be, so a line that narrates and then states a
-// finding is kept.
-func isNarration(line string) bool {
-	if strings.ContainsAny(line, "0123456789") {
-		return false
-	}
-	if narrationLine.MatchString(line) {
-		return true
-	}
-	sentences := splitSentences(line)
-	if len(sentences) == 0 {
-		return false
-	}
-	for _, sn := range sentences {
-		if !productionSentence.MatchString(sn) {
-			return false
-		}
-	}
-	return true
-}
-
-// splitSentences breaks a line after sentence-ending punctuation.
-func splitSentences(s string) []string {
-	var out []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if (s[i] == '.' || s[i] == '!' || s[i] == '?') && (i+1 == len(s) || s[i+1] == ' ') {
-			if t := strings.TrimSpace(s[start : i+1]); t != "" {
-				out = append(out, t)
-			}
-			start = i + 1
-		}
-	}
-	if t := strings.TrimSpace(s[start:]); t != "" {
-		out = append(out, t)
-	}
-	return out
 }

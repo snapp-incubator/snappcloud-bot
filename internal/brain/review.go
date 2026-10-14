@@ -13,7 +13,8 @@ func WithReview(ctx context.Context) context.Context {
 	return context.WithValue(ctx, reviewKey{}, true)
 }
 
-func reviewRequested(ctx context.Context) bool {
+// ReviewRequested reports whether WithReview marked ctx.
+func ReviewRequested(ctx context.Context) bool {
 	v, _ := ctx.Value(reviewKey{}).(bool)
 	return v
 }

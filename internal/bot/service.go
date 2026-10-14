@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/snapp-incubator/snappcloud-bot/internal/answer"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -289,51 +290,8 @@ func appendTranscript(history, query, answer string) string {
 	return string(r)
 }
 
-// thinkRe matches reasoning blocks some "thinking" models wrap their
-// chain-of-thought in. Stripped so they don't reach the user. (Plain-text
-// reasoning with no tags can't be removed here — that needs a non-thinking
-// model.)
-var (
-	thinkRe = regexp.MustCompile(`(?is)<think(?:ing)?>.*?</think(?:ing)?>`)
-	// Some models leak tool-call / function-call markup or special control
-	// tokens into the visible text; strip them so the user never sees them.
-	toolCallRe = regexp.MustCompile(`(?is)<(tools|tool_call|function_call|tool_use|minimax:tool_call|antml:[^>]+)>.*?</(tools|tool_call|function_call|tool_use|minimax:tool_call|antml:[^>]+)>`)
-	ctrlTokRe  = regexp.MustCompile(`<\|[^|>]*\|>`)
-	// A whole answer wrapped in a single fenced block (```...```), which renders
-	// as a code box instead of readable text.
-	wholeFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9_-]*\n(.*)\n```$")
-)
-
-func sanitize(s string) string {
-	s = thinkRe.ReplaceAllString(s, "")
-	s = toolCallRe.ReplaceAllString(s, "")
-	s = ctrlTokRe.ReplaceAllString(s, "")
-	s = strings.TrimSpace(s)
-	s = dropLeadingNarration(s)
-	// Unwrap an answer that is entirely one code fence (not real code) so it's
-	// human-readable markdown, not a monospace block.
-	if m := wholeFenceRe.FindStringSubmatch(s); m != nil {
-		inner := strings.TrimSpace(m[1])
-		// Only unwrap when the content clearly isn't code (has prose sentences).
-		if !looksLikeCode(inner) {
-			s = inner
-		}
-	}
-	return strings.TrimSpace(s)
-}
-
-// codeSignal matches tokens that indicate the fenced content is real code /
-// commands / logs (so its fence must be kept), not prose the model wrongly
-// wrapped. Conservative: unwrap ONLY when none of these appear.
-var codeSignal = regexp.MustCompile(`(?m)(^\s*[-$#>]|[;{}$|=]|--[a-z]|\b(oc|kubectl|cilium|curl|helm|sudo|apiVersion|kind)\b)`)
-
-// looksLikeCode reports whether fenced content should keep its code fence.
-func looksLikeCode(s string) bool {
-	if strings.Contains(s, "```") {
-		return true // nested fences → leave as-is
-	}
-	return codeSignal.MatchString(s)
-}
+// sanitize cleans a model answer for posting.
+func sanitize(s string) string { return answer.Clean(s) }
 
 // textMentionsBot reports whether the message text @-mentions this bot. Used as
 // a fallback for senders whose posts carry no mention metadata (other bots,

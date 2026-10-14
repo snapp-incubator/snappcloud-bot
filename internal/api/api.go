@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/snapp-incubator/snappcloud-bot/internal/answer"
+	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -66,22 +68,22 @@ func New(brain answerer, authn authenticator, limit limiter, o Options, log *slo
 func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/query", h.query)
 	mux.HandleFunc("GET /v1/whoami", h.whoami)
+	mux.HandleFunc("POST /mcp", h.mcp)
+	mux.HandleFunc("/mcp", mcpMethodNotAllowed)
 }
 
 type queryRequest struct {
 	Query string `json:"query"`
-	// History is optional prior context for multi-turn use. The caller owns its
-	// own conversation state; the bot keeps none for API callers.
+	// History is prior context for follow-ups; the bot keeps none for API callers.
 	History string `json:"history,omitempty"`
+	// Review re-checks the answer against its evidence before returning (slower).
+	Review bool `json:"review,omitempty"`
 }
 
 type queryResponse struct {
 	Answer string `json:"answer"`
 	User   string `json:"user"`
 	ReqID  string `json:"requestId"`
-	// The caller's scope is deliberately NOT echoed here: it is unchanged
-	// between calls, can run to hundreds of namespaces for an admin, and is
-	// already available from /v1/whoami.
 }
 
 type whoamiResponse struct {
@@ -99,40 +101,38 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// identify authenticates the caller and resolves their scope. Returns false
-// when a response has already been written.
-func (h *Handler) identify(w http.ResponseWriter, r *http.Request, lg *slog.Logger) (authzclient.Identity, authzclient.Scope, bool) {
-	token := bearer(r)
+// authenticate verifies the caller's token and resolves their scope. On
+// failure it returns an HTTP status and a message for the caller.
+func (h *Handler) authenticate(ctx context.Context, token string, lg *slog.Logger) (authzclient.Identity, authzclient.Scope, int, string) {
 	if token == "" {
-		writeErr(w, http.StatusUnauthorized, "missing bearer token: send your OpenShift user or ServiceAccount token")
-		return authzclient.Identity{}, nil, false
+		return authzclient.Identity{}, nil, http.StatusUnauthorized,
+			"missing bearer token: send your OpenShift user or ServiceAccount token"
 	}
-	id, err := h.authn.Authenticate(r.Context(), token)
+	id, err := h.authn.Authenticate(ctx, token)
 	if err != nil {
 		lg.Info("api authentication failed", "err", err)
-		writeErr(w, http.StatusUnauthorized, "token could not be authenticated on any known cluster")
-		return authzclient.Identity{}, nil, false
+		return authzclient.Identity{}, nil, http.StatusUnauthorized, "token could not be authenticated on any known cluster"
 	}
-	scope, err := h.authn.ResolveWithGroups(r.Context(), id.User, id.Groups)
+	scope, err := h.authn.ResolveWithGroups(ctx, id.User, id.Groups)
 	if err != nil {
 		lg.Error("api authorize failed", "user", id.User, "err", err)
-		writeErr(w, http.StatusServiceUnavailable, "authorization is temporarily unavailable")
-		return authzclient.Identity{}, nil, false
+		return authzclient.Identity{}, nil, http.StatusServiceUnavailable, "authorization is temporarily unavailable"
 	}
 	if scope.Empty() {
 		lg.Info("api denied", "user", id.User, "reason", "no namespaces on any cluster")
-		writeErr(w, http.StatusForbidden, "you have no namespaces you can query on any cluster")
-		return authzclient.Identity{}, nil, false
+		return authzclient.Identity{}, nil, http.StatusForbidden, "you have no namespaces you can query on any cluster"
 	}
-	return id, scope, true
+	return id, scope, 0, ""
 }
 
 // whoami reports the caller's identity and access without running the agent —
 // the cheap way to verify a token and see the scope it grants.
 func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
-	lg := h.log.With("req", newReqID())
-	id, scope, ok := h.identify(w, r, lg)
-	if !ok {
+	reqID := newReqID()
+	lg := h.log.With("req", reqID)
+	id, scope, status, msg := h.authenticate(r.Context(), bearer(r), lg)
+	if status != 0 {
+		writeErr(w, status, msg, reqID)
 		return
 	}
 	writeJSON(w, http.StatusOK, whoamiResponse{
@@ -140,9 +140,31 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// query runs one enforced agent turn for the authenticated caller.
+// query is the REST form of ask.
 func (h *Handler) query(w http.ResponseWriter, r *http.Request) {
 	reqID := newReqID()
+	var req queryRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		metrics.APIRequests.WithLabelValues("bad_request").Inc()
+		writeErr(w, http.StatusBadRequest, "invalid JSON body", reqID)
+		return
+	}
+	res := h.ask(r.Context(), bearer(r), req, reqID)
+	if res.status != 0 {
+		writeErr(w, res.status, res.err, reqID)
+		return
+	}
+	writeJSON(w, http.StatusOK, queryResponse{Answer: res.answer, User: res.user, ReqID: reqID})
+}
+
+type askResult struct {
+	answer, user, err string
+	status            int // HTTP status of a failure; 0 on success
+}
+
+// ask authenticates, validates, rate-limits and runs one enforced agent turn.
+// Shared by REST and MCP so both get identical scoping, limits and cleaning.
+func (h *Handler) ask(ctx context.Context, token string, req queryRequest, reqID string) askResult {
 	lg := h.log.With("req", reqID, "src", "api")
 	start := time.Now()
 	outcome := "answered"
@@ -152,48 +174,38 @@ func (h *Handler) query(w http.ResponseWriter, r *http.Request) {
 		metrics.APIRequests.WithLabelValues(outcome).Inc()
 		metrics.MessageDuration.Observe(time.Since(start).Seconds())
 	}()
-
-	var req queryRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		outcome = "bad_request"
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
-		return
+	fail := func(o string, status int, msg string) askResult {
+		outcome = o
+		return askResult{status: status, err: msg}
 	}
+
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		outcome = "bad_request"
-		writeErr(w, http.StatusBadRequest, "query is required")
-		return
+		return fail("bad_request", http.StatusBadRequest, "query is required")
 	}
 	if len([]rune(query)) > h.maxQueryRunes {
-		outcome = "too_long"
-		writeErr(w, http.StatusRequestEntityTooLarge, "query is too long")
-		return
+		return fail("too_long", http.StatusRequestEntityTooLarge, "query is too long")
 	}
-
-	id, scope, ok := h.identify(w, r, lg)
-	if !ok {
-		outcome = "unauthorized"
-		return
+	id, scope, status, msg := h.authenticate(ctx, token, lg)
+	if status != 0 {
+		return fail("unauthorized", status, msg)
 	}
 	if h.limit != nil && !h.limit.Allow(id.User) {
-		outcome = "rate_limited"
-		writeErr(w, http.StatusTooManyRequests, "too many requests; slow down")
-		return
+		return fail("rate_limited", http.StatusTooManyRequests, "too many requests; slow down")
 	}
 
-	lg.Info("api request", "user", id.User, "clusters", scope.Clusters())
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	lg.Info("api request", "user", id.User, "clusters", scope.Clusters(), "review", req.Review)
+	ctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
-
-	answer, err := h.brain.Answer(ctx, scope, id.User, query, req.History, reqID)
-	if err != nil {
-		outcome = "agent_error"
-		lg.Error("api agent failed", "user", id.User, "err", err)
-		writeErr(w, http.StatusBadGateway, "failed to answer the query")
-		return
+	if req.Review {
+		ctx = brain.WithReview(ctx)
 	}
-	writeJSON(w, http.StatusOK, queryResponse{Answer: answer, User: id.User, ReqID: reqID})
+	out, err := h.brain.Answer(ctx, scope, id.User, query, req.History, reqID)
+	if err != nil {
+		lg.Error("api agent failed", "user", id.User, "err", err)
+		return fail("agent_error", http.StatusBadGateway, "failed to answer the query")
+	}
+	return askResult{answer: answer.Clean(out), user: id.User}
 }
 
 func clusterMap(s authzclient.Scope) map[string][]string {
@@ -210,8 +222,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeErr(w http.ResponseWriter, status int, msg, reqID string) {
+	writeJSON(w, status, map[string]string{"error": msg, "requestId": reqID})
 }
 
 func newReqID() string {

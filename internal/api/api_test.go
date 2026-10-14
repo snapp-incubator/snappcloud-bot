@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
+	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 )
 
 // authnStub stands in for the mcp-authz client.
@@ -42,10 +43,12 @@ type fakeBrain struct {
 	gotUser  string
 	gotScope authzclient.Scope
 	calls    int
+	review   bool
 }
 
-func (f *fakeBrain) Answer(_ context.Context, scope authzclient.Scope, user, _, _, _ string) (string, error) {
+func (f *fakeBrain) Answer(ctx context.Context, scope authzclient.Scope, user, _, _, _ string) (string, error) {
 	f.calls++
+	f.review = brain.ReviewRequested(ctx)
 	f.gotUser, f.gotScope = user, scope
 	return f.answer, f.err
 }

@@ -282,8 +282,30 @@ curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/query` | `{"query": "...", "history": "..."}` → `{"answer", "user", "requestId"}` |
+| `POST /v1/query` | `{"query", "history"?, "review"?}` → `{"answer", "user", "requestId"}` |
 | `GET /v1/whoami` | verify a token and see the scope it grants (no agent run) |
+| `POST /mcp` | the same, as an MCP server for other agents (below) |
+
+`review: true` re-checks the answer against its tool results before returning —
+worth it when the caller acts on the answer without a person reading it. Errors
+are `{"error", "requestId"}`; quote the `requestId` to find the run in the logs.
+
+### As an MCP server
+
+`/mcp` serves the bot to any MCP client (streamable HTTP, stateless): two
+read-only tools, `ask` (`question`, `history`?, `review`?) and `whoami`. The
+caller's bearer token is its identity, with the same scoping, filtering, rate
+limit and answer cleaning as REST. A refused caller gets a tool error the agent
+can read, not an HTTP 401.
+
+```bash
+claude mcp add --transport http snappcloud \
+  https://snappcloud-bot.prod-1.example.com/mcp \
+  --header "Authorization: Bearer $(oc whoami -t)"
+```
+
+An `ask` can run for minutes; raise the client's tool timeout accordingly (in
+Claude Code, `MCP_TOOL_TIMEOUT` in milliseconds).
 
 The bot holds no cluster credentials, so the token is verified by **mcp-authz
 via TokenReview** (`POST /v1/authenticate`, requires `create` on

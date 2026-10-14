@@ -277,7 +277,7 @@ func (b *Brain) Answer(ctx context.Context, scope authzclient.Scope, user, query
 		Query:    query,
 		Clusters: cts,
 		ReqID:    reqID,
-		Review:   b.reviewUnattended && reviewRequested(ctx),
+		Review:   b.reviewUnattended && ReviewRequested(ctx),
 	})
 }
 
