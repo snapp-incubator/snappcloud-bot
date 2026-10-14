@@ -206,3 +206,51 @@ func TestFailedBatchIsRetriedOnTheNextWindow(t *testing.T) {
 		t.Errorf("a successful batch did not hold its cooldown: %+v", b)
 	}
 }
+
+func onCluster(name, cluster string, seen time.Time) Alert {
+	a := alert(name, "critical", name+"-"+cluster, "ch", seen)
+	a.Labels["cluster"] = cluster
+	return a
+}
+
+// Alerts from several clusters in one window are investigated separately,
+// each with its own budget: one noisy cluster cannot crowd out another.
+func TestEachClusterGetsItsOwnBatchAndBudget(t *testing.T) {
+	now := time.Now()
+	a := NewAggregator(Limits{Window: time.Minute, MaxPerWindow: 2})
+	a.SetClusterKey(func(al Alert) string { return al.Labels["cluster"] })
+	for _, al := range []Alert{
+		onCluster("A1", "teh-1", now), onCluster("A2", "teh-1", now), onCluster("A3", "teh-1", now),
+		onCluster("B1", "teh-2", now),
+		onCluster("C1", "box", now),
+	} {
+		a.Add(al, now)
+	}
+	batches := a.Due(now.Add(2 * time.Minute))
+	if len(batches) != 3 {
+		t.Fatalf("got %d batches, want one per cluster", len(batches))
+	}
+	got := map[string]Batch{}
+	for _, b := range batches {
+		got[b.Cluster] = b
+	}
+	if n := len(got["teh-1"].Investigate); n != 2 || len(got["teh-1"].Skipped) != 1 {
+		t.Errorf("teh-1: %d investigated, %d skipped; want its own budget of 2", n, len(got["teh-1"].Skipped))
+	}
+	for _, c := range []string{"teh-2", "box"} {
+		if len(got[c].Investigate) != 1 || len(got[c].Skipped) != 0 {
+			t.Errorf("%s was crowded out: %+v", c, got[c])
+		}
+	}
+}
+
+// Without a cluster key, behaviour is unchanged: one batch per window.
+func TestNoClusterKeyKeepsOneBatch(t *testing.T) {
+	now := time.Now()
+	a := NewAggregator(Limits{Window: time.Minute})
+	a.Add(onCluster("A", "teh-1", now), now)
+	a.Add(onCluster("B", "teh-2", now), now)
+	if b := a.Due(now.Add(2 * time.Minute)); len(b) != 1 || len(b[0].Investigate) != 2 {
+		t.Fatalf("batches: %+v", b)
+	}
+}

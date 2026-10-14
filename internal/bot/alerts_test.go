@@ -490,3 +490,30 @@ func TestBatchScopeNamesUnknownClusterLabelAsNamingDifference(t *testing.T) {
 		}
 	}
 }
+
+func TestAlertClusterResolvesTheLabel(t *testing.T) {
+	resolve := func(l string) (string, bool) {
+		if l == "snappgroup-teh-1" {
+			return "okd4-snappgroup", true
+		}
+		return "", false
+	}
+	key := AlertCluster(resolve)
+	for label, want := range map[string]string{
+		"snappgroup-teh-1": "okd4-snappgroup", // resolved
+		"Mystery-1":        "mystery-1",       // unknown, still its own batch
+		"":                 "",                // no cluster: the shared batch
+	} {
+		a := alerts.Alert{Labels: map[string]string{"cluster": label}}
+		if got := key(a); got != want {
+			t.Errorf("label %q -> %q, want %q", label, got, want)
+		}
+	}
+}
+
+func TestBatchHeaderNamesTheCluster(t *testing.T) {
+	b := alerts.Batch{Cluster: "okd4-teh-2", Investigate: []alerts.Alert{{Name: "NodeDown"}}}
+	if h := batchHeader(b); !strings.Contains(h, "NodeDown") || !strings.Contains(h, "okd4-teh-2") {
+		t.Fatalf("header: %q", h)
+	}
+}

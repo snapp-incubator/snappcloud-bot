@@ -172,15 +172,19 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 // batchHeader names what the finding covers, so a single message about five
 // alerts is not mistaken for a comment on one of them.
 func batchHeader(b alerts.Batch) string {
+	where := ""
+	if b.Cluster != "" {
+		where = " on **" + b.Cluster + "**"
+	}
 	if len(b.Investigate) == 1 && len(b.Context) == 0 {
-		return "🔎 **" + b.Investigate[0].Name + "**\n\n"
+		return "🔎 **" + b.Investigate[0].Name + "**" + where + "\n\n"
 	}
 	names := make([]string, 0, len(b.Investigate))
 	for _, a := range b.Investigate {
 		names = append(names, a.Name)
 	}
-	header := fmt.Sprintf("🔎 **%d alerts fired together** — %s\n\n",
-		len(b.Investigate), strings.Join(uniq(names), ", "))
+	header := fmt.Sprintf("🔎 **%d alerts fired together**%s — %s\n\n",
+		len(b.Investigate), where, strings.Join(uniq(names), ", "))
 	if len(b.Context) > 0 {
 		ctxNames := make([]string, 0, len(b.Context))
 		for _, a := range b.Context {
@@ -347,4 +351,22 @@ func clampAlertText(s string) string {
 		return s
 	}
 	return string(r[:maxAlertRunes]) + "\n[alert text truncated]"
+}
+
+// AlertCluster names the cluster an alert is about, for per-cluster batching:
+// its cluster label resolved to a configured cluster, the raw label when that
+// matches none, or "" when the alert carries no cluster at all.
+func AlertCluster(resolve func(string) (string, bool)) func(alerts.Alert) string {
+	return func(a alerts.Alert) string {
+		_, label := a.Scope()
+		if label == "" {
+			return ""
+		}
+		if resolve != nil {
+			if name, ok := resolve(label); ok {
+				return name
+			}
+		}
+		return strings.ToLower(label)
+	}
 }

@@ -54,6 +54,8 @@ func (l *Limits) applyDefaults() {
 // one message each, which is the noise the window exists to prevent.
 type Batch struct {
 	ChannelID string
+	// Cluster the batch is about ("" when the alerts name none we recognise).
+	Cluster string
 	// Investigate are the alerts this batch is about, worst first.
 	Investigate []Alert
 	// Context are alerts that fired but are still inside their cooldown. They
@@ -100,6 +102,16 @@ type Aggregator struct {
 	// lastRun is the last time each fingerprint was INVESTIGATED, which is what
 	// the cooldown measures. Survives windows; pruned as it is read.
 	lastRun map[string]time.Time
+	// clusterOf assigns an alert to a cluster; each cluster in a window gets its
+	// own batch and budget. Nil puts every alert in one batch.
+	clusterOf func(Alert) string
+}
+
+// SetClusterKey sets how alerts are split into per-cluster batches.
+func (a *Aggregator) SetClusterKey(f func(Alert) string) {
+	a.mu.Lock()
+	a.clusterOf = f
+	a.mu.Unlock()
 }
 
 type pendingAlert struct {
@@ -170,7 +182,6 @@ func (a *Aggregator) Due(now time.Time) []Batch {
 		delete(a.pending, channel)
 		delete(a.opened, channel)
 
-		batch := Batch{ChannelID: channel}
 		ordered := make([]*pendingAlert, 0, len(alerts))
 		for _, p := range alerts {
 			ordered = append(ordered, p)
@@ -188,25 +199,41 @@ func (a *Aggregator) Due(now time.Time) []Batch {
 			return ordered[i].alert.Seen.Before(ordered[j].alert.Seen)
 		})
 
+		// One batch per cluster: each investigation gets its cluster's full tool
+		// set and its own budget, so one noisy cluster cannot crowd out another.
+		groups := map[string][]*pendingAlert{}
+		var keys []string
 		for _, p := range ordered {
-			fp := p.alert.Fingerprint()
-			if len(batch.Investigate)+len(batch.Context) >= a.limits.MaxPerWindow {
-				batch.Skipped = append(batch.Skipped, Skipped{Alert: p.alert, Reason: "budget"})
-				continue
+			k := ""
+			if a.clusterOf != nil {
+				k = a.clusterOf(p.alert)
 			}
-			// Inside its cooldown: not worth investigating again on its own, but
-			// worth knowing about while investigating whatever else is firing.
-			if last, ok := a.lastRun[fp]; ok && now.Sub(last) < a.limits.Cooldown {
-				batch.Context = append(batch.Context, p.alert)
-				continue
+			if _, ok := groups[k]; !ok {
+				keys = append(keys, k)
 			}
-			a.lastRun[fp] = now
-			batch.Investigate = append(batch.Investigate, p.alert)
+			groups[k] = append(groups[k], p)
 		}
-		// A window with nothing new is not worth a message: every alert in it has
-		// been investigated recently and the channel already has that answer.
-		if len(batch.Investigate) > 0 {
-			out = append(out, batch)
+		for _, k := range keys {
+			batch := Batch{ChannelID: channel, Cluster: k}
+			for _, p := range groups[k] {
+				fp := p.alert.Fingerprint()
+				if len(batch.Investigate)+len(batch.Context) >= a.limits.MaxPerWindow {
+					batch.Skipped = append(batch.Skipped, Skipped{Alert: p.alert, Reason: "budget"})
+					continue
+				}
+				// Inside its cooldown: not investigated again, but context for
+				// whatever else is firing.
+				if last, ok := a.lastRun[fp]; ok && now.Sub(last) < a.limits.Cooldown {
+					batch.Context = append(batch.Context, p.alert)
+					continue
+				}
+				a.lastRun[fp] = now
+				batch.Investigate = append(batch.Investigate, p.alert)
+			}
+			// Nothing new in this cluster: the channel already has that answer.
+			if len(batch.Investigate) > 0 {
+				out = append(out, batch)
+			}
 		}
 	}
 
@@ -217,7 +244,12 @@ func (a *Aggregator) Due(now time.Time) []Batch {
 			delete(a.lastRun, fp)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ChannelID < out[j].ChannelID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ChannelID != out[j].ChannelID {
+			return out[i].ChannelID < out[j].ChannelID
+		}
+		return out[i].Cluster < out[j].Cluster
+	})
 	return out
 }
 

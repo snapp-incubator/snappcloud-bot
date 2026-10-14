@@ -200,9 +200,13 @@ Three exemption classes:
   engineer's identity and would otherwise look like them talking. Investigations run with the **marking
   user's** authorization, resolved fresh each batch and never stored, and the
   bot says so publicly when the channel is marked: everyone in the channel sees
-  what that person can see. **A window is investigated as one unit**: alerts that
-  fire together are usually one incident, so they go into a single investigation
-  that is asked whether they share a cause, and produce a single message. Alerts
+  what that person can see. **Each cluster in a window is investigated as one unit**:
+  alerts that fire together on a cluster are usually one incident, so they go
+  into a single investigation asked whether they share a cause, and produce one
+  message naming the cluster. Alerts from several clusters in the same minute
+  become one investigation each, with that cluster's full tool set and its own
+  `maxPerWindow`, run in parallel up to `alerts.concurrency`. Alerts with no
+  cluster label share one investigation. Alerts
   still inside their `cooldown` ride along as context — what else is firing is
   often what identifies the incident — without being re-diagnosed. Noise is
   bounded by the `window`, the per-alert `cooldown` (a window with nothing new

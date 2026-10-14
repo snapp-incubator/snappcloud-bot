@@ -185,6 +185,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 			MinSeverity:   cfg.Alerts.MinSeverity,
 			IgnoredAlerts: cfg.Alerts.IgnoredAlerts,
 		})
+		// One investigation per cluster per window.
+		alertAgg.SetClusterKey(bot.AlertCluster(theBrain.ResolveCluster))
 		metrics.AlertChannels.Set(float64(alertChannels.Count()))
 	}
 

@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
@@ -24,6 +25,9 @@ type Runner struct {
 	concurrency int
 	timeout     time.Duration
 	log         *slog.Logger
+
+	sem chan struct{} // shared worker slots
+	wg  sync.WaitGroup
 }
 
 // RunnerOptions configures the runner.
@@ -50,7 +54,8 @@ func NewRunner(agg *Aggregator, ch *Channels, inv Investigator, o RunnerOptions,
 		o.Timeout = 5 * time.Minute
 	}
 	return &Runner{agg: agg, channels: ch, inv: inv, tick: o.Tick,
-		concurrency: o.Concurrency, timeout: o.Timeout, log: log}
+		concurrency: o.Concurrency, timeout: o.Timeout, log: log,
+		sem: make(chan struct{}, o.Concurrency)}
 }
 
 // Start runs until ctx is cancelled, flushing channel marks on exit.
@@ -60,6 +65,7 @@ func (r *Runner) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			r.wg.Wait()
 			r.channels.Flush()
 			return
 		case now := <-t.C:
@@ -71,42 +77,45 @@ func (r *Runner) Start(ctx context.Context) {
 }
 
 func (r *Runner) runDue(ctx context.Context, now time.Time) {
-	batches := r.agg.Due(now)
-	if len(batches) == 0 {
-		return
-	}
-
-	sem := make(chan struct{}, r.concurrency)
-	done := make(chan struct{}, len(batches))
-	for _, b := range batches {
+	for _, b := range r.agg.Due(now) {
 		ch, ok := r.channels.Get(b.ChannelID)
 		if !ok {
-			// Unmarked while the window was open: drop the batch rather than
-			// posting into a channel that opted out.
-			done <- struct{}{}
-			continue
+			continue // unmarked while the window was open
 		}
 		b := b
-		sem <- struct{}{}
+		r.wg.Add(1)
 		go func() {
-			defer func() { <-sem; done <- struct{}{} }()
-			defer func() {
-				if p := recover(); p != nil {
-					r.log.Error("alert investigation panicked", "channel", b.ChannelID, "panic", p)
-				}
-			}()
-			ictx, cancel := context.WithTimeout(ctx, r.timeout)
-			defer cancel()
-			if err := r.inv.Investigate(ictx, ch, b); err != nil {
-				// Nothing was answered, so do not hold these alerts in cooldown:
-				// let the next window try again.
-				r.agg.Failed(b)
-				r.log.Warn("alert investigation failed; will retry on the next window",
-					"channel", b.ChannelID, "alerts", len(b.Investigate), "err", err)
-			}
+			defer r.wg.Done()
+			r.investigate(ctx, ch, b)
 		}()
 	}
-	for range batches {
-		<-done
+}
+
+// investigate waits for a worker slot, then runs one batch. Waiting happens
+// here, never on the scheduling loop, so batches for several clusters queue
+// without delaying the next window.
+func (r *Runner) investigate(ctx context.Context, ch Channel, b Batch) {
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		r.agg.Failed(b)
+		return
+	}
+	defer func() { <-r.sem }()
+	defer func() {
+		if p := recover(); p != nil {
+			r.log.Error("alert investigation panicked", "channel", b.ChannelID, "cluster", b.Cluster, "panic", p)
+		}
+	}()
+	ictx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	if err := r.inv.Investigate(ictx, ch, b); err != nil {
+		// Nothing was answered: release the cooldown so the next window retries.
+		r.agg.Failed(b)
+		r.log.Warn("alert investigation failed; will retry on the next window",
+			"channel", b.ChannelID, "cluster", b.Cluster, "alerts", len(b.Investigate), "err", err)
 	}
 }
+
+// wait blocks until every investigation in flight has finished.
+func (r *Runner) wait() { r.wg.Wait() }
