@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -184,5 +187,57 @@ func TestMCPInteropWithAnMCPClient(t *testing.T) {
 	}
 	if out != "all healthy" {
 		t.Fatalf("answer: %q", out)
+	}
+}
+
+type slowBrain struct{ delay time.Duration }
+
+func (s slowBrain) Answer(ctx context.Context, _ authzclient.Scope, _, _, _, _ string) (string, error) {
+	select {
+	case <-time.After(s.delay):
+		return "done", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// A slow answer must not leave the client waiting for headers: clients abort
+// after a fixed wait, whatever their tool timeout says.
+func TestMCPAskStreamsWhileItWorks(t *testing.T) {
+	old := keepalive
+	keepalive = 20 * time.Millisecond
+	defer func() { keepalive = old }()
+
+	h := New(slowBrain{delay: 150 * time.Millisecond}, okAuthn(), nil, Options{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ask",` +
+		`"arguments":{"question":"slow?"},"_meta":{"progressToken":"p1"}}}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if waited := time.Since(start); waited > 100*time.Millisecond {
+		t.Fatalf("headers took %v: they must not wait for the answer", waited)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("content type %q", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	out := string(raw)
+	if strings.Count(out, "notifications/progress") < 2 {
+		t.Errorf("no progress while working:\n%s", out)
+	}
+	if !strings.Contains(out, `"text":"done"`) || strings.Index(out, "notifications/progress") > strings.Index(out, `"text":"done"`) {
+		t.Errorf("result missing or before progress:\n%s", out)
 	}
 }

@@ -308,8 +308,11 @@ claude mcp add --transport http snappcloud \
   --header "Authorization: Bearer $(oc whoami -t)"
 ```
 
-An `ask` can run for minutes; raise the client's tool timeout accordingly (in
-Claude Code, `MCP_TOOL_TIMEOUT` in milliseconds).
+An `ask` can run for minutes. When the client accepts `text/event-stream` (all
+streamable-HTTP clients do), the answer is streamed: headers at once, a progress
+notification every 15s, then the result — so HTTP clients that abort a silent
+response (Node's default is 5 minutes) keep waiting. The client's own tool
+timeout must still allow the run (in Claude Code, `MCP_TOOL_TIMEOUT` in ms).
 
 The bot holds no cluster credentials, so the token is verified by **mcp-authz
 via TokenReview** (`POST /v1/authenticate`, requires `create` on

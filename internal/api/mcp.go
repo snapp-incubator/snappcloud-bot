@@ -2,7 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/version"
 )
@@ -109,6 +113,9 @@ func (h *Handler) mcpCall(w http.ResponseWriter, r *http.Request, req rpcRequest
 			History  string `json:"history"`
 			Review   bool   `json:"review"`
 		} `json:"arguments"`
+		Meta struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		writeRPC(w, req.ID, nil, &rpcError{Code: -32602, Message: "invalid params"})
@@ -119,14 +126,20 @@ func (h *Handler) mcpCall(w http.ResponseWriter, r *http.Request, req rpcRequest
 
 	switch p.Name {
 	case "ask":
-		res := h.ask(r.Context(), bearer(r), queryRequest{
-			Query: p.Arguments.Question, History: p.Arguments.History, Review: p.Arguments.Review,
-		}, reqID)
-		if res.status != 0 {
-			writeRPC(w, req.ID, toolResult(res.err, true, meta), nil)
+		run := func() map[string]any {
+			res := h.ask(r.Context(), bearer(r), queryRequest{
+				Query: p.Arguments.Question, History: p.Arguments.History, Review: p.Arguments.Review,
+			}, reqID)
+			if res.status != 0 {
+				return toolResult(res.err, true, meta)
+			}
+			return toolResult(res.answer, false, meta)
+		}
+		if acceptsSSE(r) {
+			h.stream(w, r, req.ID, p.Meta.ProgressToken, run)
 			return
 		}
-		writeRPC(w, req.ID, toolResult(res.answer, false, meta), nil)
+		writeRPC(w, req.ID, run(), nil)
 	case "whoami":
 		id, scope, status, msg := h.authenticate(r.Context(), bearer(r), h.log.With("req", reqID))
 		if status != 0 {
@@ -138,6 +151,62 @@ func (h *Handler) mcpCall(w http.ResponseWriter, r *http.Request, req rpcRequest
 	default:
 		writeRPC(w, req.ID, nil, &rpcError{Code: -32602, Message: "unknown tool: " + p.Name})
 	}
+}
+
+// keepalive is how often a streamed call sends something while it works.
+// HTTP clients abort a response whose headers or next bytes take too long
+// (Node's default is five minutes), and an investigation can take longer.
+var keepalive = 15 * time.Second
+
+func acceptsSSE(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+}
+
+// stream answers a slow call as server-sent events: headers at once, a
+// progress notification (or comment, without a progress token) every
+// keepalive, then the result.
+func (h *Handler) stream(w http.ResponseWriter, r *http.Request, id, progressToken json.RawMessage, run func() map[string]any) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		writeRPC(w, id, run(), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	fl.Flush()
+
+	done := make(chan map[string]any, 1)
+	go func() { done <- run() }()
+	tick := time.NewTicker(keepalive)
+	defer tick.Stop()
+	start := time.Now()
+	for {
+		select {
+		case res := <-done:
+			writeEvent(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": res})
+			fl.Flush()
+			return
+		case <-tick.C:
+			if len(progressToken) > 0 {
+				secs := int(time.Since(start).Seconds())
+				writeEvent(w, map[string]any{"jsonrpc": "2.0", "method": "notifications/progress",
+					"params": map[string]any{"progressToken": progressToken, "progress": secs,
+						"message": fmt.Sprintf("investigating (%ds)", secs)}})
+			} else {
+				_, _ = io.WriteString(w, ": keepalive\n\n")
+			}
+			fl.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func writeEvent(w io.Writer, v any) {
+	b, _ := json.Marshal(v)
+	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
 }
 
 func toolResult(text string, isErr bool, meta map[string]any) map[string]any {
