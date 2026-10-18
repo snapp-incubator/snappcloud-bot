@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +73,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		err := fmt.Errorf("mattermost %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w: %w", ErrNotFound, err)
+		}
+		return err
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -96,9 +102,41 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 // CreatePost posts a message in a channel. When rootID is non-empty the post is
 // a threaded reply under that root.
 func (c *Client) CreatePost(ctx context.Context, channelID, message, rootID string) error {
+	_, err := c.CreatePostID(ctx, channelID, message, rootID)
+	return err
+}
+
+// CreatePostID is CreatePost returning the new post's id, for a post that will
+// be the root of a thread.
+func (c *Client) CreatePostID(ctx context.Context, channelID, message, rootID string) (string, error) {
 	body := map[string]string{"channel_id": channelID, "message": message}
 	if rootID != "" {
 		body["root_id"] = rootID
 	}
-	return c.do(ctx, http.MethodPost, "/api/v4/posts", body, nil)
+	var out struct {
+		ID string `json:"id"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/v4/posts", body, &out)
+	return out.ID, err
+}
+
+// ErrNotFound marks a 404: for a user lookup, no account has that email.
+var ErrNotFound = errors.New("not found")
+
+// UserByEmail finds a user by email. The bot account must be allowed to see
+// emails, which it already needs to authorize senders.
+func (c *Client) UserByEmail(ctx context.Context, email string) (User, error) {
+	var u User
+	err := c.do(ctx, http.MethodGet, "/api/v4/users/email/"+url.PathEscape(email), nil, &u)
+	return u, err
+}
+
+// DirectChannel returns the direct-message channel between two users, creating
+// it if needed.
+func (c *Client) DirectChannel(ctx context.Context, userA, userB string) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/v4/channels/direct", []string{userA, userB}, &out)
+	return out.ID, err
 }

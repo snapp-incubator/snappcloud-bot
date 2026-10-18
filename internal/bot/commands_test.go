@@ -62,13 +62,13 @@ func TestAlertVerbDoesNotSwallowQuestions(t *testing.T) {
 
 // Help must not advertise features that are switched off.
 func TestHelpReflectsEnabledFeatures(t *testing.T) {
-	full := helpText(true, true)
+	full := helpText(true, true, true)
 	for _, want := range []string{"schedule every day", "alerts on", "refresh", "what access do I have?"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("help omits %q", want)
 		}
 	}
-	bare := helpText(false, false)
+	bare := helpText(false, false, false)
 	if strings.Contains(bare, "alerts on") || strings.Contains(bare, "schedules") {
 		t.Errorf("help advertises disabled features:\n%s", bare)
 	}

@@ -214,6 +214,30 @@ Three exemption classes:
   anything over it listed rather than dropped silently. `Watchdog`, resolved notifications and
   below-`minSeverity` alerts are skipped; an alert with *no* recognisable
   severity is investigated rather than dropped.
+- **Best-practice report.** Every Saturday at 00:00 (`bestPractice.schedule`,
+  in `schedules.timezone`) the bot scans every cluster for single-instance
+  RabbitMQ and Redis, PDBs that block node drains (`maxUnavailable: 0`,
+  `minAvailable` ≥ the pod count, overlapping PDBs, drains held up by
+  unhealthy pods), and quorum systems whose PDB lets a drain take a majority, or
+  that have no PDB. Downtime and quorum risks are reported for production
+  namespaces only; drain blockers everywhere. The rules are code, not the
+  model, so the same cluster state always gives the same report. Findings are
+  grouped by the namespace's `snappcloud.io/team` label and the `Team` CR's
+  admins, and posted as a **preview** in `bestPractice.adminChannel`. Nothing is
+  sent until a cluster-admin says `report approve <id>` there: the bot then
+  scans again, sends only what is still true (what was fixed meanwhile is
+  dropped, what is new waits for next week), and DMs each team admin.
+  `report reject|exclude|preview|run|status` do what they say. Teams mark a
+  finding intentional with the `snappcloud.io/best-practice-ignore: <rule>`
+  annotation; the preview counts ignores so they stay visible.
+  **This is the one feature that reads without a caller's scope**: the bot
+  audits every cluster on its own authority through openshift-mcp's
+  `disruption_audit` and `list_teams` (keep both `clusterAdminOnly` in
+  `toolRules`, so chat users cannot reach them). What it reads leaves through
+  two gates only: the preview, in a channel of cloud admins, and each DM, which
+  holds only findings in namespaces that recipient can access, checked through
+  mcp-authz at send time — a wrong team label cannot show one team's
+  namespaces to another, and if the check fails the admin gets nothing.
 - **Memory.** Per Mattermost thread (and each DM), a transcript is kept and
   replayed for context; persisted to a file (`memory.memoryPath`, a PVC) so it
   survives restarts.
@@ -347,6 +371,10 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_alerts_received_total` | `disposition` | `queued` / `duplicate` / `cooldown` / `ignored` / `resolved` / `low_severity` — shows whether noise suppression is working |
 | `snappcloud_bot_alert_investigations_total` | `outcome` | `ok` / `error` / `empty` / `unauthorized` |
 | `snappcloud_bot_alert_investigation_duration_seconds` | — | investigation latency |
+| `snappcloud_bot_report_runs_total` | `outcome` | best-practice report builds: `ok` / `partial` (a cluster could not be read) / `error` |
+| `snappcloud_bot_report_findings` | `rule`, `severity` | findings in the latest report |
+| `snappcloud_bot_report_deliveries_total` | `outcome` | team-admin DMs: `sent` / `no_account` / `authz_error` / `nothing_visible` / `post_error` |
+| `snappcloud_bot_report_collect_failures_total` | `cluster` | clusters a build could not read |
 | `snappcloud_bot_mcp_list_failures_total` | `server` | an MCP server that failed to list its tools — its tools are missing from every answer until it recovers |
 | `snappcloud_bot_tools_offered`, `_tools_per_cluster` | —, `cluster` | tools put in front of the model last turn, and what each cluster advertised |
 | `snappcloud_bot_tools_dropped_total` | `cluster` | tools omitted to fit `maxTools` — a cluster the question named appearing here is the case worth acting on |

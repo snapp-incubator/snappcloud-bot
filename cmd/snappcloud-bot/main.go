@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
 	"github.com/snapp-incubator/snappcloud-bot/internal/api"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
+	"github.com/snapp-incubator/snappcloud-bot/internal/bestpractice"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bot"
 	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"github.com/snapp-incubator/snappcloud-bot/internal/config"
@@ -132,6 +134,17 @@ func run(configPath, addr string, log *slog.Logger) error {
 
 	// User-defined recurring queries. The store is created before the service
 	// because the service implements the runner's Answerer.
+	// schedules.timezone is where users are: schedule times and the weekly
+	// report's slot are both read and shown in it.
+	loc := time.Local
+	if cfg.Schedules.Timezone != "" {
+		l, err := time.LoadLocation(cfg.Schedules.Timezone)
+		if err != nil {
+			return fmt.Errorf("parse schedules.timezone: %w", err)
+		}
+		loc = l
+	}
+
 	var schedStore *schedule.Store
 	if cfg.Schedules.Enabled {
 		// Zero means "use the store's default", which is where the real defaults
@@ -143,14 +156,6 @@ func run(configPath, addr string, log *slog.Logger) error {
 				return fmt.Errorf("parse schedules.minInterval: %w", err)
 			}
 			minInterval = d
-		}
-		loc := time.Local
-		if cfg.Schedules.Timezone != "" {
-			l, err := time.LoadLocation(cfg.Schedules.Timezone)
-			if err != nil {
-				return fmt.Errorf("parse schedules.timezone: %w", err)
-			}
-			loc = l
 		}
 		schedStore = schedule.NewStore(cfg.Schedules.Path, schedule.Limits{
 			PerUser:     cfg.Schedules.PerUser,
@@ -203,6 +208,51 @@ func run(configPath, addr string, log *slog.Logger) error {
 		schedTimeout = d
 	}
 
+	var reportStore *bestpractice.Store
+	var reportOpts *bot.ReportOptions
+	if cfg.BestPractice.Enabled {
+		bp := cfg.BestPractice
+		expireAfter, err := optDuration(bp.ExpireAfter)
+		if err != nil {
+			return fmt.Errorf("parse bestPractice.expireAfter: %w", err)
+		}
+		for _, r := range bp.DisabledRules {
+			if !slices.Contains(bestpractice.Rules, r) {
+				return fmt.Errorf("bestPractice.disabledRules: unknown rule %q (known: %s)", r,
+					strings.Join(bestpractice.Rules, ", "))
+			}
+		}
+		var excludeNS []bestpractice.Selector
+		for _, raw := range bp.ExcludeNamespaceSelectors {
+			sel, err := bestpractice.ParseSelector(raw)
+			if err != nil {
+				return fmt.Errorf("bestPractice.excludeNamespaceSelectors: %w", err)
+			}
+			excludeNS = append(excludeNS, sel)
+		}
+		clusters := bp.Clusters
+		if len(clusters) == 0 {
+			clusters = theBrain.ClusterNames()
+		}
+		reportStore = bestpractice.NewStore(bp.Path, expireAfter)
+		reportOpts = &bot.ReportOptions{
+			Store: reportStore,
+			Collect: func(ctx context.Context) bestpractice.Inventory {
+				return bestpractice.Collect(ctx, theBrain, clusters, bp.QuorumImages)
+			},
+			Rules: bestpractice.Options{
+				ExcludeNamespaces: excludeNS,
+				ExcludeTeams:      bp.ExcludeTeams,
+				DisabledRules:     bp.DisabledRules,
+			},
+			AdminChannel: bp.AdminChannel,
+			BotUserID:    me.ID,
+			Messenger:    mm,
+			Location:     loc,
+			Docs:         bp.Docs,
+		}
+	}
+
 	svc := bot.New(mm, theBrain, resolver, bot.Options{
 		ConversationTTL: convTTL,
 		MemoryPath:      cfg.Memory.MemoryPath,
@@ -216,6 +266,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		Schedules:       schedStore,
 		AlertChannels:   alertChannels,
 		AlertAggregator: alertAgg,
+		Reports:         reportOpts,
 	}, log)
 	go svc.StartSweeper(ctx)
 
@@ -247,6 +298,31 @@ func run(configPath, addr string, log *slog.Logger) error {
 		log.Info("alert channels enabled", "watched", alertChannels.Count(),
 			"window", lim.Window, "cooldown", lim.Cooldown, "maxPerWindow", lim.MaxPerWindow,
 			"minSeverity", lim.MinSeverity)
+	}
+
+	if reportStore != nil {
+		bp := cfg.BestPractice
+		slots, err := bestpractice.ParseSlots(bp.Schedule, loc)
+		if err != nil {
+			return fmt.Errorf("bestPractice.schedule: %w", err)
+		}
+		catchUp, err := optDuration(bp.CatchUp)
+		if err != nil {
+			return fmt.Errorf("parse bestPractice.catchUp: %w", err)
+		}
+		timeout, err := optDuration(bp.Timeout)
+		if err != nil {
+			return fmt.Errorf("parse bestPractice.timeout: %w", err)
+		}
+		runner := bestpractice.NewRunner(reportStore, slots, svc.BuildReport, bestpractice.RunnerOptions{
+			CatchUp: catchUp,
+			Timeout: timeout,
+		}, log)
+		svc.SetReportRunner(runner)
+		go runner.Start(ctx)
+		next, scheduled := runner.Next()
+		log.Info("best-practice report enabled", "schedule", bp.Schedule, "scheduled", scheduled,
+			"next", next, "adminChannel", bp.AdminChannel)
 	}
 
 	go serveHealth(ctx, addr, log)
