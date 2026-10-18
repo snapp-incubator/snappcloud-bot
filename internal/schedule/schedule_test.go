@@ -6,7 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
-	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,8 +221,10 @@ func TestScheduleIDsAreUnguessableAndOwnerScoped(t *testing.T) {
 		if seen[id] {
 			t.Fatalf("duplicate id %q", id)
 		}
-		if _, err := strconv.Atoi(id); err == nil {
-			t.Fatalf("id %q is a plain number — it leaks how many schedules exist", id)
+		// A counter ("1", "2", …) fails this; a random id that happens to be
+		// all digits does not, and leaks nothing.
+		if len(id) != 6 || strings.Trim(id, idAlphabet) != "" {
+			t.Fatalf("id %q is not 6 random characters from the id alphabet — a sequential id leaks how many schedules exist", id)
 		}
 		seen[id] = true
 		mine = append(mine, id)
