@@ -143,6 +143,12 @@ func DeliverySummary(r Report, loc *time.Location) string {
 		fmt.Fprintf(&b, " · %d sent as previewed (their cluster could not be re-checked)", d.Unverified)
 	}
 	b.WriteString(".\n")
+	if len(d.RecheckFailed) > 0 {
+		b.WriteString("\n**Re-check failed**, so these clusters' findings went out as previewed:\n")
+		for _, c := range sortedKeys(d.RecheckFailed) {
+			fmt.Fprintf(&b, "- %s: %s\n", c, firstLine(d.RecheckFailed[c], 200))
+		}
+	}
 	if d.Interrupted {
 		b.WriteString("\n**Sending was interrupted** (timeout or shutdown); the admins not listed as sent did not get it.\n")
 	}
@@ -152,9 +158,12 @@ func DeliverySummary(r Report, loc *time.Location) string {
 		}
 	}
 	line("Address rejected by the mail server (fix it in the Team CR)", d.Rejected)
-	line("Access check failed, nothing sent (fail-closed)", d.AuthzFailed)
+	line("Access check failed (fail-closed: findings on the clusters that could not be checked were withheld)", d.AuthzFailed)
 	line("Sending failed", d.SendFailed)
 	line("Nothing they can see (every finding is in a namespace they cannot access)", d.NothingVisible)
+	if d.Unchecked > 0 {
+		fmt.Fprintf(&b, "\n- %d findings withheld because the recipient's access could not be checked", d.Unchecked)
+	}
 	if d.ScopeDropped > 0 {
 		fmt.Fprintf(&b, "\n- %d findings withheld from recipients without access to their namespace", d.ScopeDropped)
 	}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bestpractice"
@@ -33,6 +36,12 @@ type reportMailer interface {
 	CanReply() bool
 }
 
+// reportAccess checks a recipient's access on the named clusters only
+// (authzclient.Client), naming each cluster it could not check.
+type reportAccess interface {
+	ResolveRegions(ctx context.Context, user string, regions []string) (authzclient.Scope, map[string]error)
+}
+
 // reportRunner runs report jobs one at a time (bestpractice.Runner).
 type reportRunner interface {
 	Do(kind string, fn func(context.Context) error) error
@@ -49,7 +58,9 @@ type ReportOptions struct {
 	AdminChannel string
 	Messenger    reportMessenger
 	Mailer       reportMailer
-	Location     *time.Location
+	// Access checks each recipient against the clusters of their findings.
+	Access   reportAccess
+	Location *time.Location
 	// Docs maps a rule topic (pdb, quorum, rabbitmq, redis) to a docs page.
 	Docs map[string]string
 	// Pace spaces the emails out so a hundred of them do not trip the mail
@@ -461,6 +472,14 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 	send, resolved, held, unverified := bestpractice.Intersect(r.Sendable(), current, toSet(inv.Scanned()))
 	d := &bestpractice.Delivery{Resolved: resolved, Held: held, Unverified: unverified}
 
+	if len(inv.Failed) > 0 {
+		d.RecheckFailed = inv.Failed
+		for c, err := range inv.Failed {
+			metrics.ReportCollectFailures.WithLabelValues(c).Inc()
+			s.log.Warn("best-practice report: re-check failed; sending as previewed", "report", id, "cluster", c, "err", err)
+		}
+	}
+
 	byTeam := bestpractice.GroupByTeam(send)
 	recipients := map[string][]string{}
 	for team := range byTeam {
@@ -468,18 +487,20 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 			recipients[a] = append(recipients[a], team)
 		}
 	}
-	for i, email := range sortedKeys(recipients) {
+	emails := sortedKeys(recipients)
+	plans := s.planReportEmails(ctx, emails, recipients, byTeam)
+	for i, p := range plans {
 		if ctx.Err() != nil {
 			d.Interrupted = true
 			break
 		}
-		if i > 0 {
+		if i > 0 && len(p.sections) > 0 {
 			select {
 			case <-ctx.Done():
 			case <-time.After(rf.Pace):
 			}
 		}
-		outcome := s.sendReportEmail(ctx, email, recipients[email], byTeam, d)
+		outcome := s.sendReportEmail(ctx, p, d)
 		metrics.ReportDeliveries.WithLabelValues(outcome).Inc()
 	}
 
@@ -491,58 +512,116 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 		s.log.Error("record best-practice delivery", "report", id, "err", err)
 	}
 	s.log.Info("best-practice report sent", "report", id, "by", by, "sent", len(d.Sent),
-		"rejected", len(d.Rejected), "authzFailed", len(d.AuthzFailed), "sendFailed", len(d.SendFailed))
+		"rejected", len(d.Rejected), "authzFailed", len(d.AuthzFailed), "sendFailed", len(d.SendFailed),
+		"interrupted", d.Interrupted)
 	if r.RootID != "" {
+		// post detaches from ctx, so this lands even when the job timed out.
 		_ = s.post(ctx, rf.AdminChannel, r.RootID, bestpractice.DeliverySummary(r, rf.Location))
 	}
 	return nil
 }
 
-// sendReportEmail emails one admin the findings of their teams that they can
-// see. Their access is checked now, through mcp-authz: a wrong team label must
-// not show one team's namespaces to another. Fail-closed: no check, no email.
-func (s *Service) sendReportEmail(ctx context.Context, email string, teams []string,
-	byTeam map[string][]bestpractice.Finding, d *bestpractice.Delivery) string {
-	rf := s.report
-	scope, err := s.resolver.Resolve(ctx, s.resolveIdentity(email))
-	if err != nil {
-		s.log.Warn("best-practice report: access check failed; not sent", "email", email, "err", err)
-		d.AuthzFailed = append(d.AuthzFailed, email)
-		return "authz_error"
+// accessConcurrency bounds the recipients checked at once against mcp-authz.
+const accessConcurrency = 8
+
+// emailPlan is one recipient's email, decided before anything is sent.
+type emailPlan struct {
+	email    string
+	sections []bestpractice.TeamFindings
+	// dropped are findings in namespaces they cannot access; unchecked are
+	// findings on clusters whose access check failed.
+	dropped, unchecked int
+	failed             map[string]error
+}
+
+// planReportEmails checks every recipient's access, several at once, and
+// decides what each one receives. Only the clusters holding that recipient's
+// findings are asked: a region that is down or slow elsewhere costs nothing.
+func (s *Service) planReportEmails(ctx context.Context, emails []string, teamsOf map[string][]string,
+	byTeam map[string][]bestpractice.Finding) []emailPlan {
+	plans := make([]emailPlan, len(emails))
+	var g errgroup.Group
+	g.SetLimit(accessConcurrency)
+	for i, email := range emails {
+		g.Go(func() error {
+			plans[i] = s.planReportEmail(ctx, email, teamsOf[email], byTeam)
+			return nil
+		})
 	}
-	sort.Strings(teams)
-	var sections []bestpractice.TeamFindings
+	_ = g.Wait()
+	return plans
+}
+
+// planReportEmail keeps the findings this admin can see. Their access is
+// checked now, through mcp-authz: a wrong team label must not show one team's
+// namespaces to another. Fail-closed: a cluster that cannot be checked
+// releases none of its findings.
+func (s *Service) planReportEmail(ctx context.Context, email string, teams []string,
+	byTeam map[string][]bestpractice.Finding) emailPlan {
+	p := emailPlan{email: email}
+	teams = slices.Sorted(slices.Values(teams))
+	clusters := map[string]bool{}
+	for _, team := range teams {
+		for _, f := range byTeam[team] {
+			clusters[f.Cluster] = true
+		}
+	}
+	scope, failed := s.report.Access.ResolveRegions(ctx, s.resolveIdentity(email), sortedKeys(clusters))
+	if len(failed) > 0 {
+		p.failed = failed
+		for c, err := range failed {
+			s.log.Warn("best-practice report: access check failed; that cluster's findings withheld",
+				"email", email, "cluster", c, "err", err)
+		}
+	}
 	for _, team := range teams {
 		var visible []bestpractice.Finding
 		for _, f := range byTeam[team] {
-			if canSee(scope, f) {
+			switch {
+			case failed[f.Cluster] != nil:
+				p.unchecked++
+			case canSee(scope, f):
 				visible = append(visible, f)
-			} else {
-				d.ScopeDropped++
+			default:
+				p.dropped++
 			}
 		}
 		if len(visible) > 0 {
-			sections = append(sections, bestpractice.TeamFindings{Team: team, Findings: visible})
+			p.sections = append(p.sections, bestpractice.TeamFindings{Team: team, Findings: visible})
 		}
 	}
-	if len(sections) == 0 {
-		d.NothingVisible = append(d.NothingVisible, email)
+	return p
+}
+
+// sendReportEmail sends one planned email and records the outcome.
+func (s *Service) sendReportEmail(ctx context.Context, p emailPlan, d *bestpractice.Delivery) string {
+	rf := s.report
+	d.ScopeDropped += p.dropped
+	d.Unchecked += p.unchecked
+	if len(p.failed) > 0 {
+		d.AuthzFailed = append(d.AuthzFailed, p.email)
+	}
+	if len(p.sections) == 0 {
+		if len(p.failed) > 0 {
+			return "authz_error"
+		}
+		d.NothingVisible = append(d.NothingVisible, p.email)
 		return "nothing_visible"
 	}
 
-	e := bestpractice.AdminEmail(sections, rf.Docs, rf.Mailer.CanReply())
-	err = rf.Mailer.Send(ctx, mail.Message{To: email, Subject: e.Subject, Text: e.Text, HTML: e.HTML})
+	e := bestpractice.AdminEmail(p.sections, rf.Docs, rf.Mailer.CanReply())
+	err := rf.Mailer.Send(ctx, mail.Message{To: p.email, Subject: e.Subject, Text: e.Text, HTML: e.HTML})
 	switch {
 	case errors.Is(err, mail.ErrRejected):
-		s.log.Warn("best-practice report: address rejected", "email", email, "err", err)
-		d.Rejected = append(d.Rejected, email)
+		s.log.Warn("best-practice report: address rejected", "email", p.email, "err", err)
+		d.Rejected = append(d.Rejected, p.email)
 		return "rejected"
 	case err != nil:
-		s.log.Warn("best-practice report: email failed", "email", email, "err", err)
-		d.SendFailed = append(d.SendFailed, email)
+		s.log.Warn("best-practice report: email failed", "email", p.email, "err", err)
+		d.SendFailed = append(d.SendFailed, p.email)
 		return "send_error"
 	}
-	d.Sent = append(d.Sent, email)
+	d.Sent = append(d.Sent, p.email)
 	return "sent"
 }
 

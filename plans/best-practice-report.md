@@ -311,7 +311,10 @@ written by a model.
   5xx to `RCPT TO` is `ErrRejected` ("no such mailbox"), reported, not
   retried.
 - `internal/bot/report.go`: the commands, the approval gate, delivery
-  (identity → mcp-authz scope → filter → email), and thread updates. Delivery
+  (identity → mcp-authz scope on the clusters of that admin's findings only,
+  8 admins at a time → filter → email), and thread updates. A cluster whose
+  check fails withholds only its own findings; a cluster the approval cannot
+  re-scan is named, with the reason, in the delivery summary. Delivery
   is paced (≈5 emails/s) so 100+ emails don't trip the mail server's limits.
 - `internal/bot/commands.go`: `help` lists `report …` only for cluster-wide
   callers with the feature on.

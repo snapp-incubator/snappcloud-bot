@@ -253,6 +253,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 			AdminChannel: bp.AdminChannel,
 			Messenger:    mm,
 			Mailer:       mailer,
+			Access:       authzBase,
 			Location:     loc,
 			Docs:         bp.Docs,
 		}

@@ -71,6 +71,12 @@ type Delivery struct {
 	NothingVisible []string `json:"nothingVisible,omitempty"`
 	// ScopeDropped counts findings withheld from a recipient for lack of access.
 	ScopeDropped int `json:"scopeDropped"`
+	// Unchecked counts findings withheld because the recipient's access on
+	// their cluster could not be checked; AuthzFailed names those recipients.
+	Unchecked int `json:"unchecked,omitempty"`
+	// RecheckFailed are the clusters the approval could not scan again, with
+	// why; their findings were sent as previewed (Unverified).
+	RecheckFailed map[string]string `json:"recheckFailed,omitempty"`
 	// Resolved were in the preview but gone on the re-check; Held are new
 	// since the preview, and wait for next week's approval.
 	Resolved int `json:"resolved"`
