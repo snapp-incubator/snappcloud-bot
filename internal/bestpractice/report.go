@@ -37,8 +37,6 @@ type Report struct {
 	Failed   map[string]string   `json:"failed,omitempty"`
 	Ignored  map[string]int      `json:"ignored,omitempty"`
 	Excluded []string            `json:"excluded,omitempty"`
-	// Missing are admin emails with no Mattermost account, found at preview.
-	Missing []string `json:"missing,omitempty"`
 	// RootID is the preview post in the admin channel; everything about the
 	// report is threaded under it.
 	RootID    string    `json:"root,omitempty"`
@@ -62,12 +60,12 @@ type Diff struct {
 // Delivery is what happened when an approved report was sent.
 type Delivery struct {
 	Sent []string `json:"sent,omitempty"`
-	// NoAccount: no Mattermost user has this email.
-	NoAccount []string `json:"noAccount,omitempty"`
+	// Rejected: the mail server refused the address (no such mailbox).
+	Rejected []string `json:"rejected,omitempty"`
 	// AuthzFailed: the recipient's access could not be checked, so nothing
 	// was sent to them (fail-closed).
 	AuthzFailed []string `json:"authzFailed,omitempty"`
-	PostFailed  []string `json:"postFailed,omitempty"`
+	SendFailed  []string `json:"sendFailed,omitempty"`
 	// NothingVisible: every finding for this admin was in a namespace they
 	// cannot access.
 	NothingVisible []string `json:"nothingVisible,omitempty"`

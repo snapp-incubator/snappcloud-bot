@@ -25,6 +25,25 @@ type Config struct {
 	Alerts     Alerts     `yaml:"alerts"`
 	// BestPractice is the weekly best-practice report to team admins.
 	BestPractice BestPractice `yaml:"bestPractice"`
+	// Mail is the SMTP server the best-practice report is emailed through.
+	Mail Mail `yaml:"mail"`
+}
+
+// Mail configures the SMTP server. The password comes from the environment.
+type Mail struct {
+	Host string `yaml:"host"`
+	// Port defaults to 587 (STARTTLS); 465 is TLS from the first byte.
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	// PasswordEnv names the env var holding the password (default
+	// MAIL_PASSWORD). Required when Username is set.
+	PasswordEnv string `yaml:"passwordEnv"`
+	// From is the sender, e.g. "SnappCloud <snappcloud-bot@snapp.cab>".
+	From string `yaml:"from"`
+	// ReplyTo is where replies go; when set, the email invites them.
+	ReplyTo string `yaml:"replyTo"`
+	// Timeout bounds one message (default 30s).
+	Timeout string `yaml:"timeout"`
 }
 
 // BestPractice configures the weekly report of single-instance brokers and
@@ -46,7 +65,7 @@ type BestPractice struct {
 	ExpireAfter string `yaml:"expireAfter"`
 	// AdminChannel is the channel ID where previews are posted and approved.
 	AdminChannel string `yaml:"adminChannel"`
-	// Timeout bounds one job: a build, or an approval with its DMs (default 10m).
+	// Timeout bounds one job: a build, or an approval with its emails (default 10m).
 	Timeout string `yaml:"timeout"`
 	// Clusters to scan (default every agent cluster).
 	Clusters []string `yaml:"clusters"`
@@ -370,6 +389,9 @@ func (c *Config) applyDefaults() {
 	if c.Authz.TokenEnv == "" {
 		c.Authz.TokenEnv = "MCP_AUTHZ_TOKEN"
 	}
+	if c.Mail.PasswordEnv == "" {
+		c.Mail.PasswordEnv = "MAIL_PASSWORD"
+	}
 	if c.Authz.CacheTTL == "" {
 		c.Authz.CacheTTL = "5m"
 	}
@@ -409,6 +431,9 @@ func (c *Config) validate() error {
 	}
 	if c.BestPractice.Enabled && strings.TrimSpace(c.BestPractice.AdminChannel) == "" {
 		return fmt.Errorf("bestPractice.adminChannel is required: previews wait there for a cloud admin's approval")
+	}
+	if c.BestPractice.Enabled && (strings.TrimSpace(c.Mail.Host) == "" || strings.TrimSpace(c.Mail.From) == "") {
+		return fmt.Errorf("mail.host and mail.from are required: the best-practice report is emailed to team admins")
 	}
 	return nil
 }

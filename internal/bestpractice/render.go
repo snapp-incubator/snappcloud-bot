@@ -64,7 +64,6 @@ func PreviewDetail(r Report) string {
 		}
 		byTeam[f.Team] = append(byTeam[f.Team], f)
 	}
-	missing := toSet(r.Missing)
 
 	if len(byTeam) == 0 {
 		b.WriteString("No findings for any team.\n")
@@ -74,7 +73,7 @@ func PreviewDetail(r Report) string {
 			fs := byTeam[team]
 			high, medium := counts(fs)
 			fmt.Fprintf(&b, "| %s%s | %s | %d | %d | %s |\n", team, excludedMark(r, team),
-				strings.Join(clustersOf(fs), ", "), high, medium, recipientsCell(r.Admins[team], missing))
+				strings.Join(clustersOf(fs), ", "), high, medium, recipientsCell(r.Admins[team]))
 		}
 	}
 
@@ -99,10 +98,6 @@ func PreviewDetail(r Report) string {
 			r.Diff.Previous, r.Diff.New, r.Diff.Fixed, r.Diff.OpenLong)
 	}
 
-	if len(r.Missing) > 0 {
-		fmt.Fprintf(&b, "\n**No Mattermost account** for %s: they will not receive it. Fix the email in the Team CR, "+
-			"or ask them to sign in once.\n", strings.Join(r.Missing, ", "))
-	}
 	if len(r.Failed) > 0 {
 		b.WriteString("\n**Clusters not scanned** — their findings are missing from this report:\n")
 		for _, c := range sortedKeys(r.Failed) {
@@ -119,45 +114,11 @@ func excludedMark(r Report, team string) string {
 	return ""
 }
 
-func recipientsCell(admins []string, missing map[string]bool) string {
+func recipientsCell(admins []string) string {
 	if len(admins) == 0 {
 		return "**none** (no admins in the Team CR)"
 	}
-	parts := make([]string, 0, len(admins))
-	for _, a := range admins {
-		if missing[a] {
-			a = "~~" + a + "~~"
-		}
-		parts = append(parts, a)
-	}
-	return strings.Join(parts, ", ")
-}
-
-// TeamSection is one team's findings, as its admins read them.
-func TeamSection(team string, fs []Finding, docs map[string]string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "#### Team `%s`\n", team)
-	for _, f := range fs {
-		fmt.Fprintf(&b, "\n%s **%s / %s — %s**\n%s\n**Fix:** %s", severityMark[f.Severity], f.Cluster, f.Namespace,
-			f.Title, f.Detail, f.Fix)
-		if url := docs[Topic(f.Rule)]; url != "" {
-			fmt.Fprintf(&b, " [Docs](%s)", url)
-		}
-		fmt.Fprintf(&b, " · `%s`\n", f.Rule)
-	}
-	return b.String()
-}
-
-// DM is the whole message one team admin receives: a section per team they
-// administer.
-func DM(sections []string) string {
-	var b strings.Builder
-	b.WriteString("**Weekly SnappCloud best-practice check**\n")
-	b.WriteString("These can cause downtime, or block node maintenance, when a node is drained.\n\n")
-	b.WriteString(strings.Join(sections, "\n"))
-	fmt.Fprintf(&b, "\n---\nIntentional? Annotate the object with `%s: <rule>`, using the rule shown at the end "+
-		"of the finding. Questions: reply here.", AnnotationIgnore)
-	return b.String()
+	return strings.Join(admins, ", ")
 }
 
 // GroupByTeam splits findings by team, in team order.
@@ -176,7 +137,7 @@ func DeliverySummary(r Report, loc *time.Location) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "📬 Approved by %s at %s. Sent to **%d** team admins", r.DecidedBy, FormatTime(r.DecidedAt, loc), len(d.Sent))
+	fmt.Fprintf(&b, "📬 Approved by %s at %s. Emailed **%d** team admins", r.DecidedBy, FormatTime(r.DecidedAt, loc), len(d.Sent))
 	fmt.Fprintf(&b, " · %d resolved since the preview · %d new (held for next week)", d.Resolved, d.Held)
 	if d.Unverified > 0 {
 		fmt.Fprintf(&b, " · %d sent as previewed (their cluster could not be re-checked)", d.Unverified)
@@ -190,9 +151,9 @@ func DeliverySummary(r Report, loc *time.Location) string {
 			fmt.Fprintf(&b, "\n- %s: %s", label, strings.Join(xs, ", "))
 		}
 	}
-	line("No Mattermost account", d.NoAccount)
+	line("Address rejected by the mail server (fix it in the Team CR)", d.Rejected)
 	line("Access check failed, nothing sent (fail-closed)", d.AuthzFailed)
-	line("Post failed", d.PostFailed)
+	line("Sending failed", d.SendFailed)
 	line("Nothing they can see (every finding is in a namespace they cannot access)", d.NothingVisible)
 	if d.ScopeDropped > 0 {
 		fmt.Fprintf(&b, "\n- %d findings withheld from recipients without access to their namespace", d.ScopeDropped)

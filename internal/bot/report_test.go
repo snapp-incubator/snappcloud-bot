@@ -13,6 +13,7 @@ import (
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bestpractice"
+	"github.com/snapp-incubator/snappcloud-bot/internal/mail"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 )
 
@@ -20,13 +21,11 @@ const adminChannel = "admins"
 
 type sentPost struct{ channel, root, msg string }
 
-// reportMM is Mattermost for the report: every post with its channel, a user
-// directory by email, and DM channels named after their user.
+// reportMM is Mattermost for the report: every post with its channel.
 type reportMM struct {
 	mu      sync.Mutex
 	email   string // the sender of command posts
 	posts   []sentPost
-	users   map[string]string // email -> user id
 	nextRef int
 }
 
@@ -45,15 +44,34 @@ func (m *reportMM) CreatePostID(_ context.Context, ch, msg, root string) (string
 	return fmt.Sprintf("post-%d", m.nextRef), nil
 }
 func (m *reportMM) Typing(context.Context, string, string) {}
-func (m *reportMM) UserByEmail(_ context.Context, email string) (mattermost.User, error) {
-	id, ok := m.users[email]
-	if !ok {
-		return mattermost.User{}, fmt.Errorf("%w: no such user", mattermost.ErrNotFound)
-	}
-	return mattermost.User{ID: id, Email: email}, nil
+
+// fakeMailer records every email; the server rejects nobody@.
+type fakeMailer struct {
+	mu   sync.Mutex
+	sent []mail.Message
 }
-func (m *reportMM) DirectChannel(_ context.Context, _, user string) (string, error) {
-	return "dm-" + user, nil
+
+func (m *fakeMailer) Send(_ context.Context, msg mail.Message) error {
+	if strings.HasPrefix(msg.To, "nobody@") {
+		return fmt.Errorf("%w: 550 no such user", mail.ErrRejected)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent = append(m.sent, msg)
+	return nil
+}
+func (m *fakeMailer) CanReply() bool { return true }
+
+func (m *fakeMailer) to(addr string) []mail.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []mail.Message
+	for _, msg := range m.sent {
+		if msg.To == addr {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 func (m *reportMM) in(channel string) []sentPost {
@@ -113,6 +131,7 @@ func reportInventory() bestpractice.Inventory {
 type reportFixture struct {
 	svc   *Service
 	mm    *reportMM
+	mail  *fakeMailer
 	store *bestpractice.Store
 	inv   bestpractice.Inventory
 }
@@ -120,7 +139,8 @@ type reportFixture struct {
 func newReportFixture(t *testing.T) *reportFixture {
 	t.Helper()
 	f := &reportFixture{
-		mm:    &reportMM{email: "admin@snapp.cab", users: map[string]string{"alice@snapp.cab": "alice", "bob@snapp.cab": "bob"}},
+		mm:    &reportMM{email: "admin@snapp.cab"},
+		mail:  &fakeMailer{},
 		store: bestpractice.NewStore("", 0),
 		inv:   reportInventory(),
 	}
@@ -137,8 +157,8 @@ func newReportFixture(t *testing.T) *reportFixture {
 			Store:        f.store,
 			Collect:      func(context.Context) bestpractice.Inventory { return f.inv },
 			AdminChannel: adminChannel,
-			BotUserID:    "bot",
 			Messenger:    f.mm,
+			Mailer:       f.mail,
 			Location:     time.UTC,
 			Pace:         time.Nanosecond,
 		},
@@ -216,12 +236,12 @@ func TestReportBuildPostsPreview(t *testing.T) {
 	if detail == nil || detail.root != r.RootID || r.RootID == "" {
 		t.Fatalf("detail must be threaded under the root (%s): %+v", r.RootID, detail)
 	}
-	for _, want := range []string{"No owning team", "orphan", "No Mattermost account", "nobody@snapp.cab"} {
+	for _, want := range []string{"No owning team", "orphan", "nobody@snapp.cab"} {
 		if !strings.Contains(detail.msg, want) {
 			t.Errorf("preview detail missing %q:\n%s", want, detail.msg)
 		}
 	}
-	if len(f.mm.in("dm-alice")) != 0 {
+	if len(f.mail.sent) != 0 {
 		t.Error("nothing may be sent before approval")
 	}
 }
@@ -248,13 +268,13 @@ func TestReportApproveSendsOnlyWhatEachAdminCanSee(t *testing.T) {
 	if d.Resolved != 1 || len(d.NothingVisible) != 1 || d.NothingVisible[0] != "alice@snapp.cab" || d.ScopeDropped != 1 {
 		t.Errorf("delivery = %+v", d)
 	}
-	if len(f.mm.in("dm-alice")) != 0 {
+	if len(f.mail.to("alice@snapp.cab")) != 0 {
 		t.Error("alice must receive nothing: her only remaining finding is in a namespace she cannot access")
 	}
-	// bob's access check fails: fail-closed. nobody has no account, but has
-	// nothing visible either (no scope), so is never looked up.
-	if len(d.AuthzFailed) != 2 || len(f.mm.in("dm-bob")) != 0 {
-		t.Errorf("authzFailed = %v, bob DMs = %d", d.AuthzFailed, len(f.mm.in("dm-bob")))
+	// bob's access check fails: fail-closed. nobody's too, so the mail
+	// server is never asked about the address.
+	if len(d.AuthzFailed) != 2 || len(f.mail.to("bob@snapp.cab")) != 0 || len(d.Rejected) != 0 {
+		t.Errorf("delivery = %+v, bob emails = %d", d, len(f.mail.to("bob@snapp.cab")))
 	}
 	threaded := false
 	for _, p := range f.mm.in(adminChannel) {
@@ -269,7 +289,7 @@ func TestReportApproveSendsOnlyWhatEachAdminCanSee(t *testing.T) {
 	}
 }
 
-func TestReportDMContent(t *testing.T) {
+func TestReportEmailContent(t *testing.T) {
 	f := newReportFixture(t)
 	f.svc.resolver = scopeResolver{
 		"admin@snapp.cab":  {"teh-1": {ClusterWide: true}},
@@ -281,21 +301,40 @@ func TestReportDMContent(t *testing.T) {
 	id := f.latest(t).ID
 	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id)
 
-	dm := f.mm.in("dm-alice")
-	if len(dm) != 1 {
-		t.Fatalf("alice DMs = %d", len(dm))
+	got := f.mail.to("alice@snapp.cab")
+	if len(got) != 1 {
+		t.Fatalf("alice emails = %d", len(got))
 	}
-	for _, want := range []string{"Team `pay`", "PDB `api`", "PDB `vault`", "pdb-min-available-all", bestpractice.AnnotationIgnore} {
-		if !strings.Contains(dm[0].msg, want) {
-			t.Errorf("DM missing %q:\n%s", want, dm[0].msg)
+	e := got[0]
+	if !strings.Contains(e.Subject, "2 findings for pay (2 high)") {
+		t.Errorf("subject = %q", e.Subject)
+	}
+	for _, part := range []struct{ name, body string }{{"text", e.Text}, {"html", e.HTML}} {
+		for _, want := range []string{"Team ", "pay", "api", "vault", "pdb-min-available-all", bestpractice.AnnotationIgnore,
+			"reply to this email"} {
+			if !strings.Contains(part.body, want) {
+				t.Errorf("%s part missing %q:\n%s", part.name, want, part.body)
+			}
+		}
+		if strings.Contains(part.body, "ops-prod") || strings.Contains(part.body, "orphan") {
+			t.Errorf("%s part leaks another team's findings:\n%s", part.name, part.body)
 		}
 	}
-	if strings.Contains(dm[0].msg, "ops-prod") || strings.Contains(dm[0].msg, "orphan") {
-		t.Errorf("DM leaks another team's findings:\n%s", dm[0].msg)
+	if !strings.Contains(e.HTML, "PDB <code>api</code>") {
+		t.Errorf("html does not render code spans:\n%s", e.HTML)
 	}
 	d := f.latest(t).Delivery
-	if len(d.Sent) != 2 || len(d.NoAccount) != 1 || d.NoAccount[0] != "nobody@snapp.cab" {
+	if len(d.Sent) != 2 || len(d.Rejected) != 1 || d.Rejected[0] != "nobody@snapp.cab" {
 		t.Errorf("delivery = %+v", d)
+	}
+	var summary string
+	for _, p := range f.mm.in(adminChannel) {
+		if strings.Contains(p.msg, "Emailed **2**") {
+			summary = p.msg
+		}
+	}
+	if !strings.Contains(summary, "Address rejected by the mail server") || !strings.Contains(summary, "nobody@snapp.cab") {
+		t.Errorf("summary must name the rejected address:\n%s", summary)
 	}
 }
 

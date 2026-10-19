@@ -10,6 +10,7 @@ import (
 
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/bestpractice"
+	"github.com/snapp-incubator/snappcloud-bot/internal/mail"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
 )
@@ -17,14 +18,19 @@ import (
 // The best-practice report is the one feature that reads clusters without a
 // caller: it audits every cluster on the bot's own authority. What it reads is
 // released through two gates only — a preview in the cloud-admin channel, and,
-// once a cluster-admin approves, a DM per team admin holding only findings in
+// once a cluster-admin approves, an email per team admin holding only findings in
 // namespaces that admin can access, checked through mcp-authz at send time.
+// The team admins get it by email; the admin channel stays the control room.
 
 // reportMessenger is what the report needs from Mattermost beyond posting.
 type reportMessenger interface {
 	CreatePostID(ctx context.Context, channelID, message, rootID string) (string, error)
-	UserByEmail(ctx context.Context, email string) (mattermost.User, error)
-	DirectChannel(ctx context.Context, userA, userB string) (string, error)
+}
+
+// reportMailer emails one team admin (mail.Sender).
+type reportMailer interface {
+	Send(ctx context.Context, m mail.Message) error
+	CanReply() bool
 }
 
 // reportRunner runs report jobs one at a time (bestpractice.Runner).
@@ -41,13 +47,13 @@ type ReportOptions struct {
 	Rules   bestpractice.Options
 	// AdminChannel is where previews are posted and approved.
 	AdminChannel string
-	BotUserID    string
 	Messenger    reportMessenger
+	Mailer       reportMailer
 	Location     *time.Location
 	// Docs maps a rule topic (pdb, quorum, rabbitmq, redis) to a docs page.
 	Docs map[string]string
-	// Pace spaces the DMs out so a hundred of them do not trip Mattermost's
-	// rate limit (default 200ms).
+	// Pace spaces the emails out so a hundred of them do not trip the mail
+	// server's rate limit (default 200ms).
 	Pace time.Duration
 }
 
@@ -108,7 +114,6 @@ func (s *Service) BuildReport(ctx context.Context) error {
 	if len(inv.Failed) > 0 {
 		r.Failed = inv.Failed
 	}
-	r.Missing = s.missingAccounts(ctx, *r)
 
 	superseded, err := rf.Store.Add(r, rf.now())
 	if err != nil {
@@ -149,29 +154,6 @@ func (s *Service) BuildReport(ctx context.Context) error {
 	s.log.Info("best-practice report built", "report", rep.ID, "findings", len(rep.Findings),
 		"teams", len(rep.Teams()), "failed", len(inv.Failed))
 	return nil
-}
-
-// missingAccounts finds the admins who would receive the report but have no
-// Mattermost account, so the preview can name them before anything is sent.
-func (s *Service) missingAccounts(ctx context.Context, r bestpractice.Report) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, team := range r.Teams() {
-		for _, a := range r.Admins[team] {
-			if seen[a] {
-				continue
-			}
-			seen[a] = true
-			_, err := s.report.Messenger.UserByEmail(ctx, a)
-			if errors.Is(err, mattermost.ErrNotFound) {
-				out = append(out, a)
-			} else if err != nil {
-				s.log.Warn("best-practice report: account lookup failed", "email", a, "err", err)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func observeFindings(fs []bestpractice.Finding) {
@@ -444,12 +426,15 @@ func (s *Service) reportPreview(id, team string) string {
 	if admins == "" {
 		admins = "nobody (no admins in the Team CR)"
 	}
-	return fmt.Sprintf("_What the admins of `%s` receive (%s), before each admin's access check.%s_\n\n%s",
-		team, admins, note, bestpractice.DM([]string{bestpractice.TeamSection(team, fs, s.report.Docs)}))
+	e := bestpractice.AdminEmail([]bestpractice.TeamFindings{{Team: team, Findings: fs}}, s.report.Docs,
+		s.report.Mailer.CanReply())
+	return fmt.Sprintf("_The email the admins of `%s` receive (%s), before each admin's access check; "+
+		"its HTML part shows the same.%s_\n\n**Subject:** %s\n```text\n%s```",
+		team, admins, note, e.Subject, e.Text)
 }
 
 // deliverReport re-checks the clusters and sends the approved findings that
-// still hold, one DM per team admin.
+// still hold, one email per team admin.
 func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 	rf := s.report
 	now := rf.now()
@@ -494,7 +479,7 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 			case <-time.After(rf.Pace):
 			}
 		}
-		outcome := s.sendReportDM(ctx, email, recipients[email], byTeam, d)
+		outcome := s.sendReportEmail(ctx, email, recipients[email], byTeam, d)
 		metrics.ReportDeliveries.WithLabelValues(outcome).Inc()
 	}
 
@@ -506,17 +491,17 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 		s.log.Error("record best-practice delivery", "report", id, "err", err)
 	}
 	s.log.Info("best-practice report sent", "report", id, "by", by, "sent", len(d.Sent),
-		"noAccount", len(d.NoAccount), "authzFailed", len(d.AuthzFailed), "postFailed", len(d.PostFailed))
+		"rejected", len(d.Rejected), "authzFailed", len(d.AuthzFailed), "sendFailed", len(d.SendFailed))
 	if r.RootID != "" {
 		_ = s.post(ctx, rf.AdminChannel, r.RootID, bestpractice.DeliverySummary(r, rf.Location))
 	}
 	return nil
 }
 
-// sendReportDM sends one admin the findings of their teams that they can see.
-// Their access is checked now, through mcp-authz: a wrong team label must not
-// show one team's namespaces to another. Fail-closed: no check, no message.
-func (s *Service) sendReportDM(ctx context.Context, email string, teams []string,
+// sendReportEmail emails one admin the findings of their teams that they can
+// see. Their access is checked now, through mcp-authz: a wrong team label must
+// not show one team's namespaces to another. Fail-closed: no check, no email.
+func (s *Service) sendReportEmail(ctx context.Context, email string, teams []string,
 	byTeam map[string][]bestpractice.Finding, d *bestpractice.Delivery) string {
 	rf := s.report
 	scope, err := s.resolver.Resolve(ctx, s.resolveIdentity(email))
@@ -526,7 +511,7 @@ func (s *Service) sendReportDM(ctx context.Context, email string, teams []string
 		return "authz_error"
 	}
 	sort.Strings(teams)
-	var sections []string
+	var sections []bestpractice.TeamFindings
 	for _, team := range teams {
 		var visible []bestpractice.Finding
 		for _, f := range byTeam[team] {
@@ -537,7 +522,7 @@ func (s *Service) sendReportDM(ctx context.Context, email string, teams []string
 			}
 		}
 		if len(visible) > 0 {
-			sections = append(sections, bestpractice.TeamSection(team, visible, rf.Docs))
+			sections = append(sections, bestpractice.TeamFindings{Team: team, Findings: visible})
 		}
 	}
 	if len(sections) == 0 {
@@ -545,24 +530,17 @@ func (s *Service) sendReportDM(ctx context.Context, email string, teams []string
 		return "nothing_visible"
 	}
 
-	u, err := rf.Messenger.UserByEmail(ctx, email)
-	if errors.Is(err, mattermost.ErrNotFound) {
-		d.NoAccount = append(d.NoAccount, email)
-		return "no_account"
-	}
-	if err != nil {
-		s.log.Warn("best-practice report: account lookup failed", "email", email, "err", err)
-		d.PostFailed = append(d.PostFailed, email)
-		return "post_error"
-	}
-	ch, err := rf.Messenger.DirectChannel(ctx, rf.BotUserID, u.ID)
-	if err == nil {
-		err = s.post(ctx, ch, "", bestpractice.DM(sections))
-	}
-	if err != nil {
-		s.log.Warn("best-practice report: DM failed", "email", email, "err", err)
-		d.PostFailed = append(d.PostFailed, email)
-		return "post_error"
+	e := bestpractice.AdminEmail(sections, rf.Docs, rf.Mailer.CanReply())
+	err = rf.Mailer.Send(ctx, mail.Message{To: email, Subject: e.Subject, Text: e.Text, HTML: e.HTML})
+	switch {
+	case errors.Is(err, mail.ErrRejected):
+		s.log.Warn("best-practice report: address rejected", "email", email, "err", err)
+		d.Rejected = append(d.Rejected, email)
+		return "rejected"
+	case err != nil:
+		s.log.Warn("best-practice report: email failed", "email", email, "err", err)
+		d.SendFailed = append(d.SendFailed, email)
+		return "send_error"
 	}
 	d.Sent = append(d.Sent, email)
 	return "sent"

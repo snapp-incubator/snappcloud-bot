@@ -226,7 +226,8 @@ Three exemption classes:
   admins, and posted as a **preview** in `bestPractice.adminChannel`. Nothing is
   sent until a cluster-admin says `report approve <id>` there: the bot then
   scans again, sends only what is still true (what was fixed meanwhile is
-  dropped, what is new waits for next week), and DMs each team admin.
+  dropped, what is new waits for next week), and emails each team admin
+  through `mail` (SMTP).
   `report reject|exclude|preview|run|status` do what they say. Teams mark a
   finding intentional with the `snappcloud.io/best-practice-ignore: <rule>`
   annotation; the preview counts ignores so they stay visible.
@@ -234,7 +235,7 @@ Three exemption classes:
   audits every cluster on its own authority through openshift-mcp's
   `disruption_audit` and `list_teams` (keep both `clusterAdminOnly` in
   `toolRules`, so chat users cannot reach them). What it reads leaves through
-  two gates only: the preview, in a channel of cloud admins, and each DM, which
+  two gates only: the preview, in a channel of cloud admins, and each email, which
   holds only findings in namespaces that recipient can access, checked through
   mcp-authz at send time — a wrong team label cannot show one team's
   namespaces to another, and if the check fails the admin gets nothing.
@@ -373,7 +374,7 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_alert_investigation_duration_seconds` | — | investigation latency |
 | `snappcloud_bot_report_runs_total` | `outcome` | best-practice report builds: `ok` / `partial` (a cluster could not be read) / `error` |
 | `snappcloud_bot_report_findings` | `rule`, `severity` | findings in the latest report |
-| `snappcloud_bot_report_deliveries_total` | `outcome` | team-admin DMs: `sent` / `no_account` / `authz_error` / `nothing_visible` / `post_error` |
+| `snappcloud_bot_report_deliveries_total` | `outcome` | team-admin emails: `sent` / `rejected` / `authz_error` / `nothing_visible` / `send_error` |
 | `snappcloud_bot_report_collect_failures_total` | `cluster` | clusters a build could not read |
 | `snappcloud_bot_mcp_list_failures_total` | `server` | an MCP server that failed to list its tools — its tools are missing from every answer until it recovers |
 | `snappcloud_bot_tools_offered`, `_tools_per_cluster` | —, `cluster` | tools put in front of the model last turn, and what each cluster advertised |
@@ -397,6 +398,7 @@ environment (never YAML):
 | `MATTERMOST_TOKEN` | bot account token |
 | `LLM_API_KEY`      | `x-api-key` for the Anthropic-style endpoint |
 | `MCP_AUTHZ_TOKEN`  | bearer to every mcp-authz |
+| `MAIL_PASSWORD`    | SMTP password for `mail.username` (best-practice report) |
 | `<per-server>`     | Authorization header for an authed MCP server (e.g. `CILIUM_TEH1_AUTH`) |
 
 Key config sections: `agent.llm` (endpoint/model), `agent.clusters[].servers[]`

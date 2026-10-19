@@ -19,8 +19,8 @@ Every Saturday at 00:00 (`schedules.timezone`, Asia/Tehran), the bot:
 2. groups the findings by **team**: namespace label `snappcloud.io/team` →
    the `Team` CR → `spec.teamAdmins`;
 3. posts a **preview to the cloud-admin channel** and waits;
-4. once a cloud-admin **approves**, sends each team admin a DM listing only
-   their own team's findings.
+4. once a cloud-admin **approves**, **emails** each team admin (SMTP,
+   `mail.snapp.cab`) listing only their own team's findings.
 
 Nothing goes to a team without a human approving it first.
 
@@ -83,7 +83,7 @@ that data except through two gates:
 - **Preview**: posted only to the configured cloud-admin channel. Approval
   commands work only for callers with `scope.HasClusterWide()`, the same
   test `diagnostics` uses.
-- **Delivery**: before DMing a team admin, the bot resolves **that admin's**
+- **Delivery**: before emailing a team admin, the bot resolves **that admin's**
   scope through mcp-authz and drops every finding in a namespace the admin
   cannot access. If mcp-authz cannot be reached, that recipient gets nothing
   (fail-closed), and the failure is reported in the preview thread. A wrong
@@ -162,7 +162,7 @@ N is the owner's desired replica count, not `expectedPods`, so a member that
 is down at scan time does not change the rule's verdict. With N = 2, no
 setting is safe: the PDB either blocks drains or allows losing quorum. The
 finding says so and recommends 3 members instead of a different PDB value.
-The fix in the DM is computed: `minAvailable: ⌊N/2⌋+1`, or
+The fix in the email is computed: `minAvailable: ⌊N/2⌋+1`, or
 `maxUnavailable: 1`.
 
 How the rules combine on one workload: a single-instance broker **with** a
@@ -207,7 +207,7 @@ Sat 00:00 ─► collect (all clusters, in parallel, bounded) ─► evaluate ru
                 ▼
           re-collect → intersect → per recipient: mcp-authz gate
                 ▼
-          DM each team admin  ─► thread: sent / failed / dropped, by whom
+          email each team admin  ─► thread: sent / failed / dropped, by whom
 ```
 
 ### Preview (cloud-admin channel)
@@ -220,9 +220,9 @@ Root post, short:
 > `report approve r7k2m` · `report reject r7k2m` · expires Mon 00:00
 
 The thread contains:
-- a per-team table: team · clusters · high/med/low · recipients
-  (team admins whose Mattermost account was found; **missing accounts are
-  listed** so the email can be fixed before sending);
+- a per-team table: team · clusters · high/med/low · recipients (the Team
+  CR's admin emails; an address the mail server rejects is listed in the
+  delivery summary, so it can be fixed in the Team CR);
 - a "no owner" table and the ignored-by-annotation counts;
 - week-over-week changes: `+9 new · −14 fixed · 40 open ≥3 weeks`.
 
@@ -233,7 +233,7 @@ The thread contains:
 | `report approve <id>` | re-check, then send to every team in the report |
 | `report reject <id>` | close it without sending; the thread records who rejected it |
 | `report exclude <id> <team>[,<team>]` | remove teams before approving (e.g. a team under migration) |
-| `report preview <id> <team>` | show the exact DM that team would receive |
+| `report preview <id> <team>` | show the email (subject and text part) that team would receive |
 | `report run` | build a preview now (testing, or after a fix); same path as the timer |
 | `report status` | the last report, its state, the next run |
 
@@ -243,13 +243,20 @@ time. A new Saturday report **supersedes** an unapproved previous one, which
 is marked `expired` because its data is a week old. `expireAfter` (default
 48h) expires a pending report early.
 
-### Team admin DM
+### Team admin email
 
-One DM per admin. When a person administers several teams, they get one
-message with a section per team, not one message per team.
+One email per admin, `multipart/alternative` (plain text and HTML, the HTML
+built by `html/template` so names from cluster objects are escaped). When a
+person administers several teams, they get one email with a section per
+team, not one per team. Subject: `SnappCloud best-practice check: 5 findings
+for dispatching (2 high)`. `Auto-Submitted: auto-generated` keeps
+out-of-office replies away; `mail.replyTo`, when set, is where questions go.
+
+The admin channel stays the control room: preview, approval, and the
+delivery summary are still Mattermost posts.
 
 ```
-**Weekly SnappCloud best-practice check** — team `dispatching`
+Weekly SnappCloud best-practice check — team dispatching
 These can cause downtime, or block node maintenance, when a node is drained.
 
 🔴 **teh-1 / dispatching-prod — RabbitMQ `events` runs 1 replica**
@@ -263,7 +270,7 @@ These can cause downtime, or block node maintenance, when a node is drained.
 … 3 more (2 medium, 1 low)
 
 Intentional? Annotate the object with
-`snappcloud.io/best-practice-ignore: <rule-id>`. Questions: reply here.
+`snappcloud.io/best-practice-ignore: <rule-id>`. Questions: reply to this email.
 ```
 
 The rule text and fixes are templates in Go, one per rule ID, with a
@@ -288,7 +295,7 @@ written by a model.
     ID, table-tested against fixture JSON.
   - `report.go`: `Report`, `Finding{ID: cluster/ns/kind/name/rule}`,
     `Intersect`, week-over-week diff.
-  - `render.go`: preview, team DM, `report preview` output.
+  - `render.go`: preview, delivery summary; `email.go`: the team admin email (text and HTML).
   - `store.go`: pending/last reports + finding first-seen dates, using the
     same JSON-on-PVC, tmp-then-rename pattern as `schedule.Store`.
   - `runner.go`: the weekly timer. It computes the next slot with
@@ -299,13 +306,13 @@ written by a model.
     does not run the report twice.
 - `internal/brain/system.go`: `CallSystemTool`, and `ClustersWithTool(name)`,
   which finds the server that carries `disruption_audit` with no extra config.
-- `internal/mattermost/client.go`: `GetUserByEmail`
-  (`GET /api/v4/users/email/{email}`) and `DirectChannel(botID, userID)`
-  (`POST /api/v4/channels/direct`). A 404 means "no Mattermost account",
-  which is reported, not retried.
+- `internal/mail`: an SMTP sender (one connection per message, STARTTLS when
+  offered or TLS on 465, PLAIN or LOGIN auth, never a password in clear). A
+  5xx to `RCPT TO` is `ErrRejected` ("no such mailbox"), reported, not
+  retried.
 - `internal/bot/report.go`: the commands, the approval gate, delivery
-  (identity → mcp-authz scope → filter → DM), and thread updates. Delivery
-  is rate-paced (≈5 DMs/s) so 100+ DMs don't hit Mattermost's rate limit.
+  (identity → mcp-authz scope → filter → email), and thread updates. Delivery
+  is paced (≈5 emails/s) so 100+ emails don't trip the mail server's limits.
 - `internal/bot/commands.go`: `help` lists `report …` only for cluster-wide
   callers with the feature on.
 - `internal/config/config.go` + `config.example.yaml`: a `bestPractice`
@@ -374,8 +381,8 @@ a namespace with no env label counts as production. For quorum:
    `report run` only (no timer) by setting `schedule: ""`. Have cloud admins
    read two or three previews and tune `excludeNamespaceSelectors` and the rule
    texts.
-3. Write the user-docs pages the DMs link to, and announce to team admins
-   before the first DM arrives, so the first DM is expected.
+3. Write the user-docs pages the emails link to, and announce to team admins
+   before the first email arrives, so the first email is expected.
 4. Enable the Saturday schedule.
 
 ## Later
@@ -390,13 +397,11 @@ a namespace with no env label counts as production. For quorum:
 
 ## Open questions
 
-1. **Delivery target**: DM each admin (proposed), or a per-team channel if
-   teams have one? A `teamChannels: {team: channelID}` override is cheap to
-   add.
+1. **Delivery target**: decided: email each admin.
 2. **Approvers**: is "cluster-wide on any cluster" the right test, or should
    it be a named list or group (`approvers: [...]`)?
 3. **Language**: English like the rest of the bot, or Persian for the team
-   DM?
+   email?
 4. **Plain-workload detection by image**: include it in v1, or only report
    operator-managed instances at first, to keep the first few reports
    free of false positives? The same question applies to `quorumImages`.
@@ -409,16 +414,17 @@ a namespace with no env label counts as production. For quorum:
    `report …` commands. Its **channel ID** goes in
    `bestPractice.adminChannel` (channel menu → View Info, or
    `GET /api/v4/teams/name/<team>/channels/name/<channel>`).
-2. Verify that the bot token can **look up a user by email**. The bot already
-   reads senders' emails, so it probably can, but the endpoint is a different
-   one:
-   `curl -H "Authorization: Bearer $MATTERMOST_TOKEN" $MM/api/v4/users/email/<a-team-admin-email>`
-   should return a user, not 403/404.
-3. Verify that **direct messages aren't restricted to team members**
-   (System Console → Users and Teams → "Enable users to open Direct Message
-   channels with" = "Any user on the Mattermost server"). If it is set to
-   "Any member of the team", the bot must be a member of every team the team
-   admins are in.
-
 No slash command, webhook, or new permission is needed. Approvals are
 @-mentions, which go through the existing WebSocket.
+
+## Mail setup
+
+1. A mailbox (or relay permission) on `mail.snapp.cab` for the sender in
+   `mail.from`. Its username goes in `mail.username`, its password in the
+   Secret as `MAIL_PASSWORD` (`mail.passwordEnv`).
+2. The pod can reach `mail.snapp.cab:587` (or 465); egress NetworkPolicy may
+   need a rule.
+3. If the server's certificate is signed by an internal CA, the image must
+   trust it (mount it and set `SSL_CERT_FILE`, or add it to the image).
+4. Optionally a `mail.replyTo` the cloud team reads, so questions reach
+   people.

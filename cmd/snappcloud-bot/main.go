@@ -30,6 +30,7 @@ import (
 	"github.com/snapp-incubator/snappcloud-bot/internal/brain"
 	"github.com/snapp-incubator/snappcloud-bot/internal/config"
 	"github.com/snapp-incubator/snappcloud-bot/internal/llm"
+	"github.com/snapp-incubator/snappcloud-bot/internal/mail"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mcp"
 	"github.com/snapp-incubator/snappcloud-bot/internal/metrics"
@@ -234,6 +235,10 @@ func run(configPath, addr string, log *slog.Logger) error {
 		if len(clusters) == 0 {
 			clusters = theBrain.ClusterNames()
 		}
+		mailer, err := newMailer(cfg.Mail)
+		if err != nil {
+			return err
+		}
 		reportStore = bestpractice.NewStore(bp.Path, expireAfter)
 		reportOpts = &bot.ReportOptions{
 			Store: reportStore,
@@ -246,8 +251,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 				DisabledRules:     bp.DisabledRules,
 			},
 			AdminChannel: bp.AdminChannel,
-			BotUserID:    me.ID,
 			Messenger:    mm,
+			Mailer:       mailer,
 			Location:     loc,
 			Docs:         bp.Docs,
 		}
@@ -322,7 +327,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		go runner.Start(ctx)
 		next, scheduled := runner.Next()
 		log.Info("best-practice report enabled", "schedule", bp.Schedule, "scheduled", scheduled,
-			"next", next, "adminChannel", bp.AdminChannel)
+			"next", next, "adminChannel", bp.AdminChannel, "mail", cfg.Mail.Host)
 	}
 
 	go serveHealth(ctx, addr, log)
@@ -579,4 +584,20 @@ func optDuration(s string) (time.Duration, error) {
 		return 0, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// newMailer builds the SMTP sender for the best-practice report. A username
+// with no password in the environment is a misconfiguration, caught at start
+// rather than at the first approval.
+func newMailer(c config.Mail) (*mail.Sender, error) {
+	timeout, err := optDuration(c.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("parse mail.timeout: %w", err)
+	}
+	password := os.Getenv(c.PasswordEnv)
+	if c.Username != "" && password == "" {
+		return nil, fmt.Errorf("mail password env %q is empty", c.PasswordEnv)
+	}
+	return mail.New(mail.Config{Host: c.Host, Port: c.Port, Username: c.Username, Password: password,
+		From: c.From, ReplyTo: c.ReplyTo, Timeout: timeout})
 }
