@@ -355,11 +355,16 @@ func TestReportEmailContent(t *testing.T) {
 		t.Errorf("subject = %q", e.Subject)
 	}
 	for _, part := range []struct{ name, body string }{{"text", e.Text}, {"html", e.HTML}} {
-		for _, want := range []string{"Team ", "pay", "api", "vault", "pdb-min-available-all", bestpractice.AnnotationIgnore,
+		for _, want := range []string{"Team ", "pay", "api", "vault", "pdb-min-available-all", "cannot be ignored",
 			"reply to this email"} {
 			if !strings.Contains(part.body, want) {
 				t.Errorf("%s part missing %q:\n%s", part.name, want, part.body)
 			}
+		}
+		// Every finding here is a drain blocker: offering the ignore
+		// annotation would invite something that does not work.
+		if strings.Contains(part.body, bestpractice.AnnotationIgnore) {
+			t.Errorf("%s part offers the ignore annotation for drain blockers:\n%s", part.name, part.body)
 		}
 		if strings.Contains(part.body, "ops-prod") || strings.Contains(part.body, "orphan") {
 			t.Errorf("%s part leaks another team's findings:\n%s", part.name, part.body)

@@ -189,7 +189,11 @@ whole fleet, so add them only once the first two categories are working well.
 - Object annotation `snappcloud.io/best-practice-ignore: "<rule-id>[,<rule-id>]"`
   on the PDB, CR or workload, for teams to mark something as intentional. The
   admin preview **lists the ignored findings with counts** so ignores stay
-  visible.
+  visible. **Drain blockers cannot be ignored** (`pdb-max-unavailable-zero`,
+  `pdb-min-available-all`, `pdb-overlap`, `pdb-blocked-unhealthy`): a node
+  that cannot be drained holds up maintenance for everyone on it. An ignore
+  on one is overruled, and the finding says so; `bestPractice.disabledRules`
+  is the cloud team's only switch for them.
 - Namespaces with no team label: shown in the preview's **"no owner"**
   section and never sent to anyone. This is also a useful report on its own.
 

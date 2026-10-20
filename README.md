@@ -230,7 +230,9 @@ Three exemption classes:
   through `mail` (SMTP).
   `report reject|exclude|preview|run|status` do what they say. Teams mark a
   finding intentional with the `snappcloud.io/best-practice-ignore: <rule>`
-  annotation; the preview counts ignores so they stay visible.
+  annotation; the preview counts ignores so they stay visible. PDBs that block
+  node drains (`pdb-max-unavailable-zero`, `pdb-min-available-all`,
+  `pdb-overlap`, `pdb-blocked-unhealthy`) cannot be ignored: they must be fixed.
   **This is the one feature that reads without a caller's scope**: the bot
   audits every cluster on its own authority through openshift-mcp's
   `disruption_audit` and `list_teams` (keep both `clusterAdminOnly` in

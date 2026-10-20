@@ -40,8 +40,20 @@ func AdminEmail(teams []TeamFindings, docs map[string]string, canReply bool) Ema
 	if high > 0 {
 		subject += fmt.Sprintf(" (%d high)", high)
 	}
-	footer := fmt.Sprintf("Intentional? Annotate the object with %s: <rule>, using the rule shown under the finding.",
-		AnnotationIgnore)
+	var ignorable, blockers bool
+	for _, f := range all {
+		blockers = blockers || DrainBlocker(f.Rule)
+		ignorable = ignorable || !DrainBlocker(f.Rule)
+	}
+	var footer string
+	if ignorable {
+		footer = fmt.Sprintf("Intentional? Annotate the object with %s: <rule>, using the rule shown under the finding.",
+			AnnotationIgnore)
+	}
+	if blockers {
+		footer += " PDBs that block node drains cannot be ignored: they must be fixed."
+	}
+	footer = strings.TrimSpace(footer)
 	if canReply {
 		footer += " Questions: reply to this email."
 	}
@@ -59,7 +71,7 @@ func emailText(teams []TeamFindings, docs map[string]string, footer string) stri
 			if url := docs[Topic(f.Rule)]; url != "" {
 				fmt.Fprintf(&b, "Docs: %s\n", url)
 			}
-			fmt.Fprintf(&b, "Rule: %s\n", f.Rule)
+			fmt.Fprintf(&b, "Rule: %s%s\n", f.Rule, ignoreNote(f.Rule))
 		}
 	}
 	b.WriteString("\n--\n" + footer + "\n")
@@ -73,6 +85,7 @@ var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
 	"mark":  func(s Severity) string { return severityMark[s] },
 	"label": func(s Severity) string { return severityLabel[s] },
 	"docs":  func(docs map[string]string, rule string) string { return docs[Topic(rule)] },
+	"note":  ignoreNote,
 }).Parse(`<!doctype html>
 <html><body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;max-width:720px">
 <h2 style="font-size:18px;margin:0 0 4px">Weekly SnappCloud best-practice check</h2>
@@ -82,7 +95,7 @@ var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
 <div><b>{{mark .Severity}} {{label .Severity}} · {{.Cluster}} / {{.Namespace}} — {{code .Title}}</b></div>
 <div>{{code .Detail}}</div>
 <div><b>Fix:</b> {{code .Fix}}{{with docs $.Docs .Rule}} <a href="{{.}}">Docs</a>{{end}}</div>
-<div style="color:#59636e;font-size:12px">rule <code>{{.Rule}}</code></div>
+<div style="color:#59636e;font-size:12px">rule <code>{{.Rule}}</code>{{note .Rule}}</div>
 </div>
 {{end}}{{end}}<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
 <p style="color:#59636e;font-size:12px">{{code .Footer}}</p>
@@ -116,6 +129,14 @@ func codeSpans(s string) template.HTML {
 		b.WriteString(p)
 	}
 	return template.HTML(b.String()) //nolint:gosec // every piece is escaped above
+}
+
+// ignoreNote marks a rule the ignore annotation does not silence.
+func ignoreNote(rule string) string {
+	if DrainBlocker(rule) {
+		return " (cannot be ignored)"
+	}
+	return ""
 }
 
 func plural(n int) string {

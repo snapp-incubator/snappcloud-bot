@@ -39,8 +39,20 @@ func Topic(rule string) string {
 }
 
 // AnnotationIgnore is the annotation teams put on a PDB, CR or workload to
-// mark a finding as intentional. openshift-mcp passes its value through.
+// mark a finding as intentional. openshift-mcp passes its value through. It
+// does not apply to drain blockers.
 const AnnotationIgnore = "snappcloud.io/best-practice-ignore"
+
+// DrainBlocker reports whether a rule finds a PDB that stops node drains.
+// Those cannot be ignored: a node that cannot be drained holds up maintenance
+// for every workload on it, whatever its own team intends.
+func DrainBlocker(rule string) bool {
+	switch rule {
+	case RuleMaxUnavailableZero, RuleMinAvailableAll, RuleOverlap, RuleBlockedUnhealthy:
+		return true
+	}
+	return false
+}
 
 // Severity orders findings within a message.
 type Severity string
@@ -162,15 +174,23 @@ func (ce *clusterEval) production(ns string) bool {
 }
 
 // add records a finding unless its rule is disabled or the object ignores it.
+// A drain blocker is recorded even when ignored, and says so: the team that
+// annotated it believes it silenced.
 func (ce *clusterEval) add(f Finding, ignores ...string) {
 	if ce.disabled[f.Rule] || ce.skipped(f.Namespace) {
 		return
 	}
 	for _, ig := range ignores {
-		if ignoresRule(ig, f.Rule) {
-			ce.res.Ignored[f.Rule]++
-			return
+		if !ignoresRule(ig, f.Rule) {
+			continue
 		}
+		if DrainBlocker(f.Rule) {
+			f.Detail += fmt.Sprintf(" The `%s` annotation does not apply: a PDB that blocks drains must be fixed.",
+				AnnotationIgnore)
+			break
+		}
+		ce.res.Ignored[f.Rule]++
+		return
 	}
 	f.Cluster = ce.ci.Cluster
 	f.Team = ce.ci.Audit.Namespaces[f.Namespace].Team

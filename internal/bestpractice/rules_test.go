@@ -102,17 +102,40 @@ func TestBlockedByUnhealthyPods(t *testing.T) {
 }
 
 func TestIgnoreAnnotation(t *testing.T) {
+	quorum := Instance{Namespace: "app", Name: "zk", Engine: "zookeeper", Kind: "StatefulSet", Replicas: 3,
+		Quorum: true, Source: "image"}
+	for _, ig := range []string{"quorum-no-pdb", "pdb-overlap, quorum-no-pdb", "*"} {
+		quorum.Ignore = ig
+		res := Evaluate(inv("production", nil, []Instance{quorum}), Options{})
+		if len(res.Findings) != 0 || res.Ignored[RuleQuorumNoPDB] != 1 {
+			t.Errorf("annotation %q: findings %v ignored %v", ig, rules(res.Findings), res.Ignored)
+		}
+	}
+}
+
+// A PDB that blocks drains holds up maintenance for everyone on the node: no
+// annotation, on the PDB or its workload, silences it.
+func TestDrainBlockersCannotBeIgnored(t *testing.T) {
 	p := pdbOf("app", "p", num(1), nil, 1)
 	p.Ignore = "pdb-overlap, pdb-min-available-all"
 	res := Evaluate(inv("production", []PDB{p}, nil), Options{})
-	if len(res.Findings) != 0 || res.Ignored[RuleMinAvailableAll] != 1 {
-		t.Errorf("PDB annotation: findings %v ignored %v", rules(res.Findings), res.Ignored)
+	if got := rules(res.Findings); !reflect.DeepEqual(got, []string{"pdb-min-available-all:p"}) || len(res.Ignored) != 0 {
+		t.Fatalf("PDB annotation: findings %v ignored %v", got, res.Ignored)
+	}
+	if !strings.Contains(res.Findings[0].Detail, "annotation does not apply") {
+		t.Errorf("the finding must tell the team their annotation was overruled: %s", res.Findings[0].Detail)
 	}
 
 	p = pdbOf("app", "p", num(1), nil, 1)
 	p.Owners[0].Ignore = "*"
-	if res := Evaluate(inv("production", []PDB{p}, nil), Options{}); len(res.Findings) != 0 {
-		t.Errorf("owner annotation \"*\" must silence it, got %v", rules(res.Findings))
+	if got := rules(Evaluate(inv("production", []PDB{p}, nil), Options{}).Findings); len(got) != 1 {
+		t.Errorf("owner annotation \"*\" must not silence a drain blocker, got %v", got)
+	}
+	for _, r := range Rules {
+		want := r == RuleMaxUnavailableZero || r == RuleMinAvailableAll || r == RuleOverlap || r == RuleBlockedUnhealthy
+		if DrainBlocker(r) != want {
+			t.Errorf("DrainBlocker(%s) = %v", r, !want)
+		}
 	}
 }
 

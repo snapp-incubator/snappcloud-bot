@@ -28,3 +28,20 @@ func TestAdminEmailEscapesHTML(t *testing.T) {
 		t.Errorf("text:\n%s", e.Text)
 	}
 }
+
+// The ignore annotation is offered only for findings it can silence.
+func TestAdminEmailOffersIgnoreOnlyWhereItWorks(t *testing.T) {
+	blocker := Finding{Rule: RuleMinAvailableAll, Severity: High, Cluster: "teh-1", Namespace: "app", Title: "t", Detail: "d", Fix: "f"}
+	quorum := Finding{Rule: RuleQuorumNoPDB, Severity: High, Cluster: "teh-1", Namespace: "app", Title: "t", Detail: "d", Fix: "f"}
+
+	only := AdminEmail([]TeamFindings{{Team: "pay", Findings: []Finding{blocker}}}, nil, false)
+	if strings.Contains(only.Text, AnnotationIgnore) || !strings.Contains(only.Text, "Rule: pdb-min-available-all (cannot be ignored)") {
+		t.Errorf("blockers only:\n%s", only.Text)
+	}
+	mixed := AdminEmail([]TeamFindings{{Team: "pay", Findings: []Finding{blocker, quorum}}}, nil, false)
+	for _, want := range []string{AnnotationIgnore, "cannot be ignored: they must be fixed", "Rule: quorum-no-pdb\n"} {
+		if !strings.Contains(mixed.Text, want) {
+			t.Errorf("mixed missing %q:\n%s", want, mixed.Text)
+		}
+	}
+}
