@@ -198,10 +198,10 @@ var (
 		Help: "Findings in the latest best-practice report, by rule and severity.",
 	}, []string{"rule", "severity"})
 
-	// ReportDeliveries counts team-admin emails by outcome.
+	// ReportDeliveries counts best-practice report emails by outcome.
 	ReportDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "report_deliveries_total",
-		Help: "Best-practice report emails by outcome (sent, rejected, authz_error, nothing_visible, send_error).",
+		Help: "Best-practice report emails by outcome (sent, rejected, unrouted, send_error).",
 	}, []string{"outcome"})
 
 	// ReportCollectFailures counts clusters a report build could not read.
@@ -417,7 +417,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{"ok", "partial", "error"} {
 		ReportRuns.WithLabelValues(o)
 	}
-	for _, o := range []string{"sent", "rejected", "authz_error", "nothing_visible", "send_error"} {
+	for _, o := range []string{"sent", "rejected", "unrouted", "send_error"} {
 		ReportDeliveries.WithLabelValues(o)
 	}
 }

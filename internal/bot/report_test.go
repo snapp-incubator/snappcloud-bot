@@ -55,23 +55,30 @@ type fakeMailer struct {
 	sent []mail.Message
 }
 
-func (m *fakeMailer) Send(_ context.Context, msg mail.Message) error {
-	if strings.HasPrefix(msg.To, "nobody@") {
-		return fmt.Errorf("%w: 550 no such user", mail.ErrRejected)
+func (m *fakeMailer) Send(_ context.Context, msg mail.Message) ([]string, error) {
+	var rejected []string
+	for _, a := range slices.Concat(msg.To, msg.Cc) {
+		if strings.HasPrefix(a, "nobody@") {
+			rejected = append(rejected, a)
+		}
+	}
+	if len(rejected) == len(msg.To)+len(msg.Cc) {
+		return rejected, fmt.Errorf("%w: 550 no such user", mail.ErrRejected)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, msg)
-	return nil
+	return rejected, nil
 }
 func (m *fakeMailer) CanReply() bool { return true }
 
+// to returns the emails whose To holds addr.
 func (m *fakeMailer) to(addr string) []mail.Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []mail.Message
 	for _, msg := range m.sent {
-		if msg.To == addr {
+		if slices.Contains(msg.To, addr) {
 			out = append(out, msg)
 		}
 	}
@@ -99,45 +106,6 @@ func (r scopeResolver) Resolve(_ context.Context, user string) (authzclient.Scop
 		return nil, errors.New("mcp-authz unreachable")
 	}
 	return s, nil
-}
-
-// accessFake checks recipients against a scope table, for the named regions
-// only, and records what it was asked. A missing identity, or a region in
-// down, fails.
-type accessFake struct {
-	scopes scopeResolver
-	down   map[string]bool
-	delay  time.Duration
-
-	mu        sync.Mutex
-	asked     map[string][]string
-	cur, peak int
-}
-
-func (a *accessFake) ResolveRegions(_ context.Context, user string, regions []string) (authzclient.Scope, map[string]error) {
-	a.mu.Lock()
-	a.cur++
-	a.peak = max(a.peak, a.cur)
-	a.mu.Unlock()
-	time.Sleep(a.delay)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cur--
-	if a.asked == nil {
-		a.asked = map[string][]string{}
-	}
-	a.asked[user] = append(a.asked[user], regions...)
-	s, ok := a.scopes[user]
-	scope, failed := authzclient.Scope{}, map[string]error{}
-	for _, region := range regions {
-		switch cs, has := s[region]; {
-		case !ok || a.down[region]:
-			failed[region] = errors.New("mcp-authz unreachable")
-		case has:
-			scope[region] = cs
-		}
-	}
-	return scope, failed
 }
 
 // syncRunner runs jobs inline, so a test sees their effect at once.
@@ -172,12 +140,18 @@ func reportInventory() bestpractice.Inventory {
 }
 
 type reportFixture struct {
-	svc    *Service
-	mm     *reportMM
-	mail   *fakeMailer
-	access *accessFake
-	store  *bestpractice.Store
-	inv    bestpractice.Inventory
+	svc   *Service
+	mm    *reportMM
+	mail  *fakeMailer
+	store *bestpractice.Store
+	inv   bestpractice.Inventory
+}
+
+// reportRouting: pay is a group of its own; ops is in no group.
+var reportRouting = bestpractice.Routing{
+	Groups: [][]string{{"pay"}},
+	Others: []string{"tech-ems@snapp.cab"},
+	Cc:     []string{"cto@snapp.cab"},
 }
 
 func newReportFixture(t *testing.T) *reportFixture {
@@ -191,11 +165,7 @@ func newReportFixture(t *testing.T) *reportFixture {
 	resolver := scopeResolver{
 		"admin@snapp.cab":  {"teh-1": {ClusterWide: true, Namespaces: []string{"pay-prod"}}},
 		"tenant@snapp.cab": {"teh-1": {Namespaces: []string{"pay-prod"}}},
-		// alice cannot see pay-secret: that finding must not reach her.
-		"alice@snapp.cab": {"teh-1": {Namespaces: []string{"pay-prod"}}},
-		// bob is missing: his access check fails, so he gets nothing.
 	}
-	f.access = &accessFake{scopes: resolver}
 	f.svc = New(f.mm, &fakeBrain{answer: "agent answer"}, resolver, Options{
 		ConversationTTL: time.Hour, BotUsername: "snappbot", RequireMention: true,
 		Reports: &ReportOptions{
@@ -204,7 +174,7 @@ func newReportFixture(t *testing.T) *reportFixture {
 			AdminChannel: adminChannel,
 			Messenger:    f.mm,
 			Mailer:       f.mail,
-			Access:       f.access,
+			Routing:      reportRouting,
 			Location:     time.UTC,
 			Pace:         time.Nanosecond,
 		},
@@ -282,7 +252,9 @@ func TestReportBuildPostsPreview(t *testing.T) {
 	if detail == nil || detail.root != r.RootID || r.RootID == "" {
 		t.Fatalf("detail must be threaded under the root (%s): %+v", r.RootID, detail)
 	}
-	for _, want := range []string{"No owning team", "orphan", "nobody@snapp.cab"} {
+	for _, want := range []string{"**Emails**", "cc on every one: cto@snapp.cab",
+		"| pay | pay | 2 | 0 | alice@snapp.cab, nobody@snapp.cab |",
+		"| other teams | 1 teams in no group | 1 | 0 | tech-ems@snapp.cab |", "No owning team", "orphan"} {
 		if !strings.Contains(detail.msg, want) {
 			t.Errorf("preview detail missing %q:\n%s", want, detail.msg)
 		}
@@ -292,17 +264,17 @@ func TestReportBuildPostsPreview(t *testing.T) {
 	}
 }
 
-func TestReportApproveSendsOnlyWhatEachAdminCanSee(t *testing.T) {
+func TestReportApproveSendsWhatStillHolds(t *testing.T) {
 	f := newReportFixture(t)
 	f.say(t, "admin@snapp.cab", adminChannel, "report run")
 	id := f.latest(t).ID
 
-	// pay-prod is fixed before approval; a new problem appears meanwhile.
+	// pay-prod is fixed before approval.
 	f.inv.Clusters[0].Audit.PDBs[0].MinAvailable = nil
 	f.inv.Clusters[0].Audit.PDBs[0].MaxUnavailable = &bestpractice.IntOrPercent{Value: 1}
 	f.inv.Clusters[0].Audit.PDBs[0].DesiredHealthy = 0
 
-	if got := f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id); !strings.Contains(got, "Approved") {
+	if got := f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id); !strings.Contains(got, "sending 2 emails for 2 teams") {
 		t.Fatalf("approve reply = %q", got)
 	}
 	r := f.latest(t)
@@ -310,21 +282,18 @@ func TestReportApproveSendsOnlyWhatEachAdminCanSee(t *testing.T) {
 		t.Fatalf("report = %+v", r)
 	}
 	d := r.Delivery
-	// pay: api resolved, vault still there but alice cannot see pay-secret.
-	if d.Resolved != 1 || len(d.NothingVisible) != 1 || d.NothingVisible[0] != "alice@snapp.cab" || d.ScopeDropped != 1 {
+	if d.Resolved != 1 || !slices.Equal(d.Sent, []string{"pay", bestpractice.OthersName}) ||
+		!slices.Equal(d.Rejected, []string{"nobody@snapp.cab"}) {
 		t.Errorf("delivery = %+v", d)
 	}
-	if len(f.mail.to("alice@snapp.cab")) != 0 {
-		t.Error("alice must receive nothing: her only remaining finding is in a namespace she cannot access")
-	}
-	// bob's access check fails: fail-closed. nobody's too, so the mail
-	// server is never asked about the address.
-	if len(d.AuthzFailed) != 2 || len(f.mail.to("bob@snapp.cab")) != 0 || len(d.Rejected) != 0 {
-		t.Errorf("delivery = %+v, bob emails = %d", d, len(f.mail.to("bob@snapp.cab")))
+	pay := f.mail.to("alice@snapp.cab")
+	if len(pay) != 1 || !strings.Contains(pay[0].Subject, "1 finding for pay (1 high)") {
+		t.Fatalf("pay emails = %+v", pay)
 	}
 	threaded := false
 	for _, p := range f.mm.in(adminChannel) {
-		threaded = threaded || (p.root == r.RootID && strings.Contains(p.msg, "Approved by admin@snapp.cab"))
+		threaded = threaded || (p.root == r.RootID && strings.Contains(p.msg, "Approved by admin@snapp.cab") &&
+			strings.Contains(p.msg, "Sent **2** emails") && strings.Contains(p.msg, "nobody@snapp.cab"))
 	}
 	if !threaded {
 		t.Errorf("delivery summary not posted in the report thread: %+v", f.mm.in(adminChannel))
@@ -335,56 +304,83 @@ func TestReportApproveSendsOnlyWhatEachAdminCanSee(t *testing.T) {
 	}
 }
 
+// A group's email goes to its teams' admins, the rest to Others, both with
+// the cc, and each carries only its own teams in a PDF.
 func TestReportEmailContent(t *testing.T) {
 	f := newReportFixture(t)
-	f.access.scopes = scopeResolver{
-		"alice@snapp.cab":  {"teh-1": {Namespaces: []string{"pay-prod", "pay-secret"}}},
-		"bob@snapp.cab":    {"teh-1": {Namespaces: []string{"ops-prod"}}},
-		"nobody@snapp.cab": {"teh-1": {Namespaces: []string{"pay-prod"}}},
-	}
 	f.say(t, "admin@snapp.cab", adminChannel, "report run")
-	id := f.latest(t).ID
-	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id)
+	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
 
-	got := f.mail.to("alice@snapp.cab")
-	if len(got) != 1 {
-		t.Fatalf("alice emails = %d", len(got))
+	pay, others := f.mail.to("alice@snapp.cab"), f.mail.to("tech-ems@snapp.cab")
+	if len(pay) != 1 || len(others) != 1 || len(f.mail.to("bob@snapp.cab")) != 0 {
+		t.Fatalf("pay = %d, others = %d, bob = %d emails", len(pay), len(others), len(f.mail.to("bob@snapp.cab")))
 	}
-	e := got[0]
-	if !strings.Contains(e.Subject, "2 findings for pay (2 high)") {
-		t.Errorf("subject = %q", e.Subject)
-	}
-	for _, part := range []struct{ name, body string }{{"text", e.Text}, {"html", e.HTML}} {
-		for _, want := range []string{"Team ", "pay", "api", "vault", "pdb-min-available-all", "cannot be ignored",
-			"reply to this email"} {
-			if !strings.Contains(part.body, want) {
-				t.Errorf("%s part missing %q:\n%s", part.name, want, part.body)
+	for _, c := range []struct {
+		e          mail.Message
+		has, hasnt string
+		to         []string
+	}{
+		{pay[0], "pay", "ops", []string{"alice@snapp.cab", "nobody@snapp.cab"}},
+		{others[0], "ops", "pay", []string{"tech-ems@snapp.cab"}},
+	} {
+		if !slices.Equal(c.e.To, c.to) || !slices.Equal(c.e.Cc, []string{"cto@snapp.cab"}) {
+			t.Errorf("%s: to %v cc %v", c.has, c.e.To, c.e.Cc)
+		}
+		if len(c.e.Attachments) != 1 || c.e.Attachments[0].ContentType != "application/pdf" ||
+			!strings.HasPrefix(string(c.e.Attachments[0].Data), "%PDF-") ||
+			!strings.HasPrefix(c.e.Attachments[0].Name, "snappcloud-best-practice-") {
+			t.Errorf("%s: attachments = %+v", c.has, c.e.Attachments)
+		}
+		for _, part := range []string{c.e.Text, c.e.HTML} {
+			if !strings.Contains(part, c.has) || strings.Contains(part, c.hasnt) || strings.Contains(part, "orphan") {
+				t.Errorf("%s email must name %s only:\n%s", c.has, c.has, part)
 			}
 		}
-		// Every finding here is a drain blocker: offering the ignore
-		// annotation would invite something that does not work.
-		if strings.Contains(part.body, bestpractice.AnnotationIgnore) {
-			t.Errorf("%s part offers the ignore annotation for drain blockers:\n%s", part.name, part.body)
-		}
-		if strings.Contains(part.body, "ops-prod") || strings.Contains(part.body, "orphan") {
-			t.Errorf("%s part leaks another team's findings:\n%s", part.name, part.body)
-		}
 	}
-	if !strings.Contains(e.HTML, "PDB <code>api</code>") {
-		t.Errorf("html does not render code spans:\n%s", e.HTML)
+	// Every finding is a drain blocker: offering the ignore annotation would
+	// invite something that does not work.
+	if strings.Contains(pay[0].Text, bestpractice.AnnotationIgnore) || !strings.Contains(pay[0].Text, "cannot be ignored") {
+		t.Errorf("footer:\n%s", pay[0].Text)
 	}
+}
+
+// An email nobody is configured to receive is not sent, and the summary says so.
+func TestReportWithoutRecipientsIsNotSent(t *testing.T) {
+	f := newReportFixture(t)
+	f.svc.report.Routing = bestpractice.Routing{Groups: [][]string{{"pay"}}}
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
+
 	d := f.latest(t).Delivery
-	if len(d.Sent) != 2 || len(d.Rejected) != 1 || d.Rejected[0] != "nobody@snapp.cab" {
+	if !slices.Equal(d.Sent, []string{"pay"}) || !slices.Equal(d.Unrouted, []string{bestpractice.OthersName}) {
 		t.Errorf("delivery = %+v", d)
+	}
+	if len(f.mail.sent) != 1 {
+		t.Errorf("sent %d emails", len(f.mail.sent))
 	}
 	var summary string
 	for _, p := range f.mm.in(adminChannel) {
-		if strings.Contains(p.msg, "Emailed **2**") {
+		if strings.Contains(p.msg, "Approved by") {
 			summary = p.msg
 		}
 	}
-	if !strings.Contains(summary, "Address rejected by the mail server") || !strings.Contains(summary, "nobody@snapp.cab") {
-		t.Errorf("summary must name the rejected address:\n%s", summary)
+	if !strings.Contains(summary, "nobody to send to: other teams") {
+		t.Errorf("summary:\n%s", summary)
+	}
+}
+
+func TestReportPreviewShowsTheTeamsEmail(t *testing.T) {
+	f := newReportFixture(t)
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	got := f.say(t, "admin@snapp.cab", adminChannel, "report preview "+f.latest(t).ID+" ops")
+	for _, want := range []string{"**To:** tech-ems@snapp.cab", "**Cc:** cto@snapp.cab", "**Attached:** snappcloud-best-practice-",
+		"(other teams)", "teh-1 / ops-prod", "Rule: pdb-min-available-all (cannot be ignored)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "pay-prod") {
+		t.Errorf("preview of ops shows pay's findings:\n%s", got)
 	}
 }
 
@@ -410,47 +406,6 @@ func TestReportRejectAndExclude(t *testing.T) {
 	}
 	if got := f.say(t, "admin@snapp.cab", adminChannel, "report status"); !strings.Contains(got, "rejected") {
 		t.Errorf("status = %q", got)
-	}
-}
-
-// Each recipient is checked only on the clusters holding their findings, and
-// a cluster that cannot be checked withholds only its own findings.
-func TestReportChecksOnlyTheRecipientsClusters(t *testing.T) {
-	f := newReportFixture(t)
-	one := 1
-	f.inv.Clusters = append(f.inv.Clusters, bestpractice.ClusterInventory{
-		Cluster: "teh-2",
-		Audit: bestpractice.Audit{
-			PDBs: []bestpractice.PDB{{Namespace: "pay-prod", Name: "worker", MinAvailable: &bestpractice.IntOrPercent{Value: 1},
-				ExpectedPods: 1, CurrentHealthy: 1, DesiredHealthy: 1,
-				Owners: []bestpractice.Owner{{Kind: "Deployment", Name: "worker", Replicas: &one}}}},
-			Namespaces: map[string]bestpractice.NSOwner{"pay-prod": {Team: "pay"}},
-		},
-		Teams: []bestpractice.Team{{Team: "pay", Admins: []string{"alice@snapp.cab"}}},
-	})
-	f.access.scopes = scopeResolver{
-		"alice@snapp.cab": {"teh-1": {Namespaces: []string{"pay-prod"}}, "teh-2": {Namespaces: []string{"pay-prod"}}},
-		"bob@snapp.cab":   {"teh-1": {Namespaces: []string{"ops-prod"}}},
-	}
-	f.access.down = map[string]bool{"teh-2": true}
-	f.say(t, "admin@snapp.cab", adminChannel, "report run")
-	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
-
-	if got := f.access.asked["bob@snapp.cab"]; !slices.Equal(got, []string{"teh-1"}) {
-		t.Errorf("bob's findings are all on teh-1, yet asked %v", got)
-	}
-	if got := f.access.asked["alice@snapp.cab"]; !slices.Equal(got, []string{"teh-1", "teh-2"}) {
-		t.Errorf("alice asked %v", got)
-	}
-	got := f.mail.to("alice@snapp.cab")
-	if len(got) != 1 || !strings.Contains(got[0].Text, "teh-1 / pay-prod") || strings.Contains(got[0].Text, "teh-2") {
-		t.Fatalf("alice must get teh-1's finding and not teh-2's, whose check failed: %+v", got)
-	}
-	// Unchecked: alice's teh-2 finding, and all 3 of pay's for nobody@, whose
-	// identity mcp-authz does not know.
-	d := f.latest(t).Delivery
-	if d.Unchecked != 4 || !slices.Contains(d.AuthzFailed, "alice@snapp.cab") || !slices.Contains(d.Sent, "alice@snapp.cab") {
-		t.Errorf("delivery = %+v", d)
 	}
 }
 
@@ -483,20 +438,5 @@ func TestReportSummaryNamesRecheckFailuresAndSurvivesTimeout(t *testing.T) {
 		if !strings.Contains(summary, want) {
 			t.Errorf("summary missing %q:\n%s", want, summary)
 		}
-	}
-}
-
-// Recipients are checked several at once: one slow mcp-authz answer per
-// admin, one after another, is what made an approval take minutes.
-func TestReportChecksRecipientsConcurrently(t *testing.T) {
-	f := newReportFixture(t)
-	f.access.delay = 50 * time.Millisecond
-	f.say(t, "admin@snapp.cab", adminChannel, "report run")
-	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
-	if f.access.peak < 2 {
-		t.Errorf("recipients checked one at a time (peak %d)", f.access.peak)
-	}
-	if f.access.peak > accessConcurrency {
-		t.Errorf("peak %d exceeds the bound %d", f.access.peak, accessConcurrency)
 	}
 }

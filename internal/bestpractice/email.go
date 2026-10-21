@@ -6,42 +6,72 @@ import (
 	"html"
 	"html/template"
 	"strings"
+	"time"
 )
 
-// TeamFindings is one team's findings, as one of its admins may see them.
-type TeamFindings struct {
-	Team     string
-	Findings []Finding
-}
-
-// Email is what one team admin receives: a section per team they administer.
+// Email is one mailing rendered: a short body summing it up, and a PDF with
+// every finding and how to fix it.
 type Email struct {
-	Subject string
-	Text    string
-	HTML    string
+	Subject  string
+	Text     string
+	HTML     string
+	FileName string
+	PDF      []byte
 }
 
 const emailIntro = "These can cause downtime, or block node maintenance, when a node is drained."
 
 var severityLabel = map[Severity]string{High: "High", Medium: "Medium"}
 
-// AdminEmail renders one admin's email. canReply says whether a reply reaches
-// the cloud team (a Reply-To is configured).
-func AdminEmail(teams []TeamFindings, docs map[string]string, canReply bool) Email {
-	var all []Finding
-	names := make([]string, 0, len(teams))
-	for _, t := range teams {
-		all = append(all, t.Findings...)
-		names = append(names, t.Team)
+// TeamCount is one row of an email's summary table.
+type TeamCount struct {
+	Team         string
+	High, Medium int
+}
+
+// ReportEmail renders one mailing. canReply says whether a reply reaches the
+// cloud team (a Reply-To is configured); created dates the report.
+func ReportEmail(m Mailing, docs map[string]string, canReply bool, created time.Time, loc *time.Location) (Email, error) {
+	high, _ := counts(m.Findings)
+	who := strings.Join(m.Teams, ", ")
+	if len(m.Teams) > 3 {
+		who = fmt.Sprintf("%d teams", len(m.Teams))
 	}
-	high, _ := counts(all)
-	subject := fmt.Sprintf("SnappCloud best-practice check: %d finding%s for %s", len(all), plural(len(all)),
-		strings.Join(names, ", "))
+	subject := fmt.Sprintf("SnappCloud best-practice check: %d finding%s for %s", len(m.Findings), plural(len(m.Findings)), who)
 	if high > 0 {
 		subject += fmt.Sprintf(" (%d high)", high)
 	}
+	if loc == nil {
+		loc = time.Local
+	}
+	day := created.In(loc)
+	footer := emailFooter(m.Findings, canReply)
+	pdf, err := reportPDF(m, docs, footer, day)
+	if err != nil {
+		return Email{}, err
+	}
+	var rows []TeamCount
+	byTeam := GroupByTeam(m.Findings)
+	for _, t := range m.Teams {
+		h, md := counts(byTeam[t])
+		rows = append(rows, TeamCount{t, h, md})
+	}
+	lead := fmt.Sprintf("The attached PDF has the %d finding%s for these teams, and how to fix each one.",
+		len(m.Findings), plural(len(m.Findings)))
+	return Email{
+		Subject:  subject,
+		Text:     emailText(day, lead, rows, footer),
+		HTML:     emailHTML(day, lead, rows, footer),
+		FileName: "snappcloud-best-practice-" + day.Format("2006-01-02") + ".pdf",
+		PDF:      pdf,
+	}, nil
+}
+
+// emailFooter says how to silence a finding, where that works, and where to
+// ask.
+func emailFooter(fs []Finding, canReply bool) string {
 	var ignorable, blockers bool
-	for _, f := range all {
+	for _, f := range fs {
 		blockers = blockers || DrainBlocker(f.Rule)
 		ignorable = ignorable || !DrainBlocker(f.Rule)
 	}
@@ -57,60 +87,66 @@ func AdminEmail(teams []TeamFindings, docs map[string]string, canReply bool) Ema
 	if canReply {
 		footer += " Questions: reply to this email."
 	}
-	return Email{Subject: subject, Text: emailText(teams, docs, footer), HTML: emailHTML(teams, docs, footer)}
+	return strings.TrimSpace(footer)
 }
 
-func emailText(teams []TeamFindings, docs map[string]string, footer string) string {
+func emailText(day time.Time, lead string, rows []TeamCount, footer string) string {
 	var b strings.Builder
-	b.WriteString("Weekly SnappCloud best-practice check\n\n" + emailIntro + "\n")
-	for _, t := range teams {
-		fmt.Fprintf(&b, "\n== Team %s ==\n", t.Team)
-		for _, f := range t.Findings {
-			fmt.Fprintf(&b, "\n[%s] %s / %s — %s\n%s\nFix: %s\n", severityLabel[f.Severity], f.Cluster, f.Namespace,
-				f.Title, f.Detail, f.Fix)
-			if url := docs[Topic(f.Rule)]; url != "" {
-				fmt.Fprintf(&b, "Docs: %s\n", url)
-			}
-			fmt.Fprintf(&b, "Rule: %s%s\n", f.Rule, ignoreNote(f.Rule))
-		}
+	fmt.Fprintf(&b, "Weekly SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, lead)
+	w := len("Team")
+	for _, r := range rows {
+		w = max(w, len(r.Team))
+	}
+	fmt.Fprintf(&b, "%-*s  %4s  %6s\n", w, "Team", "High", "Medium")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "%-*s  %4d  %6d\n", w, r.Team, r.High, r.Medium)
 	}
 	b.WriteString("\n--\n" + footer + "\n")
 	return b.String()
 }
 
-// Everything in a finding comes from cluster objects that tenants name, so the
-// HTML is built by html/template and only `code` spans become markup.
+// FindingsText lists findings as the PDF does, for the admin channel.
+func FindingsText(fs []Finding, docs map[string]string) string {
+	var b strings.Builder
+	for i, f := range fs {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "[%s] %s / %s — %s\n%s\nFix: %s\n", severityLabel[f.Severity], f.Cluster, f.Namespace,
+			f.Title, f.Detail, f.Fix)
+		if url := docs[Topic(f.Rule)]; url != "" {
+			fmt.Fprintf(&b, "Docs: %s\n", url)
+		}
+		fmt.Fprintf(&b, "Rule: %s%s\n", f.Rule, ignoreNote(f.Rule))
+	}
+	return b.String()
+}
+
+// Team names come from cluster objects, so the HTML is built by html/template.
 var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
-	"code":  codeSpans,
-	"mark":  func(s Severity) string { return severityMark[s] },
-	"label": func(s Severity) string { return severityLabel[s] },
-	"docs":  func(docs map[string]string, rule string) string { return docs[Topic(rule)] },
-	"note":  ignoreNote,
+	"code": codeSpans,
 }).Parse(`<!doctype html>
 <html><body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;max-width:720px">
 <h2 style="font-size:18px;margin:0 0 4px">Weekly SnappCloud best-practice check</h2>
-<p style="margin:0 0 16px;color:#59636e">{{.Intro}}</p>
-{{range .Teams}}<h3 style="font-size:16px;margin:24px 0 8px">Team <code>{{.Team}}</code></h3>
-{{range .Findings}}<div style="border-left:3px solid {{if eq .Severity "high"}}#d1242f{{else}}#bc4c00{{end}};padding:4px 12px;margin:0 0 12px">
-<div><b>{{mark .Severity}} {{label .Severity}} · {{.Cluster}} / {{.Namespace}} — {{code .Title}}</b></div>
-<div>{{code .Detail}}</div>
-<div><b>Fix:</b> {{code .Fix}}{{with docs $.Docs .Rule}} <a href="{{.}}">Docs</a>{{end}}</div>
-<div style="color:#59636e;font-size:12px">rule <code>{{.Rule}}</code>{{note .Rule}}</div>
-</div>
-{{end}}{{end}}<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
+<p style="margin:0 0 4px;color:#59636e">{{.Day}}</p>
+<p style="margin:12px 0">{{.Intro}}<br>{{.Lead}}</p>
+<table style="border-collapse:collapse;font-size:14px">
+<tr><th style="text-align:left;padding:4px 16px 4px 0;border-bottom:1px solid #d1d9e0">Team</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">High</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">Medium</th></tr>
+{{range .Rows}}<tr><td style="padding:4px 16px 4px 0"><code>{{.Team}}</code></td><td style="text-align:right;padding:4px 0 4px 16px;{{if .High}}color:#d1242f;font-weight:600{{end}}">{{.High}}</td><td style="text-align:right;padding:4px 0 4px 16px">{{.Medium}}</td></tr>
+{{end}}</table>
+<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
 <p style="color:#59636e;font-size:12px">{{code .Footer}}</p>
 </body></html>
 `))
 
-func emailHTML(teams []TeamFindings, docs map[string]string, footer string) string {
+func emailHTML(day time.Time, lead string, rows []TeamCount, footer string) string {
 	var b bytes.Buffer
 	err := emailTmpl.Execute(&b, struct {
-		Intro, Footer string
-		Teams         []TeamFindings
-		Docs          map[string]string
-	}{emailIntro, footer, teams, docs})
+		Day, Intro, Lead, Footer string
+		Rows                     []TeamCount
+	}{day.Format("2 January 2006"), emailIntro, lead, footer, rows})
 	if err != nil { // the template is fixed; only a bug gets here
-		return "<pre>" + html.EscapeString(emailText(teams, docs, footer)) + "</pre>"
+		return "<pre>" + html.EscapeString(emailText(day, lead, rows, footer)) + "</pre>"
 	}
 	return b.String()
 }

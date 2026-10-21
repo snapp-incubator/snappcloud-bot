@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -279,12 +278,27 @@ func (c *Client) Resolve(ctx context.Context, user string) (Scope, error) {
 func (c *Client) ResolveWithGroups(ctx context.Context, user string, groups []string) (Scope, error) {
 	start := time.Now()
 	defer func() { metrics.AuthzDuration.Observe(time.Since(start).Seconds()) }()
+	type result struct {
+		name string
+		cs   ClusterScope
+		err  error
+	}
+	ch := make(chan result, len(c.regions))
+	for _, r := range c.regions {
+		r := r
+		go func() {
+			cs, err := c.namespaces(ctx, r, user, groups)
+			ch <- result{name: r.Name, cs: cs, err: err}
+		}()
+	}
 
 	scope := Scope{}
 	errCount := 0
 	var firstErr error
-	for _, res := range c.fanOut(ctx, c.regions, user, groups) {
+	for range c.regions {
+		res := <-ch
 		if res.err != nil {
+			metrics.AuthzRequests.WithLabelValues(res.name, "error").Inc()
 			// A region that errors is dropped (the user just can't query it this
 			// time). Log it so a broken/unreachable region is not invisible —
 			// otherwise it is indistinguishable from "user has no namespaces here".
@@ -296,7 +310,9 @@ func (c *Client) ResolveWithGroups(ctx context.Context, user string, groups []st
 			}
 			continue
 		}
+		metrics.AuthzRequests.WithLabelValues(res.name, "ok").Inc()
 		if len(res.cs.Namespaces) > 0 {
+			sort.Strings(res.cs.Namespaces)
 			scope[res.name] = res.cs
 		} else {
 			c.log.Debug("region returned no namespaces for user", "region", res.name, "user", user)
@@ -306,67 +322,4 @@ func (c *Client) ResolveWithGroups(ctx context.Context, user string, groups []st
 		return nil, firstErr
 	}
 	return scope, nil
-}
-
-// ResolveRegions asks only the named regions, and reports each one that
-// failed rather than dropping it: a caller that releases data per cluster
-// must tell "no access there" from "could not check". A name with no
-// configured region fails too. Nothing is cached.
-func (c *Client) ResolveRegions(ctx context.Context, user string, names []string) (Scope, map[string]error) {
-	start := time.Now()
-	defer func() { metrics.AuthzDuration.Observe(time.Since(start).Seconds()) }()
-
-	failed := map[string]error{}
-	var regions []Region
-	for _, n := range names {
-		i := slices.IndexFunc(c.regions, func(r Region) bool { return r.Name == n })
-		if i < 0 {
-			failed[n] = fmt.Errorf("no mcp-authz region %q is configured", n)
-			continue
-		}
-		regions = append(regions, c.regions[i])
-	}
-	scope := Scope{}
-	for _, res := range c.fanOut(ctx, regions, user, nil) {
-		if res.err != nil {
-			failed[res.name] = res.err
-			continue
-		}
-		if len(res.cs.Namespaces) > 0 {
-			scope[res.name] = res.cs
-		}
-	}
-	return scope, failed
-}
-
-type regionResult struct {
-	name string
-	cs   ClusterScope
-	err  error
-}
-
-// fanOut asks every given region at once and returns their answers, each
-// counted in the request metrics.
-func (c *Client) fanOut(ctx context.Context, regions []Region, user string, groups []string) []regionResult {
-	ch := make(chan regionResult, len(regions))
-	for _, r := range regions {
-		go func() {
-			cs, err := c.namespaces(ctx, r, user, groups)
-			if err == nil {
-				sort.Strings(cs.Namespaces)
-			}
-			ch <- regionResult{name: r.Name, cs: cs, err: err}
-		}()
-	}
-	out := make([]regionResult, 0, len(regions))
-	for range regions {
-		res := <-ch
-		outcome := "ok"
-		if res.err != nil {
-			outcome = "error"
-		}
-		metrics.AuthzRequests.WithLabelValues(res.name, outcome).Inc()
-		out = append(out, res)
-	}
-	return out
 }

@@ -3,6 +3,7 @@ package mail
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
@@ -122,16 +123,26 @@ func newSender(t *testing.T, f *fakeSMTP, user string) *Sender {
 func TestSendBuildsAMultipartMessage(t *testing.T) {
 	f := newFakeSMTP(t, false)
 	s := newSender(t, f, "")
-	err := s.Send(context.Background(), Message{
-		To: "alice@snapp.cab", Subject: "Best-practice check — 2 findings 🔴",
-		Text: "PDB `api` allows no evictions\nFix: set maxUnavailable: 1",
-		HTML: "<p>PDB <code>api</code> allows no evictions</p>",
+	rejected, err := s.Send(context.Background(), Message{
+		To: []string{"alice@snapp.cab", "bob@snapp.cab"}, Cc: []string{"cto@snapp.cab", "Alice@snapp.cab"},
+		Subject:     "Best-practice check — 2 findings 🔴",
+		Text:        "PDB `api` allows no evictions\nFix: set maxUnavailable: 1",
+		HTML:        "<p>PDB <code>api</code> allows no evictions</p>",
+		Attachments: []Attachment{{Name: "report.pdf", ContentType: "application/pdf", Data: []byte("%PDF-1.4 fake")}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(rejected) != 0 {
+		t.Fatal(rejected, err)
 	}
 	cmds, data := f.seen()
-	if !slices.Contains(cmds, "MAIL FROM:<bot@snapp.cab>") || !slices.Contains(cmds, "RCPT TO:<alice@snapp.cab>") {
+	var rcpts []string
+	for _, c := range cmds {
+		if strings.HasPrefix(c, "RCPT TO:") {
+			rcpts = append(rcpts, c)
+		}
+	}
+	// alice is in To already: Cc does not deliver her a second copy.
+	if !slices.Contains(cmds, "MAIL FROM:<bot@snapp.cab>") ||
+		!slices.Equal(rcpts, []string{"RCPT TO:<alice@snapp.cab>", "RCPT TO:<bob@snapp.cab>", "RCPT TO:<cto@snapp.cab>"}) {
 		t.Errorf("envelope = %v", cmds)
 	}
 
@@ -143,46 +154,83 @@ func TestSendBuildsAMultipartMessage(t *testing.T) {
 	if subject != "Best-practice check — 2 findings 🔴" {
 		t.Errorf("subject = %q", subject)
 	}
-	for k, want := range map[string]string{"To": "<alice@snapp.cab>", "Reply-To": "<cloud@snapp.cab>",
-		"Auto-Submitted": "auto-generated", "From": `"SnappCloud" <bot@snapp.cab>`} {
+	for k, want := range map[string]string{"To": "<alice@snapp.cab>, <bob@snapp.cab>", "Cc": "<cto@snapp.cab>",
+		"Reply-To": "<cloud@snapp.cab>", "Auto-Submitted": "auto-generated", "From": `"SnappCloud" <bot@snapp.cab>`} {
 		if got := msg.Header.Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
 	}
-	_, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+
+	mixed := parts(t, msg.Header.Get("Content-Type"), msg.Body)
+	if len(mixed) != 2 || !strings.HasPrefix(mixed[0].typ, "multipart/alternative") {
+		t.Fatalf("mixed parts = %v", mixed)
+	}
+	alt := parts(t, mixed[0].typ, strings.NewReader(mixed[0].body))
+	if len(alt) != 2 || !strings.HasPrefix(alt[0].typ, "text/plain") || !strings.HasPrefix(alt[1].typ, "text/html") {
+		t.Fatalf("alternative parts = %v", alt)
+	}
+	if !strings.Contains(alt[0].body, "Fix: set maxUnavailable: 1") || !strings.Contains(alt[1].body, "<code>api</code>") {
+		t.Errorf("bodies = %v", alt)
+	}
+	pdf := mixed[1]
+	if !strings.HasPrefix(pdf.typ, "application/pdf") || pdf.filename != "report.pdf" {
+		t.Errorf("attachment = %s %q", pdf.typ, pdf.filename)
+	}
+	if got, _ := base64.StdEncoding.DecodeString(strings.ReplaceAll(pdf.body, "\r\n", "")); string(got) != "%PDF-1.4 fake" {
+		t.Errorf("attachment body = %q", got)
+	}
+}
+
+type part struct{ typ, filename, body string }
+
+// parts reads one multipart level. Quoted-printable parts come back decoded;
+// base64 ones as sent.
+func parts(t *testing.T, contentType string, r io.Reader) []part {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mr := multipart.NewReader(msg.Body, params["boundary"])
-	var types, bodies []string
+	mr := multipart.NewReader(r, params["boundary"])
+	var out []part
 	for {
-		p, err := mr.NextPart() // decodes quoted-printable
+		p, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
-			break
+			return out
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
 		b, _ := io.ReadAll(p)
-		types = append(types, p.Header.Get("Content-Type"))
-		bodies = append(bodies, string(b))
-	}
-	if len(types) != 2 || !strings.HasPrefix(types[0], "text/plain") || !strings.HasPrefix(types[1], "text/html") {
-		t.Fatalf("parts = %v", types)
-	}
-	if !strings.Contains(bodies[0], "Fix: set maxUnavailable: 1") || !strings.Contains(bodies[1], "<code>api</code>") {
-		t.Errorf("bodies = %q", bodies)
+		out = append(out, part{p.Header.Get("Content-Type"), p.FileName(), string(b)})
 	}
 }
 
 func TestSendReportsARejectedRecipient(t *testing.T) {
 	f := newFakeSMTP(t, false)
-	err := newSender(t, f, "").Send(context.Background(), Message{To: "nobody@snapp.cab", Subject: "x", Text: "x", HTML: "x"})
-	if !errors.Is(err, ErrRejected) {
-		t.Fatalf("err = %v, want ErrRejected", err)
+	rejected, err := newSender(t, f, "").Send(context.Background(),
+		Message{To: []string{"nobody@snapp.cab"}, Subject: "x", Text: "x", HTML: "x"})
+	if !errors.Is(err, ErrRejected) || !slices.Equal(rejected, []string{"nobody@snapp.cab"}) {
+		t.Fatalf("rejected = %v, err = %v, want ErrRejected", rejected, err)
 	}
 	if _, data := f.seen(); data != "" {
 		t.Error("message sent to a rejected recipient")
+	}
+}
+
+// One bad address in a Team CR must not keep the email from everyone else.
+func TestSendSkipsTheRecipientsItCannotReach(t *testing.T) {
+	f := newFakeSMTP(t, false)
+	rejected, err := newSender(t, f, "").Send(context.Background(), Message{
+		To: []string{"nobody@snapp.cab", "not an address", "alice@snapp.cab"}, Subject: "x", Text: "x", HTML: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rejected, []string{"not an address", "nobody@snapp.cab"}) {
+		t.Errorf("rejected = %v", rejected)
+	}
+	if _, data := f.seen(); !strings.Contains(data, "To: <nobody@snapp.cab>, <alice@snapp.cab>") {
+		t.Errorf("not sent to alice: %q", data)
 	}
 }
 
@@ -190,7 +238,8 @@ func TestSendReportsARejectedRecipient(t *testing.T) {
 // clear: the sender must stop before AUTH.
 func TestSendNeverSendsThePasswordInClear(t *testing.T) {
 	f := newFakeSMTP(t, true)
-	err := newSender(t, f, "bot@snapp.cab").Send(context.Background(), Message{To: "alice@snapp.cab", Subject: "x"})
+	_, err := newSender(t, f, "bot@snapp.cab").Send(context.Background(),
+		Message{To: []string{"alice@snapp.cab"}, Subject: "x"})
 	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
 		t.Fatalf("err = %v", err)
 	}
@@ -220,7 +269,8 @@ func TestNewValidates(t *testing.T) {
 
 func TestSendRefusesAHeaderInTheAddress(t *testing.T) {
 	f := newFakeSMTP(t, false)
-	err := newSender(t, f, "").Send(context.Background(), Message{To: "a@snapp.cab\r\nBcc: x@evil.com", Subject: "x"})
+	_, err := newSender(t, f, "").Send(context.Background(),
+		Message{To: []string{"a@snapp.cab\r\nBcc: x@evil.com"}, Subject: "x"})
 	if !errors.Is(err, ErrRejected) {
 		t.Fatalf("err = %v", err)
 	}

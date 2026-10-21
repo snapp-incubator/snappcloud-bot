@@ -59,21 +59,14 @@ type Diff struct {
 
 // Delivery is what happened when an approved report was sent.
 type Delivery struct {
-	Sent []string `json:"sent,omitempty"`
-	// Rejected: the mail server refused the address (no such mailbox).
+	// Sent and SendFailed name emails by their mailing's name.
+	Sent       []string `json:"sent,omitempty"`
+	SendFailed []string `json:"sendFailed,omitempty"`
+	// Unrouted names the emails nobody was configured to receive.
+	Unrouted []string `json:"unrouted,omitempty"`
+	// Rejected are the addresses that were skipped: the mail server refused
+	// them, or they are not addresses.
 	Rejected []string `json:"rejected,omitempty"`
-	// AuthzFailed: the recipient's access could not be checked, so nothing
-	// was sent to them (fail-closed).
-	AuthzFailed []string `json:"authzFailed,omitempty"`
-	SendFailed  []string `json:"sendFailed,omitempty"`
-	// NothingVisible: every finding for this admin was in a namespace they
-	// cannot access.
-	NothingVisible []string `json:"nothingVisible,omitempty"`
-	// ScopeDropped counts findings withheld from a recipient for lack of access.
-	ScopeDropped int `json:"scopeDropped"`
-	// Unchecked counts findings withheld because the recipient's access on
-	// their cluster could not be checked; AuthzFailed names those recipients.
-	Unchecked int `json:"unchecked,omitempty"`
 	// RecheckFailed are the clusters the approval could not scan again, with
 	// why; their findings were sent as previewed (Unverified).
 	RecheckFailed map[string]string `json:"recheckFailed,omitempty"`

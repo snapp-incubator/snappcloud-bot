@@ -235,6 +235,10 @@ func run(configPath, addr string, log *slog.Logger) error {
 		if len(clusters) == 0 {
 			clusters = theBrain.ClusterNames()
 		}
+		routing := bestpractice.Routing{Groups: bp.Recipients.Groups, Others: bp.Recipients.Others, Cc: bp.Recipients.Cc}
+		if err := routing.Validate(); err != nil {
+			return fmt.Errorf("bestPractice.recipients: %w", err)
+		}
 		mailer, err := newMailer(cfg.Mail)
 		if err != nil {
 			return err
@@ -253,7 +257,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 			AdminChannel: bp.AdminChannel,
 			Messenger:    mm,
 			Mailer:       mailer,
-			Access:       authzBase,
+			Routing:      routing,
 			Location:     loc,
 			Docs:         bp.Docs,
 		}
@@ -328,7 +332,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 		go runner.Start(ctx)
 		next, scheduled := runner.Next()
 		log.Info("best-practice report enabled", "schedule", bp.Schedule, "scheduled", scheduled,
-			"next", next, "adminChannel", bp.AdminChannel, "mail", cfg.Mail.Host)
+			"next", next, "adminChannel", bp.AdminChannel, "mail", cfg.Mail.Host,
+			"groups", len(bp.Recipients.Groups), "others", len(bp.Recipients.Others), "cc", len(bp.Recipients.Cc))
 	}
 
 	go serveHealth(ctx, addr, log)

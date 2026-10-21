@@ -19,8 +19,10 @@ Every Saturday at 00:00 (`schedules.timezone`, Asia/Tehran), the bot:
 2. groups the findings by **team**: namespace label `snappcloud.io/team` →
    the `Team` CR → `spec.teamAdmins`;
 3. posts a **preview to the cloud-admin channel** and waits;
-4. once a cloud-admin **approves**, **emails** each team admin (SMTP,
-   `mail.snapp.cab`) listing only their own team's findings.
+4. once a cloud-admin **approves**, **emails** the findings as a PDF (SMTP,
+   `mail.snapp.cab`): one email per configured group of teams, to the union
+   of its teams' admins; one email for every team in no group, to a fixed
+   list (`others`); the CTO and the cloud director in cc on all of them.
 
 Nothing goes to a team without a human approving it first.
 
@@ -83,12 +85,14 @@ that data except through two gates:
 - **Preview**: posted only to the configured cloud-admin channel. Approval
   commands work only for callers with `scope.HasClusterWide()`, the same
   test `diagnostics` uses.
-- **Delivery**: before emailing a team admin, the bot resolves **that admin's**
-  scope through mcp-authz and drops every finding in a namespace the admin
-  cannot access. If mcp-authz cannot be reached, that recipient gets nothing
-  (fail-closed), and the failure is reported in the preview thread. A wrong
-  `snappcloud.io/team` label therefore cannot leak one team's namespace names
-  to another team.
+- **Delivery**: the preview names every email, its teams and its recipients,
+  so approving it approves who gets what. Recipients are **not** checked
+  against mcp-authz: an email goes to a group's admins together, to the
+  `others` lists and to the cc, none of whom is a single cluster user. (An
+  earlier version emailed each admin only the findings in namespaces mcp-authz
+  said they could access; grouping replaced it.) A wrong
+  `snappcloud.io/team` label puts a namespace in the wrong team's email, so
+  the preview is where to catch it.
 
 The direct call path is `brain.CallSystemTool(ctx, cluster, tool, args)`. It
 uses the cluster's mux directly and bypasses the enforcer, so it is a separate
@@ -209,9 +213,9 @@ Sat 00:00 ─► collect (all clusters, in parallel, bounded) ─► evaluate ru
                 ▼
   "report approve <id>"  (cluster-wide caller, in that channel)
                 ▼
-          re-collect → intersect → per recipient: mcp-authz gate
+          re-collect → intersect → route into emails (groups, others)
                 ▼
-          email each team admin  ─► thread: sent / failed / dropped, by whom
+          email + PDF, cc on all  ─► thread: sent / failed / refused, by whom
 ```
 
 ### Preview (cloud-admin channel)
@@ -224,9 +228,12 @@ Root post, short:
 > `report approve r7k2m` · `report reject r7k2m` · expires Mon 00:00
 
 The thread contains:
-- a per-team table: team · clusters · high/med/low · recipients (the Team
-  CR's admin emails; an address the mail server rejects is listed in the
-  delivery summary, so it can be fixed in the Team CR);
+- an emails table: email · teams · high/medium · to (a group's admins, or
+  `others`), with the cc above it; a team with no admins in its Team CR is
+  named there (its group's email goes to the cc alone if no team has any);
+- a per-team table: team · clusters · high/medium. An address the mail
+  server refuses is listed in the delivery summary, so it can be fixed in
+  the Team CR or the config;
 - a "no owner" table and the ignored-by-annotation counts;
 - week-over-week changes: `+9 new · −14 fixed · 40 open ≥3 weeks`.
 
@@ -237,7 +244,7 @@ The thread contains:
 | `report approve <id>` | re-check, then send to every team in the report |
 | `report reject <id>` | close it without sending; the thread records who rejected it |
 | `report exclude <id> <team>[,<team>]` | remove teams before approving (e.g. a team under migration) |
-| `report preview <id> <team>` | show the email (subject and text part) that team would receive |
+| `report preview <id> <team>` | show the email that carries that team's findings (to, cc, subject, body, attachment) and the team's findings as the PDF lists them |
 | `report run` | build a preview now (testing, or after a fix); same path as the timer |
 | `report status` | the last report, its state, the next run |
 
@@ -247,34 +254,46 @@ time. A new Saturday report **supersedes** an unapproved previous one, which
 is marked `expired` because its data is a week old. `expireAfter` (default
 48h) expires a pending report early.
 
-### Team admin email
+### Report email
 
-One email per admin, `multipart/alternative` (plain text and HTML, the HTML
-built by `html/template` so names from cluster objects are escaped). When a
-person administers several teams, they get one email with a section per
-team, not one per team. Subject: `SnappCloud best-practice check: 5 findings
-for dispatching (2 high)`. `Auto-Submitted: auto-generated` keeps
+One email per **mailing**, from `bestPractice.recipients`:
+
+```yaml
+recipients:
+  groups: [[snapp-box, snapp-box-ai], [snapppay]]
+  others: [tech-ems@snapp.cab, tech-specialists@snapp.cab, tech-directors@snapp.cab]
+  cc: [qasim.zaidi@snapp.cab, ali.borhani@snapp.cab]
+```
+
+- each group with findings: one email to the union of its teams' admins;
+- every team in no group: one email to `others` (so snapppay's teams must be
+  in a group, or they land with Snapp's tech leads);
+- `cc` on every email. A mailing with nobody in To goes to the cc alone; one
+  with nobody at all is not sent, and the summary says so.
+
+The body is short: the date, what the findings risk, a team · high · medium
+table, and the footer. The findings themselves, each with its detail, fix,
+docs link and rule, are in the attached PDF (`snappcloud-best-practice-
+<date>.pdf`, A4, rendered with `codeberg.org/go-pdf/fpdf`'s core fonts, so
+text outside Windows-1252 becomes dots). The body is `multipart/alternative`
+(plain text and HTML, built by `html/template` so names from cluster objects
+are escaped) inside `multipart/mixed` with the PDF. Subject: `SnappCloud
+best-practice check: 5 findings for snapp-box, snapp-box-ai (2 high)`, or
+"for 37 teams" beyond three. `Auto-Submitted: auto-generated` keeps
 out-of-office replies away; `mail.replyTo`, when set, is where questions go.
 
 The admin channel stays the control room: preview, approval, and the
 delivery summary are still Mattermost posts.
 
+Each finding in the PDF:
+
 ```
-Weekly SnappCloud best-practice check — team dispatching
-These can cause downtime, or block node maintenance, when a node is drained.
-
-🔴 **teh-1 / dispatching-prod — RabbitMQ `events` runs 1 replica**
-   Every node drain restarts it on another node: the broker is down for that time.
-   Fix: `spec.replicas: 3` (quorum queues need an odd count). Docs: <link>
-
-🔴 **teh-1 / dispatching-prod — PDB `api-pdb` allows no evictions**
-   `minAvailable: 1` on a workload with 1 replica: its node cannot be drained
-   until we force it. Fix: `maxUnavailable: 1`, or run ≥2 replicas.
-
-… 3 more (2 medium, 1 low)
-
-Intentional? Annotate the object with
-`snappcloud.io/best-practice-ignore: <rule-id>`. Questions: reply to this email.
+HIGH   teh-1 / dispatching-prod
+PDB api-pdb blocks node drains
+`minAvailable: 1` on a workload with 1 replica: its node cannot be drained.
+Fix: `maxUnavailable: 1`, or run ≥2 replicas.
+Docs
+rule pdb-min-available-all (cannot be ignored)
 ```
 
 The rule text and fixes are templates in Go, one per rule ID, with a
@@ -299,7 +318,8 @@ written by a model.
     ID, table-tested against fixture JSON.
   - `report.go`: `Report`, `Finding{ID: cluster/ns/kind/name/rule}`,
     `Intersect`, week-over-week diff.
-  - `render.go`: preview, delivery summary; `email.go`: the team admin email (text and HTML).
+  - `render.go`: preview, delivery summary; `routing.go`: groups → mailings;
+    `email.go`: the email body (text and HTML); `pdf.go`: the PDF.
   - `store.go`: pending/last reports + finding first-seen dates, using the
     same JSON-on-PVC, tmp-then-rename pattern as `schedule.Store`.
   - `runner.go`: the weekly timer. It computes the next slot with
@@ -310,23 +330,22 @@ written by a model.
     does not run the report twice.
 - `internal/brain/system.go`: `CallSystemTool`, and `ClustersWithTool(name)`,
   which finds the server that carries `disruption_audit` with no extra config.
-- `internal/mail`: an SMTP sender (one connection per message, STARTTLS when
-  offered or TLS on 465, PLAIN or LOGIN auth, never a password in clear). A
-  5xx to `RCPT TO` is `ErrRejected` ("no such mailbox"), reported, not
-  retried.
+- `internal/mail`: an SMTP sender (one connection per message, To and Cc,
+  attachments, STARTTLS when offered or TLS on 465, PLAIN or LOGIN auth,
+  never a password in clear). An address that is invalid or gets a 5xx to
+  `RCPT TO` is skipped and reported, and the rest still get the message;
+  only when every address fails is it `ErrRejected`.
 - `internal/bot/report.go`: the commands, the approval gate, delivery
-  (identity → mcp-authz scope on the clusters of that admin's findings only,
-  8 admins at a time → filter → email), and thread updates. A cluster whose
-  check fails withholds only its own findings; a cluster the approval cannot
-  re-scan is named, with the reason, in the delivery summary. Delivery
-  is paced (≈5 emails/s) so 100+ emails don't trip the mail server's limits.
+  (route → render body and PDF → email, paced), and thread updates. A
+  cluster the approval cannot re-scan is named, with the reason, in the
+  delivery summary.
 - `internal/bot/commands.go`: `help` lists `report …` only for cluster-wide
   callers with the feature on.
 - `internal/config/config.go` + `config.example.yaml`: a `bestPractice`
   section.
 - `internal/metrics`: `report_runs_total{outcome}`,
   `report_findings{rule,severity}`, `report_deliveries_total{outcome}`
-  (`sent|no_account|scope_dropped|authz_error|post_error`),
+  (`sent|rejected|unrouted|send_error`),
   `report_collect_failures_total{cluster}`.
 - README: a "Best-practice report" section, including the trust-model
   paragraph from §3.
@@ -351,6 +370,10 @@ bestPractice:
     quorum: https://docs.snappcloud.io/docs/...
     rabbitmq: https://docs.snappcloud.io/docs/...
     redis: https://docs.snappcloud.io/docs/...
+  recipients:
+    groups: [[snapp-box, snapp-box-ai], [snapppay]]
+    others: [tech-ems@snapp.cab, tech-specialists@snapp.cab, tech-directors@snapp.cab]
+    cc: [qasim.zaidi@snapp.cab, ali.borhani@snapp.cab]
 ```
 
 ## Testing
@@ -373,9 +396,9 @@ a namespace with no env label counts as production. For quorum:
 - `report_test.go`: intersect (resolved/new), diff, supersede/expire.
 - `runner_test.go`: Saturday slot in Asia/Tehran, catch-up inside and outside
   the window, no double fire after restart (fake clock, as `schedule` tests do).
-- `bot/report_test.go`: non-admin approve refused; approve twice; delivery
-  drops a namespace the recipient cannot see; mcp-authz down → recipient
-  skipped; missing Mattermost account is surfaced in the preview.
+- `bot/report_test.go`: non-admin approve refused; approve twice; a group's
+  email reaches its admins and the rest go to `others`, both with the cc,
+  each holding only its own teams; nobody to send to is reported.
 - openshift-mcp: fake dynamic client fixtures for each operator kind and a
   missing CRD.
 - Dry run before enabling: `report run` on staging clusters, then compare the
@@ -404,7 +427,8 @@ a namespace with no env label counts as production. For quorum:
 
 ## Open questions
 
-1. **Delivery target**: decided: email each admin.
+1. **Delivery target**: decided: one email per group of teams with a PDF,
+   the rest to `others`, cc the CTO and the cloud director.
 2. **Approvers**: is "cluster-wide on any cluster" the right test, or should
    it be a named list or group (`approvers: [...]`)?
 3. **Language**: English like the rest of the bot, or Persian for the team
@@ -435,3 +459,5 @@ No slash command, webhook, or new permission is needed. Approvals are
    trust it (mount it and set `SSL_CERT_FILE`, or add it to the image).
 4. Optionally a `mail.replyTo` the cloud team reads, so questions reach
    people.
+5. Exchange may cap recipients or message size: the largest email is the
+   `others` one (many teams, one PDF, three lists and the cc).

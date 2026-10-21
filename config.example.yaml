@@ -61,6 +61,14 @@ bestPractice:
   disabledRules: []     # e.g. [pdb-blocked-unhealthy]
   # quorumImages: [rabbitmq, etcd, zookeeper, kafka, consul, nats, mongo, redis-sentinel, elasticsearch]
   docs: {}              # topic -> URL: pdb, quorum, rabbitmq, redis
+  # Who gets which email, each with its findings in a PDF. A group of teams
+  # gets one email, to the union of its teams' admins (the Team CRs). The
+  # teams in no group share one email to `others`. `cc` is on every email.
+  # Put every team that must not go to `others` (e.g. snapppay's) in a group.
+  recipients:
+    groups: []          # e.g. [[snapp-box, snapp-box-ai], [snapppay]]
+    others: []          # e.g. [tech-ems@snapp.cab, tech-specialists@snapp.cab, tech-directors@snapp.cab]
+    cc: []              # e.g. [cto@snapp.cab]
 
 # SMTP server the best-practice report is emailed through. The connection is
 # upgraded with STARTTLS when offered (port 465: TLS from the start), and a

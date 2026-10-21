@@ -79,6 +79,18 @@ type BestPractice struct {
 	QuorumImages []string `yaml:"quorumImages"`
 	// Docs links each topic (pdb, quorum, rabbitmq, redis) to a user-docs page.
 	Docs map[string]string `yaml:"docs"`
+	// Recipients decides who each report email goes to.
+	Recipients ReportRecipients `yaml:"recipients"`
+}
+
+// ReportRecipients routes the report's emails. Each group of teams gets one
+// email, to the union of its teams' admins (from the Team CRs); the teams in
+// no group share one email to Others. Cc is on every email.
+type ReportRecipients struct {
+	// Groups, e.g. [[snapp-box, snapp-box-ai], [snapppay]].
+	Groups [][]string `yaml:"groups"`
+	Others []string   `yaml:"others"`
+	Cc     []string   `yaml:"cc"`
 }
 
 // Schedules configures user-defined recurring queries. Each one costs an LLM

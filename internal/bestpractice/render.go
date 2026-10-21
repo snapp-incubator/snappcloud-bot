@@ -18,7 +18,6 @@ func FormatTime(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format("Mon 2 Jan 15:04") + " " + loc.String()
 }
 
-var severityMark = map[Severity]string{High: "🔴", Medium: "🟠"}
 
 func counts(fs []Finding) (high, medium int) {
 	for _, f := range fs {
@@ -33,12 +32,13 @@ func counts(fs []Finding) (high, medium int) {
 
 // PreviewRoot is the short post that opens a report's thread in the admin
 // channel.
-func PreviewRoot(r Report, loc *time.Location) string {
+func PreviewRoot(r Report, rt Routing, loc *time.Location) string {
 	var b strings.Builder
 	send := r.Sendable()
 	high, _ := counts(send)
 	fmt.Fprintf(&b, "**Best-practice report `%s`** — %s\n", r.ID, FormatTime(r.Created, loc))
-	fmt.Fprintf(&b, "%d findings for %d teams (%d high)", len(send), len(r.Teams()), high)
+	fmt.Fprintf(&b, "%d findings for %d teams (%d high) in %d emails", len(send), len(r.Teams()), high,
+		len(rt.Mailings(send, r.Admins)))
 	if n := len(r.Findings) - len(send); n > 0 {
 		fmt.Fprintf(&b, ", plus %d with no owning team", n)
 	}
@@ -51,9 +51,9 @@ func PreviewRoot(r Report, loc *time.Location) string {
 	return b.String()
 }
 
-// PreviewDetail is the thread under the root: per team, who would receive it,
-// what has no owner, what was ignored, and what failed.
-func PreviewDetail(r Report) string {
+// PreviewDetail is the thread under the root: each email and who receives
+// it, each team, what has no owner, what was ignored, and what failed.
+func PreviewDetail(r Report, rt Routing) string {
 	var b strings.Builder
 	byTeam := map[string][]Finding{}
 	var unowned []Finding
@@ -65,15 +65,32 @@ func PreviewDetail(r Report) string {
 		byTeam[f.Team] = append(byTeam[f.Team], f)
 	}
 
+	if ms := rt.Mailings(r.Sendable(), r.Admins); len(ms) > 0 {
+		b.WriteString("**Emails**, each with its findings in a PDF")
+		if len(rt.Cc) > 0 {
+			fmt.Fprintf(&b, "; cc on every one: %s", strings.Join(rt.Cc, ", "))
+		}
+		b.WriteString("\n\n| email | teams | high | medium | to |\n|---|---|---:|---:|---|\n")
+		for _, m := range ms {
+			high, medium := counts(m.Findings)
+			teams := strings.Join(m.Teams, ", ")
+			if m.Name == OthersName {
+				teams = fmt.Sprintf("%d teams in no group", len(m.Teams))
+			}
+			fmt.Fprintf(&b, "| %s | %s | %d | %d | %s |\n", m.Name, teams, high, medium, toCell(m))
+		}
+		b.WriteString("\n")
+	}
+
 	if len(byTeam) == 0 {
 		b.WriteString("No findings for any team.\n")
 	} else {
-		b.WriteString("**Per team**\n\n| team | clusters | high | medium | recipients |\n|---|---|---:|---:|---|\n")
+		b.WriteString("**Per team**\n\n| team | clusters | high | medium |\n|---|---|---:|---:|\n")
 		for _, team := range sortedKeys(byTeam) {
 			fs := byTeam[team]
 			high, medium := counts(fs)
-			fmt.Fprintf(&b, "| %s%s | %s | %d | %d | %s |\n", team, excludedMark(r, team),
-				strings.Join(clustersOf(fs), ", "), high, medium, recipientsCell(r.Admins[team]))
+			fmt.Fprintf(&b, "| %s%s | %s | %d | %d |\n", team, excludedMark(r, team),
+				strings.Join(clustersOf(fs), ", "), high, medium)
 		}
 	}
 
@@ -114,11 +131,24 @@ func excludedMark(r Report, team string) string {
 	return ""
 }
 
-func recipientsCell(admins []string) string {
-	if len(admins) == 0 {
-		return "**none** (no admins in the Team CR)"
+// toCell names who an email goes to, and why it may reach fewer people than
+// expected.
+func toCell(m Mailing) string {
+	var notes []string
+	if len(m.NoAdmins) > 0 {
+		notes = append(notes, "no admins in the Team CR of "+strings.Join(m.NoAdmins, ", "))
 	}
-	return strings.Join(admins, ", ")
+	switch {
+	case !m.Recipients():
+		return "**nobody**: not sent"
+	case len(m.To) == 0 && m.Name == OthersName:
+		return "**cc only** (no recipients configured for teams in no group)"
+	case len(m.To) == 0:
+		return "**cc only** (" + strings.Join(notes, "; ") + ")"
+	case len(notes) > 0:
+		return strings.Join(m.To, ", ") + " (" + strings.Join(notes, "; ") + ")"
+	}
+	return strings.Join(m.To, ", ")
 }
 
 // GroupByTeam splits findings by team, in team order.
@@ -137,7 +167,8 @@ func DeliverySummary(r Report, loc *time.Location) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "📬 Approved by %s at %s. Emailed **%d** team admins", r.DecidedBy, FormatTime(r.DecidedAt, loc), len(d.Sent))
+	fmt.Fprintf(&b, "📬 Approved by %s at %s. Sent **%d** email%s", r.DecidedBy, FormatTime(r.DecidedAt, loc),
+		len(d.Sent), plural(len(d.Sent)))
 	fmt.Fprintf(&b, " · %d resolved since the preview · %d new (held for next week)", d.Resolved, d.Held)
 	if d.Unverified > 0 {
 		fmt.Fprintf(&b, " · %d sent as previewed (their cluster could not be re-checked)", d.Unverified)
@@ -150,23 +181,17 @@ func DeliverySummary(r Report, loc *time.Location) string {
 		}
 	}
 	if d.Interrupted {
-		b.WriteString("\n**Sending was interrupted** (timeout or shutdown); the admins not listed as sent did not get it.\n")
+		b.WriteString("\n**Sending was interrupted** (timeout or shutdown); the emails not listed as sent did not go out.\n")
 	}
 	line := func(label string, xs []string) {
 		if len(xs) > 0 {
-			fmt.Fprintf(&b, "\n- %s: %s", label, strings.Join(xs, ", "))
+			fmt.Fprintf(&b, "\n- %s: %s", label, strings.Join(xs, " · "))
 		}
 	}
-	line("Address rejected by the mail server (fix it in the Team CR)", d.Rejected)
-	line("Access check failed (fail-closed: findings on the clusters that could not be checked were withheld)", d.AuthzFailed)
-	line("Sending failed", d.SendFailed)
-	line("Nothing they can see (every finding is in a namespace they cannot access)", d.NothingVisible)
-	if d.Unchecked > 0 {
-		fmt.Fprintf(&b, "\n- %d findings withheld because the recipient's access could not be checked", d.Unchecked)
-	}
-	if d.ScopeDropped > 0 {
-		fmt.Fprintf(&b, "\n- %d findings withheld from recipients without access to their namespace", d.ScopeDropped)
-	}
+	line("Sent", d.Sent)
+	line("**Not sent**", d.SendFailed)
+	line("**Not sent**, nobody to send to", d.Unrouted)
+	line("Addresses the mail server refused, or that are not addresses (fix them in the Team CR or the config)", d.Rejected)
 	return b.String()
 }
 
