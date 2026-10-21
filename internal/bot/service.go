@@ -62,7 +62,9 @@ type Service struct {
 	// trigger starts a manual run of a stored schedule on the scheduler's own
 	// worker pool. Nil when schedules are disabled.
 	trigger func(schedule.Entry) error
-	log     *slog.Logger
+	// report is the weekly best-practice report; nil when disabled.
+	report *reportFeature
+	log    *slog.Logger
 }
 
 // Options carries the optional settings for New.
@@ -88,6 +90,8 @@ type Options struct {
 	// marked channels. Both nil disables the feature.
 	AlertChannels   *alerts.Channels
 	AlertAggregator *alerts.Aggregator
+	// Reports enables the weekly best-practice report. Nil disables it.
+	Reports *ReportOptions
 }
 
 // New builds the orchestration service.
@@ -113,6 +117,7 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		alertChannels:  o.AlertChannels,
 		alertAgg:       o.AlertAggregator,
 		maxQueryRunes:  maxQ,
+		report:         newReportFeature(o.Reports),
 		log:            log,
 	}
 }
@@ -415,7 +420,7 @@ func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, q
 	// help is answered without authorization: a user with no access still needs
 	// to know how to ask, and it costs nothing to produce.
 	if helpVerbs[normalizeCommand(query)] {
-		s.replyTo(ctx, p, helpText(s.sched != nil, s.alertChannels != nil))
+		s.replyTo(ctx, p, helpText(s.sched != nil, s.alertChannels != nil, s.report != nil))
 		return true, "help"
 	}
 
@@ -427,6 +432,11 @@ func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, q
 	if handled, reply := s.alertCommand(identity, p, query); handled {
 		s.replyTo(ctx, p, reply)
 		return true, "alert_command"
+	}
+
+	if handled, reply := s.reportCommand(ctx, identity, p, query); handled {
+		s.replyTo(ctx, p, reply)
+		return true, "report_command"
 	}
 
 	if handled, reply := s.diagnosticsCommand(ctx, identity, p, query); handled {

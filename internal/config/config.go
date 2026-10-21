@@ -23,6 +23,74 @@ type Config struct {
 	API        API        `yaml:"api"`
 	Schedules  Schedules  `yaml:"schedules"`
 	Alerts     Alerts     `yaml:"alerts"`
+	// BestPractice is the weekly best-practice report to team admins.
+	BestPractice BestPractice `yaml:"bestPractice"`
+	// Mail is the SMTP server the best-practice report is emailed through.
+	Mail Mail `yaml:"mail"`
+}
+
+// Mail configures the SMTP server. The password comes from the environment.
+type Mail struct {
+	Host string `yaml:"host"`
+	// Port defaults to 587 (STARTTLS); 465 is TLS from the first byte.
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	// PasswordEnv names the env var holding the password (default
+	// MAIL_PASSWORD). Required when Username is set.
+	PasswordEnv string `yaml:"passwordEnv"`
+	// From is the sender, e.g. "SnappCloud <snappcloud-bot@snapp.cab>".
+	From string `yaml:"from"`
+	// ReplyTo is where replies go; when set, the email invites them.
+	ReplyTo string `yaml:"replyTo"`
+	// Timeout bounds one message (default 30s).
+	Timeout string `yaml:"timeout"`
+}
+
+// BestPractice configures the weekly report of single-instance brokers and
+// caches and of PDBs that block drains or let one break a quorum. The bot reads
+// it cluster-wide on its own authority, so nothing is sent to a team until a
+// cloud admin approves it in AdminChannel.
+type BestPractice struct {
+	// Enabled turns the feature on (default false).
+	Enabled bool `yaml:"enabled"`
+	// Path persists reports and the last timer slot (put it on the PVC).
+	Path string `yaml:"path"`
+	// Schedule is a fixed weekly or daily time in schedules.timezone, e.g.
+	// "every saturday at 00:00". Empty = no timer, only `report run`.
+	Schedule string `yaml:"schedule"`
+	// CatchUp is how late a slot missed during downtime may still fire
+	// (default 12h).
+	CatchUp string `yaml:"catchUp"`
+	// ExpireAfter is how long a report waits for approval (default 48h).
+	ExpireAfter string `yaml:"expireAfter"`
+	// AdminChannel is the channel ID where previews are posted and approved.
+	AdminChannel string `yaml:"adminChannel"`
+	// Timeout bounds one job: a build, or an approval with its emails (default 10m).
+	Timeout string `yaml:"timeout"`
+	// Clusters to scan (default every agent cluster).
+	Clusters []string `yaml:"clusters"`
+	// ExcludeNamespaceSelectors are label selectors (kubectl -l syntax); a
+	// namespace matching any of them is left out of the report.
+	ExcludeNamespaceSelectors []string `yaml:"excludeNamespaceSelectors"`
+	ExcludeTeams              []string `yaml:"excludeTeams"`
+	DisabledRules             []string `yaml:"disabledRules"`
+	// QuorumImages are the image keywords that mark a StatefulSet as a quorum
+	// system (default: openshift-mcp's own list).
+	QuorumImages []string `yaml:"quorumImages"`
+	// Docs links each topic (pdb, quorum, rabbitmq, redis) to a user-docs page.
+	Docs map[string]string `yaml:"docs"`
+	// Recipients decides who each report email goes to.
+	Recipients ReportRecipients `yaml:"recipients"`
+}
+
+// ReportRecipients routes the report's emails. Each group of teams gets one
+// email, to the union of its teams' admins (from the Team CRs); the teams in
+// no group share one email to Others. Cc is on every email.
+type ReportRecipients struct {
+	// Groups, e.g. [[snapp-box, snapp-box-ai], [snapppay]].
+	Groups [][]string `yaml:"groups"`
+	Others []string   `yaml:"others"`
+	Cc     []string   `yaml:"cc"`
 }
 
 // Schedules configures user-defined recurring queries. Each one costs an LLM
@@ -333,6 +401,9 @@ func (c *Config) applyDefaults() {
 	if c.Authz.TokenEnv == "" {
 		c.Authz.TokenEnv = "MCP_AUTHZ_TOKEN"
 	}
+	if c.Mail.PasswordEnv == "" {
+		c.Mail.PasswordEnv = "MAIL_PASSWORD"
+	}
 	if c.Authz.CacheTTL == "" {
 		c.Authz.CacheTTL = "5m"
 	}
@@ -369,6 +440,12 @@ func (c *Config) validate() error {
 			return fmt.Errorf("authz.regions: duplicate region name %q", r.Name)
 		}
 		seen[r.Name] = true
+	}
+	if c.BestPractice.Enabled && strings.TrimSpace(c.BestPractice.AdminChannel) == "" {
+		return fmt.Errorf("bestPractice.adminChannel is required: previews wait there for a cloud admin's approval")
+	}
+	if c.BestPractice.Enabled && (strings.TrimSpace(c.Mail.Host) == "" || strings.TrimSpace(c.Mail.From) == "") {
+		return fmt.Errorf("mail.host and mail.from are required: the best-practice report is emailed to team admins")
 	}
 	return nil
 }

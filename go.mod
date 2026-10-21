@@ -3,8 +3,10 @@ module github.com/snapp-incubator/snappcloud-bot
 go 1.25.0
 
 require (
+	codeberg.org/go-pdf/fpdf v0.12.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/prometheus v0.54.1
 	golang.org/x/sync v0.22.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -21,7 +23,6 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/prometheus/prometheus v0.54.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect

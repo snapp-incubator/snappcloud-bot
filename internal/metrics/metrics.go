@@ -185,6 +185,31 @@ var (
 		Buckets: []float64{5, 10, 30, 60, 120, 300},
 	})
 
+	// ReportRuns counts best-practice report builds by outcome: ok, partial
+	// (some clusters could not be read) or error.
+	ReportRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "report_runs_total",
+		Help: "Best-practice report builds by outcome (ok, partial, error).",
+	}, []string{"outcome"})
+
+	// ReportFindings is the latest report's findings by rule and severity.
+	ReportFindings = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Name: "report_findings",
+		Help: "Findings in the latest best-practice report, by rule and severity.",
+	}, []string{"rule", "severity"})
+
+	// ReportDeliveries counts best-practice report emails by outcome.
+	ReportDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "report_deliveries_total",
+		Help: "Best-practice report emails by outcome (sent, rejected, unrouted, send_error).",
+	}, []string{"outcome"})
+
+	// ReportCollectFailures counts clusters a report build could not read.
+	ReportCollectFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "report_collect_failures_total",
+		Help: "Clusters a best-practice report build could not read, by cluster.",
+	}, []string{"cluster"})
+
 	// ActiveConversations is the number of live conversation transcripts held.
 	ActiveConversations = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "active_conversations",
@@ -307,6 +332,7 @@ var registry = func() *prometheus.Registry {
 		AlertChannels, AlertsReceived, AlertsPending, AlertInvestigations, AlertInvestigationDuration,
 		MCPListFailures, ToolsOffered, ToolsDropped, ToolsPerCluster, ResultsTruncated, AnswerReviews, ScheduleQueueWait, TurnOutcomes, AnswerContinuations, AnswerNudges, ConversationTrims, ActiveConversations, Schedules, ScheduleOwners, ScheduleLimit, ScheduleRuns,
 		ScheduleRunDuration, ScheduleDisabled, ScheduleRunsInFlight, Panics, InFlight,
+		ReportRuns, ReportFindings, ReportDeliveries, ReportCollectFailures,
 	)
 	return r
 }()
@@ -358,7 +384,7 @@ func Init(clusters, regions []string) {
 	for _, o := range []string{
 		"answered", "denied", "unauthorized", "backend_error", "agent_error",
 		"rate_limited", "too_long", "empty_answer", "refreshed", "ignored",
-		"schedule_command", "scheduled", "alert", "alert_command", "help",
+		"schedule_command", "scheduled", "alert", "alert_command", "help", "report_command",
 	} {
 		Messages.WithLabelValues(o)
 	}
@@ -386,5 +412,12 @@ func Init(clusters, regions []string) {
 	// series cannot be pre-created; only the latency histogram is seeded.
 	for _, c := range clusters {
 		ToolDuration.WithLabelValues(c)
+		ReportCollectFailures.WithLabelValues(c)
+	}
+	for _, o := range []string{"ok", "partial", "error"} {
+		ReportRuns.WithLabelValues(o)
+	}
+	for _, o := range []string{"sent", "rejected", "unrouted", "send_error"} {
+		ReportDeliveries.WithLabelValues(o)
 	}
 }

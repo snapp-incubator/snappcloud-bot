@@ -39,7 +39,7 @@ var helpVerbs = map[string]bool{
 
 // helpText lists what the bot understands. Features that are switched off are
 // left out rather than advertised and then refused.
-func helpText(schedules, alerts bool) string {
+func helpText(schedules, alerts, reports bool) string {
 	var b strings.Builder
 	b.WriteString("**Ask me anything about your workloads or your networking** — name the namespace and the cluster:\n")
 	b.WriteString("```text\nwhy are the pods in my-namespace on teh-1 crashing?\nare packets being dropped for my-namespace on teh-1?\nis my-namespace hitting its quota?\n```\n")
@@ -67,7 +67,12 @@ func helpText(schedules, alerts bool) string {
 		b.WriteString("| `alerts status` | whose access it uses, and the current limits |\n")
 	}
 
-	b.WriteString("\nCluster-admins: `diagnostics` shows every MCP server the bot has, its tool count, and anything not answering.\n")
+	b.WriteString("\nCluster-admins: `diagnostics` shows every MCP server the bot has, its tool count, and anything not answering.")
+	if reports {
+		b.WriteString(" `report status` shows the weekly best-practice report, `report run` builds one now, " +
+			"and `report approve <id>` sends it to the team admins.")
+	}
+	b.WriteString("\n")
 	b.WriteString("\nIn a channel, @-mention me. In a direct message, just write.")
 	return b.String()
 }

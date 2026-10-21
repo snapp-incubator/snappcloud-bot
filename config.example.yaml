@@ -33,6 +33,55 @@ schedules:
   concurrency: 2
   timeout: 5m
 
+# Weekly best-practice report to team admins: single-instance RabbitMQ/Redis,
+# PDBs that block node drains, and PDBs that let a drain break a quorum. The bot
+# reads every cluster on its own authority (openshift-mcp's disruption_audit and
+# list_teams), posts a preview to adminChannel, and emails each team admin only
+# after a cluster-admin says `report approve <id>` there. Each email holds only
+# findings in namespaces that admin can access (checked through mcp-authz).
+# Needs `mail` below.
+# Keep disruption_audit and list_teams clusterAdminOnly in toolRules.
+bestPractice:
+  enabled: false
+  path: /data/best-practice.json
+  schedule: "every saturday at 00:00"   # in schedules.timezone; "" = only `report run`
+  catchUp: 12h          # a slot missed during downtime still fires this late
+  expireAfter: 48h      # an unapproved report expires
+  adminChannel: ""      # channel ID (not name) of the private cloud-admin channel
+  timeout: 10m          # one build, or one approval with its emails
+  # clusters: []        # default: every agent cluster
+  # Namespaces matching ANY of these label selectors (kubectl -l syntax: key,
+  # !key, key=value, key!=value, key in (a,b), key notin (a,b)) are left out.
+  # Every namespace carries kubernetes.io/metadata.name=<name>, so one can be
+  # excluded by name too. Check labels with `oc get ns --show-labels`.
+  excludeNamespaceSelectors:
+    - snappcloud.io/team=snappcloud
+    # - kubernetes.io/metadata.name in (default, kube-system)
+  excludeTeams: []
+  disabledRules: []     # e.g. [pdb-blocked-unhealthy]
+  # quorumImages: [rabbitmq, etcd, zookeeper, kafka, consul, nats, mongo, redis-sentinel, elasticsearch]
+  docs: {}              # topic -> URL: pdb, quorum, rabbitmq, redis
+  # Who gets which email, each with its findings in a PDF. A group of teams
+  # gets one email, to the union of its teams' admins (the Team CRs). The
+  # teams in no group share one email to `others`. `cc` is on every email.
+  # Put every team that must not go to `others` (e.g. snapppay's) in a group.
+  recipients:
+    groups: []          # e.g. [[snapp-box, snapp-box-ai], [snapppay]]
+    others: []          # e.g. [tech-ems@snapp.cab, tech-specialists@snapp.cab, tech-directors@snapp.cab]
+    cc: []              # e.g. [cto@snapp.cab]
+
+# SMTP server the best-practice report is emailed through. The connection is
+# upgraded with STARTTLS when offered (port 465: TLS from the start), and a
+# password is never sent without TLS.
+mail:
+  host: mail.snapp.cab
+  port: 587
+  username: ""                 # empty = no AUTH
+  passwordEnv: MAIL_PASSWORD   # env var holding the password
+  from: "SnappCloud <snappcloud-bot@snapp.cab>"
+  replyTo: ""                  # when set, the email invites replies to it
+  timeout: 30s                 # one message
+
 limits:
   ratePerMin: 20
   rateBurst: 5
