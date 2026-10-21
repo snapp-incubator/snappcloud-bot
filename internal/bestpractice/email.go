@@ -45,7 +45,7 @@ func ReportEmail(m Mailing, docs map[string]string, canReply bool, created time.
 		loc = time.Local
 	}
 	day := created.In(loc)
-	footer := emailFooter(m.Findings, canReply)
+	footer := emailFooter(canReply)
 	pdf, err := reportPDF(m, docs, footer, day)
 	if err != nil {
 		return Email{}, err
@@ -60,39 +60,46 @@ func ReportEmail(m Mailing, docs map[string]string, canReply bool, created time.
 		len(m.Findings), plural(len(m.Findings)))
 	return Email{
 		Subject:  subject,
-		Text:     emailText(day, lead, rows, footer),
-		HTML:     emailHTML(day, lead, rows, footer),
+		Text:     emailText(day, lead, ignoreHint(m.Findings), rows, footer),
+		HTML:     emailHTML(day, lead, ignoreHint(m.Findings), rows, footer),
 		FileName: "snappcloud-best-practice-" + day.Format("2006-01-02") + ".pdf",
 		PDF:      pdf,
 	}, nil
 }
 
-// emailFooter says how to silence a finding, where that works, and where to
-// ask.
-func emailFooter(fs []Finding, canReply bool) string {
+// ignoreHint says how to silence a finding, where that works. The email shows
+// it above the team table, so it is not missed.
+func ignoreHint(fs []Finding) string {
 	var ignorable, blockers bool
 	for _, f := range fs {
 		blockers = blockers || DrainBlocker(f.Rule)
 		ignorable = ignorable || !DrainBlocker(f.Rule)
 	}
-	var footer string
+	var hint string
 	if ignorable {
-		footer = fmt.Sprintf("Intentional? Annotate the object with %s: <rule>, using the rule shown under the finding.",
-			AnnotationIgnore)
+		hint = fmt.Sprintf("Is a finding intentional? Exclude it by annotating its object with `%s: <rule>` (several rules go comma-separated); "+
+			"the PDF gives the exact annotation for each finding that allows it.", AnnotationIgnore)
 	}
 	if blockers {
-		footer += " PDBs that block node drains cannot be ignored: they must be fixed."
+		hint += " PDBs that block node drains cannot be excluded: they must be fixed."
 	}
-	footer = strings.TrimSpace(footer)
-	if canReply {
-		footer += " Questions: reply to this email."
-	}
-	return strings.TrimSpace(footer)
+	return strings.TrimSpace(hint)
 }
 
-func emailText(day time.Time, lead string, rows []TeamCount, footer string) string {
+// emailFooter says where to ask.
+func emailFooter(canReply bool) string {
+	if canReply {
+		return "Questions? Reply to this email."
+	}
+	return ""
+}
+
+func emailText(day time.Time, lead, hint string, rows []TeamCount, footer string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Weekly SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, lead)
+	if hint != "" {
+		b.WriteString("Note: " + hint + "\n\n")
+	}
 	w := len("Team")
 	for _, r := range rows {
 		w = max(w, len(r.Team))
@@ -101,7 +108,9 @@ func emailText(day time.Time, lead string, rows []TeamCount, footer string) stri
 	for _, r := range rows {
 		fmt.Fprintf(&b, "%-*s  %4d  %6d\n", w, r.Team, r.High, r.Medium)
 	}
-	b.WriteString("\n--\n" + footer + "\n")
+	if footer != "" {
+		b.WriteString("\n--\n" + footer + "\n")
+	}
 	return b.String()
 }
 
@@ -130,23 +139,24 @@ var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
 <h2 style="font-size:18px;margin:0 0 4px">Weekly SnappCloud best-practice check</h2>
 <p style="margin:0 0 4px;color:#59636e">{{.Day}}</p>
 <p style="margin:12px 0">{{.Intro}}<br>{{.Lead}}</p>
-<table style="border-collapse:collapse;font-size:14px">
+{{if .Hint}}<p style="margin:12px 0 16px;padding:8px 12px;background:#fff8c5;border:1px solid #d4a72c;border-radius:6px">{{code .Hint}}</p>
+{{end}}<table style="border-collapse:collapse;font-size:14px">
 <tr><th style="text-align:left;padding:4px 16px 4px 0;border-bottom:1px solid #d1d9e0">Team</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">High</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">Medium</th></tr>
 {{range .Rows}}<tr><td style="padding:4px 16px 4px 0"><code>{{.Team}}</code></td><td style="text-align:right;padding:4px 0 4px 16px;{{if .High}}color:#d1242f;font-weight:600{{end}}">{{.High}}</td><td style="text-align:right;padding:4px 0 4px 16px">{{.Medium}}</td></tr>
 {{end}}</table>
-<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
+{{if .Footer}}<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
 <p style="color:#59636e;font-size:12px">{{code .Footer}}</p>
-</body></html>
+{{end}}</body></html>
 `))
 
-func emailHTML(day time.Time, lead string, rows []TeamCount, footer string) string {
+func emailHTML(day time.Time, lead, hint string, rows []TeamCount, footer string) string {
 	var b bytes.Buffer
 	err := emailTmpl.Execute(&b, struct {
-		Day, Intro, Lead, Footer string
-		Rows                     []TeamCount
-	}{day.Format("2 January 2006"), emailIntro, lead, footer, rows})
+		Day, Intro, Lead, Hint, Footer string
+		Rows                           []TeamCount
+	}{day.Format("2 January 2006"), emailIntro, lead, hint, footer, rows})
 	if err != nil { // the template is fixed; only a bug gets here
-		return "<pre>" + html.EscapeString(emailText(day, lead, rows, footer)) + "</pre>"
+		return "<pre>" + html.EscapeString(emailText(day, lead, hint, rows, footer)) + "</pre>"
 	}
 	return b.String()
 }

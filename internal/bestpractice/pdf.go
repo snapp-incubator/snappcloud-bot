@@ -132,16 +132,41 @@ func reportPDF(m Mailing, docs map[string]string, footer string, day time.Time) 
 		}
 	}
 
-	f.Ln(4)
-	f.SetFont(pdfFont, "", 9)
-	d.color(pdfMuted)
-	d.rich(4.5, 9, "", footer)
+	if footer != "" {
+		f.Ln(4)
+		f.SetFont(pdfFont, "", 9)
+		d.color(pdfMuted)
+		d.rich(4.5, 9, "", footer)
+	}
 
 	var b bytes.Buffer
 	if err := f.Output(&b); err != nil {
 		return nil, fmt.Errorf("render report PDF: %w", err)
 	}
 	return b.Bytes(), nil
+}
+
+// ignoreStatement tells how to exclude a finding, or that it cannot be. The
+// annotation gets a line of its own, so it is not split and copies whole.
+func (d pdfDoc) ignoreStatement(fd Finding) {
+	d.color(pdfMuted)
+	if DrainBlocker(fd.Rule) {
+		d.rich(4.5, 9, "", fmt.Sprintf("This PDB blocks node drains, so it cannot be excluded by annotation: "+
+			"it must be fixed. Rule `%s`.", fd.Rule))
+		d.Ln(4.5)
+		return
+	}
+	obj := "object"
+	if fd.Kind != "" {
+		obj = fd.Kind
+	}
+	d.SetFont(pdfFont, "", 9)
+	d.Write(4.5, d.tr(fmt.Sprintf("Intentional? Exclude this finding by annotating the %s with:", obj)))
+	d.Ln(4.5)
+	d.SetFont(pdfMono, "", 9)
+	d.color(pdfInk)
+	d.Write(4.5, d.tr(AnnotationIgnore+": "+fd.Rule))
+	d.Ln(4.5)
 }
 
 // finding writes one finding, indented behind a bar in its severity's colour.
@@ -178,14 +203,7 @@ func (d pdfDoc) finding(fd Finding, docs map[string]string) {
 		d.WriteLinkString(5, "Docs", url)
 		d.Ln(6)
 	}
-	d.SetFont(pdfFont, "", 8)
-	d.color(pdfMuted)
-	d.Write(4, "rule ")
-	d.SetFont(pdfMono, "", 8)
-	d.Write(4, d.tr(fd.Rule))
-	d.SetFont(pdfFont, "", 8)
-	d.Write(4, ignoreNote(fd.Rule))
-	d.Ln(4)
+	d.ignoreStatement(fd)
 	if d.PageNo() == page {
 		d.SetFillColor(c.r, c.g, c.b)
 		d.Rect(pdfMargin, y0, bar, d.GetY()-y0, "F")

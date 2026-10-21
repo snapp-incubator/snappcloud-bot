@@ -85,7 +85,7 @@ func TestReportEmailEscapesHTML(t *testing.T) {
 	if e.Subject != "SnappCloud best-practice check: 1 finding for pay<x> (1 high)" {
 		t.Errorf("subject = %q", e.Subject)
 	}
-	if e.FileName != "snappcloud-best-practice-2026-10-24.pdf" || strings.Contains(e.Text, "reply to this email") {
+	if e.FileName != "snappcloud-best-practice-2026-10-24.pdf" || strings.Contains(e.Text, "Reply to this email") {
 		t.Errorf("file = %q, text:\n%s", e.FileName, e.Text)
 	}
 }
@@ -99,16 +99,17 @@ func TestReportEmailSubjectCountsManyTeams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Subject != "SnappCloud best-practice check: 4 findings for 4 teams" || !strings.Contains(e.Text, "reply to this email") {
+	if e.Subject != "SnappCloud best-practice check: 4 findings for 4 teams" || !strings.Contains(e.Text, "Reply to this email") {
 		t.Errorf("subject = %q, text:\n%s", e.Subject, e.Text)
 	}
 }
 
-// The PDF holds every finding with its fix, docs link and rule.
+// The PDF holds every finding with its fix, docs link, and how to exclude it.
 func TestReportPDFHoldsEveryFinding(t *testing.T) {
 	m := Mailing{Teams: []string{"box", "pay"}, Findings: []Finding{
 		teamFinding("box", RuleMinAvailableAll, High), teamFinding("pay", RuleQuorumNoPDB, Medium),
 	}}
+	m.Findings[1].Kind = "RabbitmqCluster"
 	e, err := ReportEmail(m, map[string]string{"pdb": "https://docs/pdb"}, false, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
@@ -116,26 +117,39 @@ func TestReportPDFHoldsEveryFinding(t *testing.T) {
 	if !bytes.HasPrefix(e.PDF, []byte("%PDF-")) {
 		t.Fatalf("not a PDF: %q", e.PDF[:min(20, len(e.PDF))])
 	}
-	for _, want := range []string{"(Team box)", "(Team pay)", "(teh-1 / box-prod)", "(maxUnavailable: 1)", "(pdb-min-available-all)",
-		"( \\(cannot be ignored\\))", "(quorum-no-pdb)", "/URI (https://docs/pdb)", "page 1 of"} {
+	for _, want := range []string{"(Team box)", "(Team pay)", "(teh-1 / box-prod)", "(maxUnavailable: 1)",
+		"(This PDB blocks node drains, so it cannot be excluded by annotation: it must be fixed. Rule )",
+		"(pdb-min-available-all)", "(Intentional? Exclude this finding by annotating the RabbitmqCluster with:)",
+		"(snappcloud.io/best-practice-ignore: quorum-no-pdb)", "/URI (https://docs/pdb)", "page 1 of"} {
 		if !bytes.Contains(e.PDF, []byte(want)) {
 			t.Errorf("PDF missing %q", want)
 		}
 	}
 }
 
-// The ignore annotation is offered only for findings it can silence.
-func TestEmailFooterOffersIgnoreOnlyWhereItWorks(t *testing.T) {
+// The ignore annotation is offered only for findings it can silence, above
+// the team table, where it is seen.
+func TestIgnoreHintOffersIgnoreOnlyWhereItWorks(t *testing.T) {
 	blocker := teamFinding("pay", RuleMinAvailableAll, High)
 	quorum := teamFinding("pay", RuleQuorumNoPDB, High)
 
-	if only := emailFooter([]Finding{blocker}, false); strings.Contains(only, AnnotationIgnore) ||
-		!strings.Contains(only, "cannot be ignored: they must be fixed") {
+	if only := ignoreHint([]Finding{blocker}); strings.Contains(only, AnnotationIgnore) ||
+		!strings.Contains(only, "cannot be excluded: they must be fixed") {
 		t.Errorf("blockers only: %s", only)
 	}
-	mixed := emailFooter([]Finding{blocker, quorum}, false)
-	if !strings.Contains(mixed, AnnotationIgnore) || !strings.Contains(mixed, "cannot be ignored: they must be fixed") {
+	mixed := ignoreHint([]Finding{blocker, quorum})
+	if !strings.Contains(mixed, AnnotationIgnore) || !strings.Contains(mixed, "cannot be excluded: they must be fixed") {
 		t.Errorf("mixed: %s", mixed)
+	}
+	e, err := ReportEmail(Mailing{Teams: []string{"pay"}, Findings: []Finding{quorum}}, nil, false, day, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, tbl := strings.Index(e.HTML, AnnotationIgnore), strings.Index(e.HTML, "<table"); h < 0 || h > tbl {
+		t.Errorf("hint not above the table:\n%s", e.HTML)
+	}
+	if h, tbl := strings.Index(e.Text, AnnotationIgnore), strings.Index(e.Text, "Team "); h < 0 || h > tbl {
+		t.Errorf("hint not above the table:\n%s", e.Text)
 	}
 	if text := FindingsText([]Finding{blocker, quorum}, nil); !strings.Contains(text, "Rule: pdb-min-available-all (cannot be ignored)") ||
 		!strings.Contains(text, "Rule: quorum-no-pdb\n") {

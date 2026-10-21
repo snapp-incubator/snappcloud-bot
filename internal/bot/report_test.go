@@ -339,7 +339,7 @@ func TestReportEmailContent(t *testing.T) {
 	}
 	// Every finding is a drain blocker: offering the ignore annotation would
 	// invite something that does not work.
-	if strings.Contains(pay[0].Text, bestpractice.AnnotationIgnore) || !strings.Contains(pay[0].Text, "cannot be ignored") {
+	if strings.Contains(pay[0].Text, bestpractice.AnnotationIgnore) || !strings.Contains(pay[0].Text, "cannot be excluded") {
 		t.Errorf("footer:\n%s", pay[0].Text)
 	}
 }
