@@ -64,6 +64,10 @@ How broker/cache instances are found:
   StatefulSet or Deployment whose container image is `*redis*`/`*rabbitmq*`
   (not `*exporter*`), with replicas == 1 and no operator owner. These are
   marked `source: image` so the message can say how they were detected.
+  A Bitnami release in replication mode is one instance: its `master`
+  StatefulSet, with the `replica` StatefulSet's size as `readReplicas`.
+  Without Sentinel those replicas never take over, so a single master is
+  still a single instance.
 
 RBAC added to `helm/apps/openshift-mcp/templates/crb.yaml` (get/list only):
 `rabbitmq.com/rabbitmqclusters`, `redis.redis.opstreelabs.in/{redis,redisreplications,redisclusters,redissentinels}`,
@@ -138,7 +142,7 @@ resolves them.
 | `pdb-below-quorum` | the PDB covers a **quorum system** of N members and, with every pod healthy, allows more disruptions than the system can lose: `expectedPods − desiredHealthy > (N−1)/2` (integer division) | high | production only | A drain, or two drains running in parallel, can evict a majority at once, and the cluster loses quorum. N=3 tolerates 1 (`minAvailable: 1` is wrong, `2` is right); N=5 tolerates 2 |
 | `quorum-no-pdb` | a quorum system with N ≥ 2 members whose pods no PDB covers | high | production only | Nothing stops a drain from evicting two members at once (two members on one node, or two drains running in parallel), and the cluster loses quorum. Fix: a PDB with `maxUnavailable: 1` |
 | `rabbitmq-single-instance` | RabbitMQ with replicas == 1 | high | production only | Broker down for the whole reschedule + volume reattach on every drain |
-| `redis-single-instance` | Redis standalone, or replication/workload with replicas == 1 | high | production only | Same; and data loss if persistence is off |
+| `redis-single-instance` | Redis standalone, or replication/workload with replicas == 1 (a Bitnami master counts even with read replicas: no Sentinel, no failover) | high | production only | Same; and data loss if persistence is off |
 
 **Outside production, only drain blockers are reported**: the four `pdb-*`
 rules that stop a node from draining (`pdb-max-unavailable-zero`,

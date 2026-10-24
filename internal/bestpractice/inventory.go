@@ -99,17 +99,21 @@ type Owner struct {
 // Instance is a broker, cache or quorum system: an operator CR, or a plain
 // workload recognised by its image.
 type Instance struct {
-	Namespace string   `json:"ns"`
-	Name      string   `json:"name"`
-	Engine    string   `json:"engine"`
-	Kind      string   `json:"kind"`
-	Workload  string   `json:"workload,omitempty"`
-	Replicas  int      `json:"replicas"`
-	Quorum    bool     `json:"quorum"`
-	Source    string   `json:"source"`
-	PDBs      []string `json:"pdbs"`
-	Images    []string `json:"images,omitempty"`
-	Ignore    string   `json:"ignore,omitempty"`
+	Namespace string `json:"ns"`
+	Name      string `json:"name"`
+	Engine    string `json:"engine"`
+	Kind      string `json:"kind"`
+	Workload  string `json:"workload,omitempty"`
+	Replicas  int    `json:"replicas"`
+	// ReplicaWorkload is set on a Bitnami Redis master: the StatefulSet of
+	// its ReadReplicas, which serve reads but never take over from it.
+	ReadReplicas    int      `json:"readReplicas,omitempty"`
+	ReplicaWorkload string   `json:"replicaWorkload,omitempty"`
+	Quorum          bool     `json:"quorum"`
+	Source          string   `json:"source"`
+	PDBs            []string `json:"pdbs"`
+	Images          []string `json:"images,omitempty"`
+	Ignore          string   `json:"ignore,omitempty"`
 }
 
 // NSOwner is a namespace's team and environment, and all its labels.
