@@ -576,6 +576,12 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			q := qualify(alias, t.Name, reg)
 			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed,
 				selfAuthorized: t.SelfAuthorized, unscoped: t.Unscoped, schema: t.InputSchema}
+			// A tool the caller can never call costs a slot under maxTools and
+			// invites a denied call, so it is not offered. It stays registered,
+			// so a call to it anyway gets the cluster-admin denial.
+			if !ct.ClusterAdmin && a.enforcer.ClusterAdminOnly(t.Name) {
+				continue
+			}
 			// Global (namespace-agnostic) tools are tagged [docs] so the model
 			// treats them as cross-cluster documentation, not a cluster it must
 			// scope. Cluster tools keep the [cluster X] tag.

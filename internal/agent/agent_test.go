@@ -552,3 +552,26 @@ func TestRunTellsTheModelWhichServersAnswered(t *testing.T) {
 		t.Fatalf("server inventory missing from the prompt: %q", sys)
 	}
 }
+
+// Cluster-admin tools are offered to cluster-admins only: for anyone else they
+// would take slots under maxTools and could only ever be denied.
+func TestAdminOnlyToolsAreOfferedToAdminsOnly(t *testing.T) {
+	enforcer := NewEnforcer(map[string]ToolRule{"bgp_peers": {ClusterAdminOnly: true}})
+	offered := func(admin bool) []string {
+		llm := &fakeLLM{turns: []Response{{Text: "ok"}}}
+		ag := New(llm, enforcer, failingResolver{}, 6, DefaultBudgets(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		_, err := ag.Run(context.Background(), Input{Query: "q", Clusters: []ClusterTools{{
+			Cluster: "okd4-ts-3", Allowed: []string{"team-a"}, ClusterAdmin: admin,
+			MCP: &fakeMCP{tools: []string{"bgp_peers", "list_pods"}}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names(llm.seen[0].Tools)
+	}
+	if got := offered(false); len(got) != 1 || got[0] != "okd4-ts-3__list_pods" {
+		t.Errorf("non-admin offered %v, want only list_pods", got)
+	}
+	if got := offered(true); len(got) != 2 {
+		t.Errorf("admin offered %v, want both tools", got)
+	}
+}

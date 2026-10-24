@@ -43,6 +43,10 @@ func helpText(schedules, alerts, reports bool) string {
 	var b strings.Builder
 	b.WriteString("**Ask me anything about your workloads or your networking** — name the namespace and the cluster:\n")
 	b.WriteString("```text\nwhy are the pods in my-namespace on teh-1 crashing?\nare packets being dropped for my-namespace on teh-1?\nis my-namespace hitting its quota?\n```\n")
+	b.WriteString("\n**Deploy and keep it compliant** — I write manifests that pass the platform's policies; you apply them:\n")
+	b.WriteString("```text\ngive me a Deployment and Service for my-api in my-namespace on teh-1\n" +
+		"will this manifest be accepted in my-namespace? <paste it>\n" +
+		"is my-namespace compliant with the platform policies?\nwhy was my deployment rejected?\n```\n")
 
 	b.WriteString("\n**Your access**\n")
 	b.WriteString("| Command | What it does |\n| --- | --- |\n")
