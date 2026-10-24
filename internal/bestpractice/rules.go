@@ -359,6 +359,17 @@ func (ce *clusterEval) singleInstance(in *Instance, what string) {
 			"if persistence is off."
 		f.Fix = "Run it replicated with failover (a `RedisReplication` of 3 with a `RedisSentinel`), " +
 			"with a PDB of `maxUnavailable: 1`."
+		if in.ReplicaWorkload != "" {
+			// A Bitnami chart in replication mode without Sentinel.
+			if in.ReadReplicas > 0 {
+				f.Title = fmt.Sprintf("%s has %s but no failover", what, readReplicas(in.ReadReplicas))
+				f.Detail = fmt.Sprintf("Its replicas (StatefulSet `%s`) only serve reads: without Sentinel none of them "+
+					"takes over from the master. Every drain of the master's node stops writes until it is back elsewhere.",
+					in.ReplicaWorkload)
+			}
+			f.Fix = "Enable Sentinel in the chart values (`sentinel.enabled: true`, `replica.replicaCount: 3`), " +
+				"connect clients through Sentinel, and add a PDB of `maxUnavailable: 1`."
+		}
 	}
 	if in.Source == "image" {
 		f.Detail += fmt.Sprintf(" (Recognised by its image, `%s`.)", strings.Join(in.Images, "`, `"))
@@ -437,6 +448,13 @@ func replicas(n int) string {
 		return "1 replica"
 	}
 	return fmt.Sprintf("%d replicas", n)
+}
+
+func readReplicas(n int) string {
+	if n == 1 {
+		return "1 read replica"
+	}
+	return fmt.Sprintf("%d read replicas", n)
 }
 
 func pods(n int) string {

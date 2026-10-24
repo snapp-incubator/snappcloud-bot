@@ -170,6 +170,31 @@ func TestNoEnvLabelIsProduction(t *testing.T) {
 	}
 }
 
+func TestBitnamiReplicationWithoutSentinel(t *testing.T) {
+	master := func(read int) Instance {
+		return Instance{Namespace: "app", Name: "push-master", Engine: "redis", Kind: "StatefulSet", Replicas: 1,
+			ReadReplicas: read, ReplicaWorkload: "push-replicas", Source: "image", PDBs: []string{},
+			Images: []string{"bitnami/redis:8.0"}}
+	}
+
+	got := Evaluate(inv("production", nil, []Instance{master(2)}), Options{}).Findings
+	if r := rules(got); !reflect.DeepEqual(r, []string{"redis-single-instance:push-master"}) {
+		t.Fatalf("read replicas do not fail over, want the finding: got %v", r)
+	}
+	f := got[0]
+	if !strings.Contains(f.Title, "2 read replicas but no failover") || !strings.Contains(f.Detail, "push-replicas") {
+		t.Errorf("must name the read replicas: %q / %q", f.Title, f.Detail)
+	}
+	if !strings.Contains(f.Fix, "sentinel.enabled: true") {
+		t.Errorf("fix must be the chart's: %q", f.Fix)
+	}
+
+	got = Evaluate(inv("production", nil, []Instance{master(0)}), Options{}).Findings
+	if len(got) != 1 || !strings.Contains(got[0].Title, "runs 1 replica") || !strings.Contains(got[0].Fix, "sentinel.enabled") {
+		t.Errorf("replicas scaled to 0 is a plain single instance with the chart's fix: %+v", got)
+	}
+}
+
 func TestSentinelIsNotSingleInstance(t *testing.T) {
 	s := Instance{Namespace: "app", Name: "sentinel", Engine: "redis-sentinel", Kind: "RedisSentinel", Replicas: 1,
 		Quorum: true, Source: "operator", PDBs: []string{}}
