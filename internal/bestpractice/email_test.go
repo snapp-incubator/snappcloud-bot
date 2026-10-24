@@ -75,7 +75,7 @@ func TestRoutingValidate(t *testing.T) {
 // Team names come from cluster objects. The HTML part must escape them.
 func TestReportEmailEscapesHTML(t *testing.T) {
 	m := Mailing{Name: "x", Teams: []string{"pay<x>"}, Findings: []Finding{teamFinding("pay<x>", RuleMaxUnavailableZero, High)}}
-	e, err := ReportEmail(m, nil, false, day, time.UTC)
+	e, err := ReportEmail(m, nil, nil, false, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestReportEmailSubjectCountsManyTeams(t *testing.T) {
 	for _, team := range m.Teams {
 		m.Findings = append(m.Findings, teamFinding(team, RuleQuorumNoPDB, Medium))
 	}
-	e, err := ReportEmail(m, nil, true, day, time.UTC)
+	e, err := ReportEmail(m, nil, nil, true, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestReportPDFHoldsEveryFinding(t *testing.T) {
 		teamFinding("box", RuleMinAvailableAll, High), teamFinding("pay", RuleQuorumNoPDB, Medium),
 	}}
 	m.Findings[1].Kind = "RabbitmqCluster"
-	e, err := ReportEmail(m, map[string]string{"pdb": "https://docs/pdb"}, false, day, time.UTC)
+	e, err := ReportEmail(m, map[string]string{"pdb": "https://docs/pdb"}, nil, false, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestIgnoreHintOffersIgnoreOnlyWhereItWorks(t *testing.T) {
 	if !strings.Contains(mixed, AnnotationIgnore) || !strings.Contains(mixed, "cannot be excluded: they must be fixed") {
 		t.Errorf("mixed: %s", mixed)
 	}
-	e, err := ReportEmail(Mailing{Teams: []string{"pay"}, Findings: []Finding{quorum}}, nil, false, day, time.UTC)
+	e, err := ReportEmail(Mailing{Teams: []string{"pay"}, Findings: []Finding{quorum}}, nil, nil, false, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,5 +154,25 @@ func TestIgnoreHintOffersIgnoreOnlyWhereItWorks(t *testing.T) {
 	if text := FindingsText([]Finding{blocker, quorum}, nil); !strings.Contains(text, "Rule: pdb-min-available-all (cannot be ignored)") ||
 		!strings.Contains(text, "Rule: quorum-no-pdb\n") {
 		t.Errorf("findings text:\n%s", text)
+	}
+}
+
+// The email explains every rule it checks, and only those.
+func TestReportEmailExplainsTheRulesChecked(t *testing.T) {
+	if got := Checks(nil); len(got) != len(Rules) {
+		t.Fatalf("%d checks for %d rules", len(got), len(Rules))
+	}
+	m := Mailing{Teams: []string{"pay"}, Findings: []Finding{teamFinding("pay", RuleQuorumNoPDB, High)}}
+	e, err := ReportEmail(m, nil, []string{RuleRedisSingle}, false, day, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{e.Text, e.HTML} {
+		if !strings.Contains(part, "What we check") || strings.Contains(part, RuleRedisSingle) {
+			t.Errorf("checks:\n%s", part)
+		}
+	}
+	if !strings.Contains(e.Text, "- `pdb-overlap`: two PDBs") || !strings.Contains(e.HTML, "<li><code>pdb-overlap</code>: two PDBs") {
+		t.Errorf("pdb-overlap not explained:\n%s\n%s", e.Text, e.HTML)
 	}
 }

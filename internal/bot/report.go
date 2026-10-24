@@ -427,7 +427,7 @@ func (s *Service) reportPreview(id, team string) string {
 			team, id, bestpractice.FindingsText(fs, rf.Docs))
 	}
 	m, _ := bestpractice.MailingOf(rf.Routing.Mailings(r.Sendable(), r.Admins), team)
-	e, err := bestpractice.ReportEmail(m, rf.Docs, rf.Mailer.CanReply(), r.Created, rf.Location)
+	e, err := bestpractice.ReportEmail(m, rf.Docs, rf.Rules.DisabledRules, rf.Mailer.CanReply(), r.Created, rf.Location)
 	if err != nil {
 		return "🚫 " + err.Error()
 	}
@@ -521,7 +521,7 @@ func (s *Service) sendReportEmail(ctx context.Context, r bestpractice.Report, m 
 		d.Unrouted = append(d.Unrouted, m.Name)
 		return "unrouted"
 	}
-	e, err := bestpractice.ReportEmail(m, rf.Docs, rf.Mailer.CanReply(), r.Created, rf.Location)
+	e, err := bestpractice.ReportEmail(m, rf.Docs, rf.Rules.DisabledRules, rf.Mailer.CanReply(), r.Created, rf.Location)
 	if err != nil {
 		s.log.Error("best-practice report: render email", "email", m.Name, "err", err)
 		d.SendFailed = append(d.SendFailed, m.Name)

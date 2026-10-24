@@ -23,15 +23,47 @@ const emailIntro = "These can cause downtime, or block node maintenance, when a 
 
 var severityLabel = map[Severity]string{High: "High", Medium: "Medium"}
 
+// ruleChecks says in a line what each rule finds, for the email's "What we
+// check". Every rule in Rules has one.
+var ruleChecks = []struct{ Rule, Text string }{
+	{RuleMaxUnavailableZero, "a PDB with `maxUnavailable: 0`, which lets no pod be evicted."},
+	{RuleMinAvailableAll, "a PDB whose `minAvailable` is as many pods as there are, which lets no pod be evicted."},
+	{RuleOverlap, "two PDBs selecting the same pods: eviction refuses a pod in more than one."},
+	{RuleBlockedUnhealthy, "a PDB that allows no evictions because its pods are unhealthy, without `unhealthyPodEvictionPolicy: AlwaysAllow`."},
+	{RuleBelowQuorum, "a quorum system (such as a RabbitMQ cluster or Redis Sentinel) whose PDB lets a drain take enough members to lose quorum."},
+	{RuleQuorumNoPDB, "a quorum system with no PDB at all."},
+	{RuleRabbitSingle, "RabbitMQ running 1 replica: every drain of its node takes it down."},
+	{RuleRedisSingle, "Redis running 1 replica, or with replicas but no failover: every drain of its node takes it down."},
+}
+
+// checksScope says where the rules apply.
+const checksScope = "PDBs that block node drains are checked in every namespace; the rest in production namespaces only."
+
+// Checks lists the rules a report checks, those not disabled, as
+// "`rule`: what it finds".
+func Checks(disabled []string) []string {
+	off := toSet(disabled)
+	var out []string
+	for _, c := range ruleChecks {
+		if !off[c.Rule] {
+			out = append(out, "`"+c.Rule+"`: "+c.Text)
+		}
+	}
+	return out
+}
+
 // TeamCount is one row of an email's summary table.
 type TeamCount struct {
 	Team         string
 	High, Medium int
 }
 
-// ReportEmail renders one mailing. canReply says whether a reply reaches the
-// cloud team (a Reply-To is configured); created dates the report.
-func ReportEmail(m Mailing, docs map[string]string, canReply bool, created time.Time, loc *time.Location) (Email, error) {
+// ReportEmail renders one mailing. disabled are the rules left out of the
+// scan, so the email does not claim to check them; canReply says whether a
+// reply reaches the cloud team (a Reply-To is configured); created dates the
+// report.
+func ReportEmail(m Mailing, docs map[string]string, disabled []string, canReply bool, created time.Time,
+	loc *time.Location) (Email, error) {
 	high, _ := counts(m.Findings)
 	who := strings.Join(m.Teams, ", ")
 	if len(m.Teams) > 3 {
@@ -58,10 +90,11 @@ func ReportEmail(m Mailing, docs map[string]string, canReply bool, created time.
 	}
 	lead := fmt.Sprintf("The attached PDF has the %d finding%s for these teams, and how to fix each one.",
 		len(m.Findings), plural(len(m.Findings)))
+	body := emailBody{Lead: lead, Hint: ignoreHint(m.Findings), Rows: rows, Checks: Checks(disabled), Footer: footer}
 	return Email{
 		Subject:  subject,
-		Text:     emailText(day, lead, ignoreHint(m.Findings), rows, footer),
-		HTML:     emailHTML(day, lead, ignoreHint(m.Findings), rows, footer),
+		Text:     emailText(day, body),
+		HTML:     emailHTML(day, body),
 		FileName: "snappcloud-best-practice-" + day.Format("2006-01-02") + ".pdf",
 		PDF:      pdf,
 	}, nil
@@ -94,22 +127,37 @@ func emailFooter(canReply bool) string {
 	return ""
 }
 
-func emailText(day time.Time, lead, hint string, rows []TeamCount, footer string) string {
+// emailBody is what the text and HTML parts both say.
+type emailBody struct {
+	Lead, Hint string
+	Rows       []TeamCount
+	Checks     []string
+	Footer     string
+}
+
+func emailText(day time.Time, e emailBody) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Weekly SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, lead)
-	if hint != "" {
-		b.WriteString("Note: " + hint + "\n\n")
+	fmt.Fprintf(&b, "Weekly SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, e.Lead)
+	if e.Hint != "" {
+		b.WriteString("Note: " + e.Hint + "\n\n")
 	}
 	w := len("Team")
-	for _, r := range rows {
+	for _, r := range e.Rows {
 		w = max(w, len(r.Team))
 	}
 	fmt.Fprintf(&b, "%-*s  %4s  %6s\n", w, "Team", "High", "Medium")
-	for _, r := range rows {
+	for _, r := range e.Rows {
 		fmt.Fprintf(&b, "%-*s  %4d  %6d\n", w, r.Team, r.High, r.Medium)
 	}
-	if footer != "" {
-		b.WriteString("\n--\n" + footer + "\n")
+	if len(e.Checks) > 0 {
+		b.WriteString("\nWhat we check:\n")
+		for _, c := range e.Checks {
+			b.WriteString("- " + c + "\n")
+		}
+		b.WriteString(checksScope + "\n")
+	}
+	if e.Footer != "" {
+		b.WriteString("\n--\n" + e.Footer + "\n")
 	}
 	return b.String()
 }
@@ -144,19 +192,24 @@ var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
 <tr><th style="text-align:left;padding:4px 16px 4px 0;border-bottom:1px solid #d1d9e0">Team</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">High</th><th style="text-align:right;padding:4px 0 4px 16px;border-bottom:1px solid #d1d9e0">Medium</th></tr>
 {{range .Rows}}<tr><td style="padding:4px 16px 4px 0"><code>{{.Team}}</code></td><td style="text-align:right;padding:4px 0 4px 16px;{{if .High}}color:#d1242f;font-weight:600{{end}}">{{.High}}</td><td style="text-align:right;padding:4px 0 4px 16px">{{.Medium}}</td></tr>
 {{end}}</table>
-{{if .Footer}}<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
+{{if .Checks}}<h3 style="font-size:15px;margin:24px 0 4px">What we check</h3>
+<ul style="margin:0 0 8px;padding-left:20px">
+{{range .Checks}}<li>{{code .}}</li>
+{{end}}</ul>
+<p style="margin:0;color:#59636e">{{.Scope}}</p>
+{{end}}{{if .Footer}}<hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 8px">
 <p style="color:#59636e;font-size:12px">{{code .Footer}}</p>
 {{end}}</body></html>
 `))
 
-func emailHTML(day time.Time, lead, hint string, rows []TeamCount, footer string) string {
+func emailHTML(day time.Time, e emailBody) string {
 	var b bytes.Buffer
 	err := emailTmpl.Execute(&b, struct {
-		Day, Intro, Lead, Hint, Footer string
-		Rows                           []TeamCount
-	}{day.Format("2 January 2006"), emailIntro, lead, hint, footer, rows})
+		emailBody
+		Day, Intro, Scope string
+	}{e, day.Format("2 January 2006"), emailIntro, checksScope})
 	if err != nil { // the template is fixed; only a bug gets here
-		return "<pre>" + html.EscapeString(emailText(day, lead, hint, rows, footer)) + "</pre>"
+		return "<pre>" + html.EscapeString(emailText(day, e)) + "</pre>"
 	}
 	return b.String()
 }
