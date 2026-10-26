@@ -64,7 +64,7 @@ func TestInterleaveGivesEveryClusterAShare(t *testing.T) {
 }
 
 func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
-	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12}, nil)
+	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12}, nil, false)
 	for _, want := range []string{
 		"you have tools for okd4-box",
 		"okd4-teh-1 did not respond this turn",
@@ -75,7 +75,7 @@ func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
 	}
-	if toolNotice(nil, nil, nil, nil, nil) != "" {
+	if toolNotice(nil, nil, nil, nil, nil, false) != "" {
 		t.Fatal("no clusters at all should produce no notice")
 	}
 }
@@ -131,7 +131,7 @@ func TestRunCapsToolsFairlyAcrossClusters(t *testing.T) {
 	}
 	var hasTeh1 bool
 	for _, n := range got {
-		if strings.HasPrefix(n, "teh1__") {
+		if n == "z" {
 			hasTeh1 = true
 		}
 	}
@@ -231,7 +231,7 @@ func TestInterleaveKeepsEveryServerOfANamedClusterWithinTheBudget(t *testing.T) 
 // its metrics server did not. The tools are simply absent, which is exactly
 // what a cluster that never had them looks like — so it has to be said.
 func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
-	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil, nil)
+	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil, nil, false)
 	for _, want := range []string{
 		"Part of a cluster is missing this turn",
 		"okd4-teh-1 (okd4-teh-1-5)",
@@ -251,7 +251,7 @@ func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
 func TestToolNoticeNamesTheServersThatAnswered(t *testing.T) {
 	n := toolNotice([]string{"okd4-teh-1"}, nil, nil, nil, map[string][]string{
 		"okd4-teh-1": {"openshift-mcp (17)", "cloud-grafana-mcp (15)"},
-	})
+	}, false)
 	for _, want := range []string{
 		"okd4-teh-1 answered with openshift-mcp (17), cloud-grafana-mcp (15).",
 		"under the name it actually has",

@@ -94,7 +94,7 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 // are unreachable, and which had tools trimmed — so it never has to infer any
 // of that from the shape of its own tool list, and never reports a transient
 // outage as an absence of access.
-func toolNotice(present, unreachable, degraded []string, dropped map[string]int, inventory map[string][]string) string {
+func toolNotice(present, unreachable, degraded []string, dropped map[string]int, inventory map[string][]string, clusterArgUsed bool) string {
 	if len(present) == 0 && len(unreachable) == 0 && len(degraded) == 0 {
 		return ""
 	}
@@ -114,6 +114,10 @@ func toolNotice(present, unreachable, degraded []string, dropped map[string]int,
 			"capability as unavailable, look for it there under the name it actually has — a name you " +
 			"remember from elsewhere may not be the name here, and a tool you do not find under a guessed " +
 			"name is not a tool you do not have.")
+		if clusterArgUsed {
+			b.WriteString(" A tool that runs on more than one of these clusters is listed once and takes a \"cluster\" " +
+				"argument; its schema lists the clusters it runs on. For a cross-cluster question, call it once per cluster.")
+		}
 	} else {
 		b.WriteString("no cluster's tools could be listed.")
 	}
@@ -146,17 +150,6 @@ func toolNotice(present, unreachable, degraded []string, dropped map[string]int,
 			"say so plainly rather than answering from another cluster.")
 	}
 	return b.String()
-}
-
-// countFor totals one cluster's tools across its servers.
-func countFor(groups []clusterTools, cluster string) int {
-	n := 0
-	for _, g := range groups {
-		if g.cluster == cluster {
-			n += len(g.tools)
-		}
-	}
-	return n
 }
 
 // lastName is the final tool definition in the array — the one an endpoint that

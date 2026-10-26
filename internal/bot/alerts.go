@@ -293,7 +293,7 @@ func batchScope(b alerts.Batch, resolve func(string) (string, bool)) string {
 			}
 		}
 		if len(mapped) > 0 {
-			parts = append(parts, "clusters "+strings.Join(mapped, ", ")+" — use the tools tagged with these clusters")
+			parts = append(parts, "clusters "+strings.Join(mapped, ", ")+" — pass these as the tools' cluster argument")
 		}
 		if len(unknown) > 0 {
 			parts = append(parts, fmt.Sprintf("the alert's cluster label %s matches no cluster you have tools for. "+

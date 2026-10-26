@@ -111,10 +111,9 @@ func New(llm LLM, enforcer *Enforcer, resolver Resolver, maxIter int, budgets Bu
 }
 
 // ClusterTools binds one authorized cluster: the user's scope on it, its MCP
-// executor, and a short alias used to prefix tool names so the model can target
-// this cluster explicitly. Passing several lets the agent answer cross-cluster
-// queries in a single loop — each tool is tagged with its cluster and enforced
-// against that cluster's scope.
+// executor, and a short alias it also answers to. Passing several lets the agent
+// answer cross-cluster queries in a single loop — a call names its cluster and
+// is enforced against that cluster's scope.
 type ClusterTools struct {
 	Cluster string   // full cluster name (resolver + logs)
 	Alias   string   // short tool-name prefix (defaults to Cluster)
@@ -305,11 +304,29 @@ func (a *Agent) run(ctx context.Context, in Input, out *transcript) (string, err
 		results := make([]ToolResult, 0, len(resp.Calls))
 		for _, call := range resp.Calls {
 			toolCalls++
-			b, ok := reg[call.Name]
-			if !ok {
+			r, legacyCluster := reg[call.Name], ""
+			if r == nil {
+				r, legacyCluster = legacyRoute(reg, call.Name)
+			}
+			if r == nil {
 				results = append(results, errResult(call.ID, "unknown tool "+call.Name))
 				continue
 			}
+			if legacyCluster != "" {
+				if call.Args == nil {
+					call.Args = map[string]any{}
+				}
+				if _, set := call.Args[clusterArg]; !set {
+					call.Args[clusterArg] = legacyCluster
+				}
+			}
+			b, args, refusal := r.resolve(call.Args)
+			if refusal != "" {
+				denied++
+				results = append(results, errResult(call.ID, refusal))
+				continue
+			}
+			call.Args = args
 			// Check required arguments before spending the call: servers report a missing
 			// argument in their own terms, which reads as an empty result.
 			if missing := missingRequired(b.schema, call.Args); len(missing) > 0 {
@@ -530,16 +547,14 @@ func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []
 	return text + "\n\n_[answer cut off at the model's output limit]_", nil
 }
 
-// buildTools lists every authorized cluster's tools under qualified names and
-// returns them, a registry back to cluster and real name, and a notice for the
-// prompt. It errors only when every cluster fails.
-func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]binding, string, error) {
-	reg := make(map[string]binding)
-	var groups []clusterTools
+// buildTools lists every authorized cluster's tools, merged by name (see
+// route), and returns them, the routes back to each cluster's binding, and a
+// notice for the prompt. It errors only when every cluster fails.
+func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]*route, string, error) {
+	var lists []clusterList
 	var present, unreachable, degraded []string
 	namedClusters := map[string]bool{}
 	inventory := map[string][]string{}
-	anyOK := false
 	var firstErr error
 	for _, ct := range clusters {
 		ts, err := ct.MCP.ListTools(ctx)
@@ -551,7 +566,9 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			}
 			continue
 		}
-		anyOK = true
+		if ct.Alias == "" {
+			ct.Alias = ct.Cluster
+		}
 		present = append(present, ct.Cluster)
 		// A cluster can answer with only some of its servers. The tools of the
 		// ones that did not answer are simply absent, and absent is what a
@@ -562,86 +579,78 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 			}
 		}
 		namedClusters[ct.Cluster] = ct.Preferred
-		byServer := map[string][]Tool{}
+		lists = append(lists, clusterList{ct: ct, tools: ts})
+		// Name and count each cluster's servers, so the model reasons from the
+		// list it holds rather than from memory.
+		perServer := map[string]int{}
 		var order []string
-		allowed := make(map[string]bool, len(ct.Allowed))
-		for _, n := range ct.Allowed {
-			allowed[n] = true
-		}
-		alias := ct.Alias
-		if alias == "" {
-			alias = ct.Cluster
-		}
 		for _, t := range ts {
-			q := qualify(alias, t.Name, reg)
-			reg[q] = binding{ct: ct, real: t.Name, allowed: allowed,
-				selfAuthorized: t.SelfAuthorized, unscoped: t.Unscoped, schema: t.InputSchema}
-			// A tool the caller can never call costs a slot under maxTools and
-			// invites a denied call, so it is not offered. It stays registered,
-			// so a call to it anyway gets the cluster-admin denial.
 			if !ct.ClusterAdmin && a.enforcer.ClusterAdminOnly(t.Name) {
 				continue
 			}
-			// Global (namespace-agnostic) tools are tagged [docs] so the model
-			// treats them as cross-cluster documentation, not a cluster it must
-			// scope. Cluster tools keep the [cluster X] tag.
-			desc := fmt.Sprintf("[cluster %s] %s", ct.Cluster, t.Description)
-			if ct.NoEnforce {
-				desc = fmt.Sprintf("[%s — general documentation, not cluster-scoped] %s", ct.Alias, t.Description)
-			}
-			if _, seen := byServer[t.Server]; !seen {
+			if perServer[t.Server] == 0 {
 				order = append(order, t.Server)
 			}
-			byServer[t.Server] = append(byServer[t.Server], Tool{
-				Name:        q,
-				Description: desc,
-				InputSchema: t.InputSchema,
-			})
+			perServer[t.Server]++
 		}
 		for _, srv := range order {
-			groups = append(groups, clusterTools{
-				cluster:   ct.Cluster,
-				preferred: ct.Preferred,
-				tools:     byServer[srv],
-			})
-			// Name and count each cluster's servers, so the model reasons from the list it
-			// holds rather than from memory.
-			inventory[ct.Cluster] = append(inventory[ct.Cluster],
-				fmt.Sprintf("%s (%d)", srv, len(byServer[srv])))
+			inventory[ct.Cluster] = append(inventory[ct.Cluster], fmt.Sprintf("%s (%d)", srv, perServer[srv]))
 		}
 	}
-	if !anyOK && firstErr != nil {
+	if len(lists) == 0 && firstErr != nil {
 		return nil, nil, "", firstErr
 	}
+
+	routes, order := a.buildRoutes(lists)
+	var groups []clusterTools
+	idx := map[string]int{}
+	for _, r := range order {
+		if len(r.clusters) == 0 {
+			continue
+		}
+		i, ok := idx[r.server]
+		if !ok {
+			i = len(groups)
+			idx[r.server] = i
+			groups = append(groups, clusterTools{cluster: r.server})
+		}
+		groups[i].tools = append(groups[i].tools, r.tool)
+		groups[i].preferred = groups[i].preferred || r.preferred
+	}
 	max := a.budgets.MaxTools
-	tools, dropped := interleave(groups, max)
+	tools, _ := interleave(groups, max)
+
+	offered := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		offered[t.Name] = true
+	}
+	perCluster := map[string]int{}
+	dropped := map[string]int{}
+	for _, r := range order {
+		for _, c := range r.clusters {
+			if offered[r.name] {
+				perCluster[c]++
+			} else {
+				dropped[c]++
+			}
+		}
+	}
 	// Per-cluster counts, every turn: the only way to tell from outside whether
 	// a cluster's servers are all advertising what they should.
-	for _, g := range groups {
-		metrics.ToolsPerCluster.WithLabelValues(g.cluster).Set(float64(countFor(groups, g.cluster)))
+	for c, n := range perCluster {
+		metrics.ToolsPerCluster.WithLabelValues(c).Set(float64(n))
 	}
 	for cluster, n := range dropped {
 		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
-			"cluster", cluster, "dropped", n, "maxTools", max,
-			// A cluster the question named losing tools is the one case worth
-			// acting on: raise maxTools if the endpoint carries more, or narrow
-			// a server's allowTools.
-			"named", namedClusters[cluster])
+			"cluster", cluster, "dropped", n, "maxTools", max, "named", namedClusters[cluster])
 		metrics.ToolsDropped.WithLabelValues(cluster).Add(float64(n))
 	}
-	// At INFO, every turn: which clusters were carried, whether the question
-	// named them, and what each server contributed. Three reports in a row
-	// claimed a capability was missing, and deciding whether that was a trim,
-	// an outage or a confabulation took a production log each time. This line
-	// answers it without one.
 	for _, c := range present {
 		a.log.Info("cluster tools offered", "cluster", c, "named", namedClusters[c],
-			"tools", countFor(groups, c), "servers", strings.Join(inventory[c], " "))
+			"tools", perCluster[c], "servers", strings.Join(inventory[c], " "))
 	}
-	// defBytes is what the tool array actually weighs on the wire. The count is
-	// what the endpoint limits, but the size is what makes a turn expensive, and
-	// neither was visible from outside while the model was quietly being sent a
-	// truncated list.
+	// defBytes is what the tool array weighs on the wire: the count is what the
+	// endpoint limits, the size is what makes a turn expensive.
 	defBytes := 0
 	if b, err := json.Marshal(tools); err == nil {
 		defBytes = len(b)
@@ -654,7 +663,22 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
 			"servers", degraded)
 	}
-	return tools, reg, toolNotice(present, unreachable, degraded, dropped, inventory), nil
+	return tools, routes, toolNotice(present, unreachable, degraded, dropped, inventory, clusterArgUsed(tools)), nil
+}
+
+// clusterList is one cluster's listed tools.
+type clusterList struct {
+	ct    ClusterTools
+	tools []Tool
+}
+
+func clusterArgUsed(tools []Tool) bool {
+	for _, t := range tools {
+		if props, ok := t.InputSchema["properties"].(map[string]any); ok && props[clusterArg] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // filtered enforces namespace scope on a result before the model sees it,

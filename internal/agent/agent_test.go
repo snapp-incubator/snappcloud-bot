@@ -568,7 +568,7 @@ func TestAdminOnlyToolsAreOfferedToAdminsOnly(t *testing.T) {
 		}
 		return names(llm.seen[0].Tools)
 	}
-	if got := offered(false); len(got) != 1 || got[0] != "okd4-ts-3__list_pods" {
+	if got := offered(false); len(got) != 1 || got[0] != "list_pods" {
 		t.Errorf("non-admin offered %v, want only list_pods", got)
 	}
 	if got := offered(true); len(got) != 2 {
