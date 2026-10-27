@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -218,11 +219,12 @@ func (a *Agent) run(ctx context.Context, in Input, out *transcript) (string, err
 	// forward it as X-Remote-User. Never sourced from a tool argument.
 	ctx = identity.WithUser(ctx, in.User)
 
-	tools, reg, notice, err := a.buildTools(ctx, in.Clusters)
+	tools, cat, notice, err := a.buildTools(ctx, in.Clusters)
 	if err != nil {
 		summary("build-tools-failed", "err", err)
 		return "", fmt.Errorf("list tools: %w", err)
 	}
+	reg := cat.routes
 	system := in.System + notice
 	msgs := []Turn{{Role: "user", Text: in.Query}}
 	defer func() { out.system, out.msgs = system, msgs }()
@@ -304,6 +306,21 @@ func (a *Agent) run(ctx context.Context, in Input, out *transcript) (string, err
 		results := make([]ToolResult, 0, len(resp.Calls))
 		for _, call := range resp.Calls {
 			toolCalls++
+			switch call.Name {
+			case toolSearchName:
+				results = append(results, ToolResult{CallID: call.ID, Content: cat.search(call.Args)})
+				continue
+			case toolDescribeName:
+				results = append(results, ToolResult{CallID: call.ID, Content: cat.describe(call.Args)})
+				continue
+			case toolCallName:
+				inner, msg := cat.unwrap(call)
+				if msg != "" {
+					results = append(results, errResult(call.ID, msg))
+					continue
+				}
+				call = inner
+			}
 			r, legacyCluster := reg[call.Name], ""
 			if r == nil {
 				r, legacyCluster = legacyRoute(reg, call.Name)
@@ -335,6 +352,13 @@ func (a *Agent) run(ctx context.Context, in Input, out *transcript) (string, err
 				lg.Info("tool call rejected before it was sent", "tool", b.real,
 					"missing", missing, "sent", argNames(call.Args), "unknown", unknownArgs(b.schema, call.Args))
 				results = append(results, errResult(call.ID, missingRequiredMessage(b.real, b.schema, missing, call.Args)))
+				continue
+			}
+			if refusal := a.needsApproval(ctx, b, call.Args); refusal != "" {
+				denied++
+				metrics.ToolCalls.WithLabelValues(b.ct.Cluster, b.real, "needs-approval").Inc()
+				lg.Info("tool call awaits the user's approval", "tool", b.real, "cluster", b.ct.Cluster)
+				results = append(results, errResult(call.ID, refusal))
 				continue
 			}
 			// An identifier the model made up is a 404 the model reads as "this
@@ -550,7 +574,7 @@ func (a *Agent) finish(ctx context.Context, system string, msgs []Turn, tools []
 // buildTools lists every authorized cluster's tools, merged by name (see
 // route), and returns them, the routes back to each cluster's binding, and a
 // notice for the prompt. It errors only when every cluster fails.
-func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, map[string]*route, string, error) {
+func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool, *catalog, string, error) {
 	var lists []clusterList
 	var present, unreachable, degraded []string
 	namedClusters := map[string]bool{}
@@ -617,11 +641,30 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		groups[i].tools = append(groups[i].tools, r.tool)
 		groups[i].preferred = groups[i].preferred || r.preferred
 	}
+	// Within a server, configured priority decides what stays direct when the
+	// list does not fit; ties keep the server's order.
+	for _, g := range groups {
+		sort.SliceStable(g.tools, func(i, j int) bool {
+			return a.priority(routes[g.tools[i].Name]) > a.priority(routes[g.tools[j].Name])
+		})
+	}
 	max := a.budgets.MaxTools
-	tools, _ := interleave(groups, max)
+	total := 0
+	for _, g := range groups {
+		total += len(g.tools)
+	}
+	direct, _ := interleave(groups, max)
+	if max > 0 && total > max {
+		direct = nil
+		if room := max - bridgeTools; room > 0 {
+			direct, _ = interleave(groups, room)
+		}
+	}
+	cat := newCatalog(routes, order, direct)
+	tools := append(direct, cat.bridge()...)
 
-	offered := make(map[string]bool, len(tools))
-	for _, t := range tools {
+	offered := make(map[string]bool, len(direct))
+	for _, t := range direct {
 		offered[t.Name] = true
 	}
 	perCluster := map[string]int{}
@@ -641,8 +684,8 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		metrics.ToolsPerCluster.WithLabelValues(c).Set(float64(n))
 	}
 	for cluster, n := range dropped {
-		a.log.Warn("tool list trimmed to fit the request budget; this cluster's list is incomplete",
-			"cluster", cluster, "dropped", n, "maxTools", max, "named", namedClusters[cluster])
+		a.log.Info("tools deferred to tool_search to fit the request budget",
+			"cluster", cluster, "deferred", n, "maxTools", max, "named", namedClusters[cluster])
 		metrics.ToolsDropped.WithLabelValues(cluster).Add(float64(n))
 	}
 	for _, c := range present {
@@ -663,7 +706,21 @@ func (a *Agent) buildTools(ctx context.Context, clusters []ClusterTools) ([]Tool
 		a.log.Warn("some of a cluster's MCP servers did not answer; its tool list is incomplete this turn",
 			"servers", degraded)
 	}
-	return tools, routes, toolNotice(present, unreachable, degraded, dropped, inventory, clusterArgUsed(tools)), nil
+	return tools, cat, toolNotice(present, unreachable, degraded, cat.directory(), inventory, clusterArgUsed(tools)), nil
+}
+
+// priority is a route's configured trim priority.
+func (a *Agent) priority(r *route) int {
+	if r == nil {
+		return 0
+	}
+	p := 0
+	for _, b := range r.byKey {
+		if v := a.enforcer.Priority(b.real); v > p {
+			p = v
+		}
+	}
+	return p
 }
 
 // clusterList is one cluster's listed tools.

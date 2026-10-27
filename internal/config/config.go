@@ -320,6 +320,12 @@ type ToolRule struct {
 	// namespaces — a metrics result cannot be filtered afterwards, because an
 	// aggregating query returns numbers with no namespace on them.
 	PromQLArgs []string `yaml:"promqlArgs"`
+	// Priority orders a server's tools when the tool list is trimmed to
+	// maxTools: higher goes first. A trimmed tool stays reachable via load_tools.
+	Priority int `yaml:"priority"`
+	// RequiresApproval: the tool changes something (e.g. starts a debug pod),
+	// so it runs only after the user approved that use in the thread.
+	RequiresApproval bool `yaml:"requiresApproval"`
 }
 
 // Mattermost configures the bot's Mattermost connection.

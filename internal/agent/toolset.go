@@ -94,7 +94,7 @@ func interleave(groups []clusterTools, max int) ([]Tool, map[string]int) {
 // are unreachable, and which had tools trimmed — so it never has to infer any
 // of that from the shape of its own tool list, and never reports a transient
 // outage as an absence of access.
-func toolNotice(present, unreachable, degraded []string, dropped map[string]int, inventory map[string][]string, clusterArgUsed bool) string {
+func toolNotice(present, unreachable, degraded []string, deferred string, inventory map[string][]string, clusterArgUsed bool) string {
 	if len(present) == 0 && len(unreachable) == 0 && len(degraded) == 0 {
 		return ""
 	}
@@ -135,19 +135,10 @@ func toolNotice(present, unreachable, degraded []string, dropped map[string]int,
 			"right now. Say that a tool was unavailable this run and which part of the answer it would have " +
 			"covered. Do not say the cluster has no such tool, has no metrics, or is not configured for it.")
 	}
-	if len(dropped) > 0 {
-		keys := make([]string, 0, len(dropped))
-		for k := range dropped {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, k := range keys {
-			parts = append(parts, fmt.Sprintf("%s (%d)", k, dropped[k]))
-		}
-		b.WriteString(" Some tools were left out to fit the request, so a cluster's list here is not its full " +
-			"set: " + strings.Join(parts, ", ") + ". If the tool you need is missing for a cluster you do have, " +
-			"say so plainly rather than answering from another cluster.")
+	if deferred != "" {
+		b.WriteString("\n\nMore tools than fit in your tool list: the ones below are not in it, but every one of them " +
+			"is available to you with the same access rules. Find one with tool_search, read its arguments with " +
+			"tool_describe, and run it with tool_call. Never report one of these as unavailable or missing:\n" + deferred)
 	}
 	return b.String()
 }

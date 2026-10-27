@@ -42,6 +42,12 @@ type ToolRule struct {
 	// with no namespace on them — so the expression is rewritten before the call
 	// to pin every selector to the caller's namespaces.
 	PromQLArgs []string
+	// Priority orders a server's tools when the tool list has to be trimmed:
+	// higher stays in the list, the rest go behind tool_search.
+	Priority int
+	// RequiresApproval runs the tool only after the user approved that use
+	// (tool, cluster, namespace); otherwise the call becomes a proposal.
+	RequiresApproval bool
 }
 
 // Enforcer decides whether a proposed tool call is allowed for a user whose
@@ -100,6 +106,21 @@ func (e *Enforcer) Namespaces(tool string, args map[string]any) []string {
 func (e *Enforcer) ClusterAdminOnly(tool string) bool {
 	rule, explicit := e.ruleFor(tool)
 	return explicit && rule.ClusterAdminOnly
+}
+
+// Priority is the tool's configured trim priority (0 when unset).
+func (e *Enforcer) Priority(tool string) int {
+	rule, explicit := e.ruleFor(tool)
+	if !explicit {
+		return 0
+	}
+	return rule.Priority
+}
+
+// RequiresApproval reports whether the tool runs only on the user's approval.
+func (e *Enforcer) RequiresApproval(tool string) bool {
+	rule, explicit := e.ruleFor(tool)
+	return explicit && rule.RequiresApproval
 }
 
 // Check returns nil if the tool call is allowed for `allowed` namespaces on the

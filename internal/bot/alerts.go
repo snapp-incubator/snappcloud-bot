@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
 	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
 	"github.com/snapp-incubator/snappcloud-bot/internal/humanize"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
@@ -136,8 +137,10 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	// usually one incident, and asking about them separately gets several
 	// partial answers — each blind to the others — plus a message each.
 	start := time.Now()
-	answer, aerr := s.brain.Answer(brain.WithReview(ctx), scope, ch.Owner,
-		unattended("alert investigation", batchQuery(b, s.brain.ResolveCluster)), "", reqID)
+	approval := agent.NewApproval()
+	query := unattended("alert investigation", batchQuery(b, s.brain.ResolveCluster)) + alertApprovalNote
+	answer, aerr := s.brain.Answer(agent.WithApproval(brain.WithReview(ctx), approval), scope, ch.Owner,
+		query, "", reqID)
 	metrics.AlertInvestigationDuration.Observe(time.Since(start).Seconds())
 	if aerr != nil {
 		metrics.AlertInvestigations.WithLabelValues("error").Inc()
@@ -152,10 +155,13 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	// An answer nobody receives is a failed investigation, not a successful
 	// one: count and return it that way, so the batch is retried on the next
 	// window instead of sitting in cooldown having produced nothing.
-	if perr := s.post(ctx, b.ChannelID, b.Root(), batchHeader(b)+clean); perr != nil {
+	root, perr := s.postThread(ctx, b.ChannelID, b.Root(), batchHeader(b)+clean)
+	if perr != nil {
 		metrics.AlertInvestigations.WithLabelValues("undelivered").Inc()
 		return fmt.Errorf("deliver answer: %w", perr)
 	}
+	// Whoever replies "yes" in the thread approves a proposal for themselves.
+	s.pending.put(threadKey(b.ChannelID, root), approval.Proposed(), appendTranscript("", query, clean))
 	metrics.AlertInvestigations.WithLabelValues("ok").Inc()
 	lg.Info("alert batch investigated and posted", "subjects", len(b.Investigate),
 		"context", len(b.Context), "skipped", len(b.Skipped))
@@ -168,6 +174,12 @@ func (s *Service) Investigate(ctx context.Context, ch alerts.Channel, b alerts.B
 	}
 	return nil
 }
+
+// alertApprovalNote is the one question an alert answer may ask: people on
+// call read the thread and can approve a proposed tool there.
+const alertApprovalNote = "\n\nOne exception to not asking: if a tool you called was refused because it needs " +
+	"the user's approval, end with that single request as the tool result describes. Whoever is on call can " +
+	"approve it by replying in this thread."
 
 // batchHeader names what the finding covers, so a single message about five
 // alerts is not mistaken for a comment on one of them.

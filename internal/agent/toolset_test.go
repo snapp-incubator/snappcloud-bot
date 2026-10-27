@@ -64,18 +64,19 @@ func TestInterleaveGivesEveryClusterAShare(t *testing.T) {
 }
 
 func TestToolNoticeNamesPresentUnreachableAndTrimmed(t *testing.T) {
-	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, map[string]int{"okd4-box": 12}, nil, false)
+	n := toolNotice([]string{"okd4-box"}, []string{"okd4-teh-1"}, nil, "- monitor_drops: Dropped packets.", nil, false)
 	for _, want := range []string{
 		"you have tools for okd4-box",
 		"okd4-teh-1 did not respond this turn",
 		"NOT a limit on the user's access",
-		"okd4-box (12)",
+		"tool_search",
+		"- monitor_drops: Dropped packets.",
 	} {
 		if !strings.Contains(n, want) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
 	}
-	if toolNotice(nil, nil, nil, nil, nil, false) != "" {
+	if toolNotice(nil, nil, nil, "", nil, false) != "" {
 		t.Fatal("no clusters at all should produce no notice")
 	}
 }
@@ -113,7 +114,7 @@ func TestRunTellsTheModelWhichClustersAreUnreachable(t *testing.T) {
 func TestRunCapsToolsFairlyAcrossClusters(t *testing.T) {
 	llm := &fakeLLM{turns: []Response{{Text: "done"}}}
 	b := DefaultBudgets()
-	b.MaxTools = 3
+	b.MaxTools = 5
 	ag := New(llm, NewEnforcer(nil), nil, 3, b, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := ag.Run(context.Background(), Input{
 		Query: "q",
@@ -126,7 +127,7 @@ func TestRunCapsToolsFairlyAcrossClusters(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := names(llm.seen[0].Tools)
-	if len(got) != 3 {
+	if len(got) != 5 || toolByName(llm.seen[0].Tools, toolSearchName) == nil {
 		t.Fatalf("cap not applied: %v", got)
 	}
 	var hasTeh1 bool
@@ -231,7 +232,7 @@ func TestInterleaveKeepsEveryServerOfANamedClusterWithinTheBudget(t *testing.T) 
 // its metrics server did not. The tools are simply absent, which is exactly
 // what a cluster that never had them looks like — so it has to be said.
 func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
-	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, nil, nil, false)
+	n := toolNotice([]string{"okd4-teh-1"}, nil, []string{"okd4-teh-1 (okd4-teh-1-5)"}, "", nil, false)
 	for _, want := range []string{
 		"Part of a cluster is missing this turn",
 		"okd4-teh-1 (okd4-teh-1-5)",
@@ -249,7 +250,7 @@ func TestToolNoticeReportsAPartlyAnsweringCluster(t *testing.T) {
 // and named tools that do not exist anywhere. The notice states the servers
 // that answered and how many tools each gave, which is not arguable.
 func TestToolNoticeNamesTheServersThatAnswered(t *testing.T) {
-	n := toolNotice([]string{"okd4-teh-1"}, nil, nil, nil, map[string][]string{
+	n := toolNotice([]string{"okd4-teh-1"}, nil, nil, "", map[string][]string{
 		"okd4-teh-1": {"openshift-mcp (17)", "cloud-grafana-mcp (15)"},
 	}, false)
 	for _, want := range []string{

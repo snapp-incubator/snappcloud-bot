@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/agent"
 	"github.com/snapp-incubator/snappcloud-bot/internal/alerts"
 	"github.com/snapp-incubator/snappcloud-bot/internal/authzclient"
 	"github.com/snapp-incubator/snappcloud-bot/internal/mattermost"
@@ -51,6 +52,7 @@ type Service struct {
 	brain          answerer
 	resolver       authzclient.Resolver
 	conv           *convStore
+	pending        *pendingStore
 	identityMap    map[string]string
 	botUsername    string
 	requireMention bool
@@ -109,6 +111,7 @@ func New(mm mmClient, brain answerer, resolver authzclient.Resolver, o Options, 
 		brain:          brain,
 		resolver:       resolver,
 		conv:           newConvStore(o.ConversationTTL, o.MemoryPath),
+		pending:        newPendingStore(),
 		identityMap:    o.IdentityMap,
 		botUsername:    o.BotUsername,
 		requireMention: o.RequireMention,
@@ -260,6 +263,26 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 	// enforces namespace scope on every result.
 	convKey := convKeyFor(identity, p)
 	history := s.conv.get(convKey)
+
+	// A reply to a proposal approves or declines it; the approved tools then
+	// run with this sender's access.
+	thread := threadKey(p.ChannelID, threadRootOf(p))
+	approval := agent.NewApproval()
+	if approve, decline := replyKind(query); (approve || decline) && s.pending.has(thread) {
+		pend, _ := s.pending.take(thread)
+		if decline {
+			outcome = "declined"
+			s.replyTo(ctx, p, "OK, I won't run it.")
+			return nil
+		}
+		approval = agent.NewApproval(pend.proposals...)
+		query = approvedQuery(pend.proposals)
+		if history == "" {
+			history = pend.history
+		}
+		lg.Info("proposal approved", "user", identity, "proposals", len(pend.proposals))
+	}
+	ctx = agent.WithApproval(ctx, approval)
 	lg.Info("request", "user", identity, "clusters", scope.Clusters(), "thread", history != "")
 
 	answer, aerr := s.brain.Answer(ctx, scope, identity, query, history, reqID)
@@ -278,9 +301,19 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		s.replyTo(ctx, p, msgEmptyAnswer)
 		return nil
 	}
-	s.conv.put(convKey, appendTranscript(history, query, clean))
+	transcript := appendTranscript(history, query, clean)
+	s.conv.put(convKey, transcript)
+	s.pending.put(thread, approval.Proposed(), transcript)
 	s.replyTo(ctx, p, clean)
 	return nil
+}
+
+// threadRootOf is the root replies to p land under: none in a DM.
+func threadRootOf(p mattermost.Post) string {
+	if p.IsDirect() {
+		return ""
+	}
+	return p.ThreadRoot()
 }
 
 // appendTranscript grows the per-thread memory transcript, trimmed to the last

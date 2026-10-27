@@ -234,11 +234,12 @@ var (
 		Help: "Tools offered to the model in the most recent turn.",
 	})
 
-	// ToolsDropped counts tools left out of a turn's tool list, by cluster,
-	// because the list exceeded agent.budgets.maxTools.
+	// ToolsDropped counts tools moved out of a turn's tool list, by cluster,
+	// because the list exceeded agent.budgets.maxTools. They stay callable
+	// through tool_search / tool_call.
 	ToolsDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "tools_dropped_total",
-		Help: "Tools omitted from a turn's tool list to fit the budget, by cluster.",
+		Help: "Tools deferred behind tool_search to fit the budget, by cluster.",
 	}, []string{"cluster"})
 
 	// ScheduleQueueWait: time a scheduled run waited for a worker slot.
