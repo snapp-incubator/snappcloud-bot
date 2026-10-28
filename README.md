@@ -36,7 +36,9 @@ control. This bot is built the other way around.
 - **Metrics queries are rewritten, not filtered.** A PromQL result carries no
   namespace to filter on, so every selector is pinned to the caller's namespaces
   *before* the query runs — unless the server is deliberately marked `unscoped`.
-- **Strictly read-only.** It tells you the fix; you apply it.
+- **Read-only, except what you approve.** It tells you the fix; you apply it.
+  The one exception is a tool marked `requiresApproval` (a debug pod): the bot
+  proposes it, and it runs only after you reply "yes", with your own access.
 
 ## What you need to run it
 
@@ -381,7 +383,7 @@ enums only, never a user identity, namespace, or free text.
 | `snappcloud_bot_report_collect_failures_total` | `cluster` | clusters a build could not read |
 | `snappcloud_bot_mcp_list_failures_total` | `server` | an MCP server that failed to list its tools — its tools are missing from every answer until it recovers |
 | `snappcloud_bot_tools_offered`, `_tools_per_cluster` | —, `cluster` | tools put in front of the model last turn, and what each cluster advertised |
-| `snappcloud_bot_tools_dropped_total` | `cluster` | tools omitted to fit `maxTools` — a cluster the question named appearing here is the case worth acting on |
+| `snappcloud_bot_tools_dropped_total` | `cluster` | tools deferred behind `tool_search` to fit `maxTools`; still callable, one step slower |
 | `snappcloud_bot_turn_outcomes_total` | `outcome` | `answered` / `max-iters` — the second means the model ran out of tool calls mid-investigation |
 | `snappcloud_bot_answer_continuations_total` | — | answers that hit the model's output limit and had to be continued; climbing means raise `maxTokens` |
 | `snappcloud_bot_answer_nudges_total` | — | turns sent back because the model announced work it did not do |
@@ -407,16 +409,36 @@ environment (never YAML):
 Key config sections: `agent.llm` (endpoint/model), `agent.clusters[].servers[]`
 (MCP servers per cluster), `agent.globalServers[]` (namespace-agnostic servers
 like docs), `agent.toolGuidance` (tool-usage skills), `agent.toolRules`
-(per-tool namespace-arg overrides + `clusterAdminOnly` infra gating),
+(per-tool namespace-arg overrides, `clusterAdminOnly` infra gating, `priority`,
+`requiresApproval`),
 `authz.regions[]` (mcp-authz endpoints). A cluster's `name` must match an
 `authz.regions[].name`.
 
 A question that **names its clusters** is given only those clusters' tools.
 Every tool definition is re-sent each round, and an LLM endpoint that cannot
 carry them all drops the tail silently, so set `agent.budgets.maxTools` to what
-your endpoint carries. The bot trims to it, one tool per server per round with
-named clusters first, and tells the model what was trimmed. Watch
-`snappcloud_bot_tools_offered` and `snappcloud_bot_tools_dropped_total`.
+your endpoint carries. When there are more tools than that, none is dropped:
+the list keeps what fits (by `toolRules.<tool>.priority`, then one tool per
+server per round, named clusters first) plus three bridge tools —
+`tool_search` (BM25 over names, descriptions and argument names),
+`tool_describe` (the full schema) and `tool_call` (runs a tool by name through
+the same enforcement as a direct call). The instructions list every deferred
+tool by name, so the model knows what it can reach. The array does not change
+during a turn, so it stays cacheable. Watch `snappcloud_bot_tools_offered` and
+`snappcloud_bot_tools_dropped_total`.
+
+### Approval tools
+
+A tool with `toolRules.<tool>.requiresApproval: true` changes something, so the
+model cannot run it on its own. When it calls one, the call is refused and
+recorded as a proposal (tool, cluster, namespace); the model finishes its
+answer and asks. A bare "yes" in that thread (DM, question thread or alert
+thread) within 30 minutes grants exactly that proposal for one turn, run with
+the replier's identity and access; "no" drops it. Turns nobody can answer — the
+HTTP API, schedules — never run them. The debug pod tools of
+[openshift-mcp](https://github.com/snapp-incubator/openshift-mcp) are the
+intended use: `debug_pod_start` needs approval; `debug_pod_exec` and
+`debug_pod_finish` only reach a pod that same user started.
 
 A cluster's `names` lists what else it is called (alert labels, datasource
 names, shorthand); `agent.clusterNamePrefixes` (e.g. `["okd4-"]`) gives every
@@ -504,8 +526,7 @@ An answer that ran out of tool calls says so in its own last line.
 | `diagnostics` shows 403 on servers that are up | the status cell names the cause | "no credential sent" is a key missing from the bot's Secret, not a sick server; "credential refused" is a token to rotate |
 | every metric cell empty | `check_datasources_health` | the metrics backend is refusing the credentials it was given |
 | right cluster, wrong numbers | `list_datasources` | several datasources exist and the default is not always the complete one |
-| a tool missing for one cluster | `tools_dropped_total` | the list was trimmed; `named=true` in the warning is the case worth acting on |
-| "this cluster has no metrics tool" while the log shows the server offering them | `tools offered … tools= ceiling=` | the endpoint carries 128 definitions and drops the rest of the array silently; the bot caps itself at that, so a count at the ceiling means something was trimmed |
+| a tool missing for one cluster | `tools offered … last=` and the deferred list in the instructions | deferred tools are reached through `tool_search`/`tool_call`; give a tool the model should see directly a higher `priority` |
 | a tool whose result is always cut | `results_truncated_total` | called too broadly: the model is spending a call on a fraction of an answer |
 | answer stops mid-sentence | `answer_continuations_total` | hit `maxTokens`; it is continued, but a climbing count means raise it |
 | answer describes work it did not do | `answer_nudges_total` | the model announced calls and made none |

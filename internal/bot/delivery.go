@@ -19,6 +19,19 @@ const postTimeout = 20 * time.Second
 // post writes a message, splitting long answers. It runs detached from the
 // caller's deadline so a finished answer is not lost to the run's timeout.
 func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error {
+	_, err := s.postThread(ctx, channelID, rootID, msg)
+	return err
+}
+
+// postIDer is a client that returns the id of the post it creates.
+type postIDer interface {
+	CreatePostID(ctx context.Context, channelID, message, rootID string) (string, error)
+}
+
+// postThread is post returning the thread replies to the answer land in: the
+// root it was posted under, or the answer's first post.
+func (s *Service) postThread(ctx context.Context, channelID, rootID, msg string) (string, error) {
+	thread := rootID
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postTimeout)
 	defer cancel()
 
@@ -35,23 +48,32 @@ func (s *Service) post(ctx context.Context, channelID, rootID, msg string) error
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
-		err := s.mm.CreatePost(dctx, channelID, part, rootID)
+		var err error
+		if pi, ok := s.mm.(postIDer); ok && thread == "" {
+			thread, err = pi.CreatePostID(dctx, channelID, part, rootID)
+		} else {
+			err = s.mm.CreatePost(dctx, channelID, part, rootID)
+		}
 		if err != nil && rootID != "" {
 			// The thread may be gone — an alert post deleted, or a root from a
 			// channel that has since been archived. An answer in the channel
 			// beats an answer nobody receives, so try again untethered.
 			s.log.Warn("threaded post failed; retrying at channel level",
 				"channel", channelID, "root", rootID, "err", err)
-			rootID = ""
-			err = s.mm.CreatePost(dctx, channelID, part, "")
+			rootID, thread = "", ""
+			if pi, ok := s.mm.(postIDer); ok {
+				thread, err = pi.CreatePostID(dctx, channelID, part, "")
+			} else {
+				err = s.mm.CreatePost(dctx, channelID, part, "")
+			}
 		}
 		if err != nil {
 			s.log.Error("post answer", "channel", channelID, "root", rootID,
 				"part", i+1, "of", len(parts), "err", err)
-			return fmt.Errorf("post to %s: %w", channelID, err)
+			return thread, fmt.Errorf("post to %s: %w", channelID, err)
 		}
 	}
-	return nil
+	return thread, nil
 }
 
 // Mattermost rejects posts longer than its MaxPostSize (default 16383 chars).
