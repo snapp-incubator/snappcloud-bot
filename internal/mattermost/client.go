@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +67,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return c.send(req, out)
+}
+
+// send does a request and decodes a JSON response into out (when non-nil).
+func (c *Client) send(req *http.Request, out any) error {
+	method, path := req.Method, req.URL.Path
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -103,13 +112,64 @@ func (c *Client) CreatePost(ctx context.Context, channelID, message, rootID stri
 // CreatePostID is CreatePost returning the new post's id, for a post that will
 // be the root of a thread.
 func (c *Client) CreatePostID(ctx context.Context, channelID, message, rootID string) (string, error) {
-	body := map[string]string{"channel_id": channelID, "message": message}
+	return c.CreatePostFiles(ctx, channelID, message, rootID, nil)
+}
+
+// CreatePostFiles is CreatePostID with files attached: ids from UploadFile,
+// uploaded to the same channel.
+func (c *Client) CreatePostFiles(ctx context.Context, channelID, message, rootID string, fileIDs []string) (string, error) {
+	body := map[string]any{"channel_id": channelID, "message": message}
 	if rootID != "" {
 		body["root_id"] = rootID
+	}
+	if len(fileIDs) > 0 {
+		body["file_ids"] = fileIDs
 	}
 	var out struct {
 		ID string `json:"id"`
 	}
 	err := c.do(ctx, http.MethodPost, "/api/v4/posts", body, &out)
 	return out.ID, err
+}
+
+// UploadFile stores a file in a channel and returns its id, for a post to
+// attach with CreatePostFiles. Until a post attaches it, nobody sees it.
+func (c *Client) UploadFile(ctx context.Context, channelID, name, contentType string, data []byte) (string, error) {
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	if err := w.WriteField("channel_id", channelID); err != nil {
+		return "", err
+	}
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "files", "filename": name}))
+	h.Set("Content-Type", contentType)
+	part, err := w.CreatePart(h)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v4/files", &b)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	var out struct {
+		FileInfos []struct {
+			ID string `json:"id"`
+		} `json:"file_infos"`
+	}
+	if err := c.send(req, &out); err != nil {
+		return "", err
+	}
+	if len(out.FileInfos) == 0 || out.FileInfos[0].ID == "" {
+		return "", fmt.Errorf("mattermost POST /api/v4/files: no file in the response")
+	}
+	return out.FileInfos[0].ID, nil
 }
