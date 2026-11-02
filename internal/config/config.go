@@ -67,6 +67,10 @@ type BestPractice struct {
 	AdminChannel string `yaml:"adminChannel"`
 	// Timeout bounds one job: a build, or an approval with its emails (default 10m).
 	Timeout string `yaml:"timeout"`
+	// SendInterval spaces the emails out to stay under the mail server's rate
+	// limit (default 15s). An email the server refuses for now (4xx) is sent
+	// again after 1m, 2m and 3m.
+	SendInterval string `yaml:"sendInterval"`
 	// Clusters to scan (default every agent cluster).
 	Clusters []string `yaml:"clusters"`
 	// ExcludeNamespaceSelectors are label selectors (kubectl -l syntax); a

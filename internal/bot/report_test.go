@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/textproto"
 	"slices"
 	"strings"
 	"sync"
@@ -86,13 +87,24 @@ func (m *reportMM) UploadFile(_ context.Context, ch, name, contentType string, d
 }
 func (m *reportMM) Typing(context.Context, string, string) {}
 
-// fakeMailer records every email; the server rejects nobody@.
+// fakeMailer records every email; the server rejects nobody@. The first
+// rateLimited sends are refused for now, as a rate-limited server does.
 type fakeMailer struct {
-	mu   sync.Mutex
-	sent []mail.Message
+	mu          sync.Mutex
+	sent        []mail.Message
+	tries       int
+	rateLimited int
 }
 
 func (m *fakeMailer) Send(_ context.Context, msg mail.Message) ([]string, error) {
+	m.mu.Lock()
+	m.tries++
+	limited := m.tries <= m.rateLimited
+	m.mu.Unlock()
+	if limited {
+		return nil, fmt.Errorf("mail: MAIL FROM bot@snapp.cab: %w", &textproto.Error{Code: 421,
+			Msg: "4.4.2 Message submission rate for this client has exceeded the configured limit"})
+	}
 	var rejected []string
 	for _, a := range slices.Concat(msg.To, msg.Cc) {
 		if strings.HasPrefix(a, "nobody@") {
@@ -214,6 +226,7 @@ func newReportFixture(t *testing.T) *reportFixture {
 			Routing:      reportRouting,
 			Location:     time.UTC,
 			Pace:         time.Nanosecond,
+			RetryWait:    time.Nanosecond,
 		},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	f.svc.SetReportRunner(syncRunner{})
@@ -338,6 +351,73 @@ func TestReportApproveSendsWhatStillHolds(t *testing.T) {
 
 	if got := f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id); !strings.Contains(got, "already sent") {
 		t.Errorf("second approve = %q", got)
+	}
+}
+
+// A server over its rate limit refuses for now: the email is sent again, and
+// one refused on every try is reported as not sent.
+func TestReportRetriesAnEmailRefusedForNow(t *testing.T) {
+	f := newReportFixture(t)
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	f.mail.rateLimited = 2
+	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
+	if d := f.latest(t).Delivery; !slices.Equal(d.Sent, []string{"pay", bestpractice.OthersName}) || len(d.SendFailed) != 0 {
+		t.Errorf("delivery = %+v, want both sent after the retries", d)
+	}
+	if f.mail.tries != 4 {
+		t.Errorf("tries = %d, want 2 refused + 2 sent", f.mail.tries)
+	}
+
+	f = newReportFixture(t)
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	f.mail.rateLimited = 1 + reportRetries
+	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+f.latest(t).ID)
+	if d := f.latest(t).Delivery; !slices.Equal(d.Sent, []string{bestpractice.OthersName}) ||
+		!slices.Equal(d.SendFailed, []string{"pay"}) {
+		t.Errorf("delivery = %+v, want pay given up after %d retries", d, reportRetries)
+	}
+}
+
+// resend sends only the emails that did not go out, and records them sent.
+func TestReportResendSendsWhatFailed(t *testing.T) {
+	f := newReportFixture(t)
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	id := f.latest(t).ID
+	if got := f.say(t, "admin@snapp.cab", adminChannel, "report resend "+id); !strings.Contains(got, "not sent yet") {
+		t.Errorf("resend before approval = %q", got)
+	}
+
+	f.mail.rateLimited = 1 + reportRetries // pay, the first email, never goes out
+	f.say(t, "admin@snapp.cab", adminChannel, "report approve "+id)
+	if d := f.latest(t).Delivery; !slices.Equal(d.SendFailed, []string{"pay"}) {
+		t.Fatalf("delivery = %+v, want pay not sent", d)
+	}
+
+	if got := f.say(t, "admin@snapp.cab", "random", "report resend "+id); !strings.Contains(got, "report channel") {
+		t.Errorf("resend outside the admin channel = %q", got)
+	}
+	if got := f.say(t, "tenant@snapp.cab", adminChannel, "report resend "+id); !strings.Contains(got, "for cluster-admins") {
+		t.Errorf("resend by a tenant = %q", got)
+	}
+	if got := f.say(t, "admin@snapp.cab", adminChannel, "report resend "+id); !strings.Contains(got, "sending again pay") {
+		t.Errorf("resend reply = %q", got)
+	}
+	r := f.latest(t)
+	if r.Status != bestpractice.StatusSent || !slices.Equal(r.Delivery.Sent, []string{bestpractice.OthersName, "pay"}) ||
+		len(r.Delivery.SendFailed) != 0 {
+		t.Errorf("after resend: status %s, delivery %+v", r.Status, r.Delivery)
+	}
+	if n, m := len(f.mail.to("alice@snapp.cab")), len(f.mail.to("tech-ems@snapp.cab")); n != 1 || m != 1 {
+		t.Errorf("pay got %d emails, others %d; want one each", n, m)
+	}
+	if !slices.ContainsFunc(f.mm.in(adminChannel), func(p sentPost) bool {
+		return p.root == r.RootID && strings.Contains(p.msg, "Resend by admin@snapp.cab: 1 of the 1 emails")
+	}) {
+		t.Errorf("no resend summary in the report thread: %+v", f.mm.in(adminChannel))
+	}
+
+	if got := f.say(t, "admin@snapp.cab", adminChannel, "report resend "+id); !strings.Contains(got, "nothing to resend") {
+		t.Errorf("second resend = %q", got)
 	}
 }
 

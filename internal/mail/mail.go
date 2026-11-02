@@ -63,6 +63,14 @@ type Attachment struct {
 // every address permanently (a 5xx reply to RCPT TO), or none was valid.
 var ErrRejected = errors.New("every recipient rejected")
 
+// Temporary reports whether the server refused a message for now but may take
+// it later: a 4xx reply, such as 421 4.4.2 when the client sends faster than
+// the server's rate limit allows. Nothing was sent, so sending again is safe.
+func Temporary(err error) bool {
+	var te *textproto.Error
+	return errors.As(err, &te) && te.Code >= 400 && te.Code < 500
+}
+
 // Sender sends mail through one SMTP server.
 type Sender struct {
 	cfg     Config

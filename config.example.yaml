@@ -49,6 +49,10 @@ bestPractice:
   expireAfter: 48h      # an unapproved report expires
   adminChannel: ""      # channel ID (not name) of the private cloud-admin channel
   timeout: 10m          # one build, or one approval with its emails
+  # Gap between emails, to stay under the mail server's rate limit (Exchange
+  # allows a client 5 a minute). An email refused for now (4xx) is retried
+  # after 1m, 2m, 3m. timeout must cover emails × sendInterval, plus retries.
+  sendInterval: 15s
   # clusters: []        # default: every agent cluster
   # Namespaces matching ANY of these label selectors (kubectl -l syntax: key,
   # !key, key=value, key!=value, key in (a,b), key notin (a,b)) are left out.
