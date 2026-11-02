@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,14 +21,22 @@ import (
 
 const adminChannel = "admins"
 
-type sentPost struct{ channel, root, msg string }
+type sentPost struct {
+	channel, root, msg string
+	files              []string // names of the files attached
+}
+
+// upload is a file stored by UploadFile.
+type upload struct{ channel, name, contentType string }
 
 // reportMM is Mattermost for the report: every post with its channel.
 type reportMM struct {
-	mu      sync.Mutex
-	email   string // the sender of command posts
-	posts   []sentPost
-	nextRef int
+	mu        sync.Mutex
+	email     string // the sender of command posts
+	posts     []sentPost
+	nextRef   int
+	uploads   map[string]upload
+	uploadErr error
 }
 
 func (m *reportMM) GetUser(context.Context, string) (mattermost.User, error) {
@@ -38,14 +47,42 @@ func (m *reportMM) CreatePost(ctx context.Context, ch, msg, root string) error {
 	return err
 }
 func (m *reportMM) CreatePostID(ctx context.Context, ch, msg, root string) (string, error) {
+	return m.CreatePostFiles(ctx, ch, msg, root, nil)
+}
+func (m *reportMM) CreatePostFiles(ctx context.Context, ch, msg, root string, fileIDs []string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.posts = append(m.posts, sentPost{ch, root, msg})
+	var names []string
+	for _, id := range fileIDs {
+		u, ok := m.uploads[id]
+		if !ok || u.channel != ch {
+			return "", fmt.Errorf("file %s is not uploaded to %s", id, ch)
+		}
+		names = append(names, u.name)
+	}
+	m.posts = append(m.posts, sentPost{ch, root, msg, names})
 	m.nextRef++
 	return fmt.Sprintf("post-%d", m.nextRef), nil
+}
+func (m *reportMM) UploadFile(_ context.Context, ch, name, contentType string, data []byte) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.uploadErr != nil {
+		return "", m.uploadErr
+	}
+	if !bytes.HasPrefix(data, []byte("%PDF-")) {
+		return "", fmt.Errorf("%s is not a PDF", name)
+	}
+	if m.uploads == nil {
+		m.uploads = map[string]upload{}
+	}
+	m.nextRef++
+	id := fmt.Sprintf("file-%d", m.nextRef)
+	m.uploads[id] = upload{ch, name, contentType}
+	return id, nil
 }
 func (m *reportMM) Typing(context.Context, string, string) {}
 
@@ -374,13 +411,38 @@ func TestReportPreviewShowsTheTeamsEmail(t *testing.T) {
 	f.say(t, "admin@snapp.cab", adminChannel, "report run")
 	got := f.say(t, "admin@snapp.cab", adminChannel, "report preview "+f.latest(t).ID+" ops")
 	for _, want := range []string{"**To:** tech-ems@snapp.cab", "**Cc:** cto@snapp.cab", "**Attached:** snappcloud-best-practice-",
-		"(other teams)", "teh-1 / ops-prod", "Rule: pdb-min-available-all (cannot be ignored)"} {
+		"(other teams)", "The attached PDF"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("preview missing %q:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "pay-prod") {
 		t.Errorf("preview of ops shows pay's findings:\n%s", got)
+	}
+
+	posts := f.mm.in(adminChannel)
+	last := posts[len(posts)-1]
+	if len(last.files) != 1 || !strings.HasPrefix(last.files[0], "snappcloud-best-practice-") ||
+		!strings.HasSuffix(last.files[0], ".pdf") {
+		t.Errorf("preview attaches %v, want the email's PDF", last.files)
+	}
+	for _, u := range f.mm.uploads {
+		if u.contentType != "application/pdf" {
+			t.Errorf("uploaded as %q", u.contentType)
+		}
+	}
+}
+
+func TestReportPreviewListsFindingsWhenThePDFCannotBeUploaded(t *testing.T) {
+	f := newReportFixture(t)
+	f.say(t, "admin@snapp.cab", adminChannel, "report run")
+	f.mm.uploadErr = errors.New("file attachments are disabled")
+	got := f.say(t, "admin@snapp.cab", adminChannel, "report preview "+f.latest(t).ID+" ops")
+	for _, want := range []string{"**To:** tech-ems@snapp.cab", "could not be attached",
+		"teh-1 / ops-prod", "Rule: pdb-min-available-all (cannot be ignored)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
 	}
 }
 

@@ -24,6 +24,9 @@ import (
 // reportMessenger is what the report needs from Mattermost beyond posting.
 type reportMessenger interface {
 	CreatePostID(ctx context.Context, channelID, message, rootID string) (string, error)
+	// UploadFile and CreatePostFiles attach a team's PDF to its preview.
+	UploadFile(ctx context.Context, channelID, name, contentType string, data []byte) (string, error)
+	CreatePostFiles(ctx context.Context, channelID, message, rootID string, fileIDs []string) (string, error)
 }
 
 // reportMailer sends the report's emails (mail.Sender).
@@ -226,7 +229,8 @@ func (s *Service) reportCommand(ctx context.Context, identity string, p mattermo
 		if len(args) < 2 {
 			return true, fmt.Sprintf("Which team? `report preview %s <team>`.", id)
 		}
-		return true, s.reportPreview(id, args[1])
+		// An empty reply means the preview posted itself, with its PDF.
+		return true, s.reportPreview(ctx, p, id, args[1])
 	}
 }
 
@@ -405,9 +409,11 @@ func (s *Service) reportExclude(id string, teams []string) string {
 
 var errUnknownTeam = errors.New("unknown team")
 
-// reportPreview shows the email that carries a team's findings, and those
-// findings as its PDF lists them.
-func (s *Service) reportPreview(id, team string) string {
+// reportPreview shows the email that carries a team's findings, with the PDF
+// it attaches. It posts that reply itself and returns "", or returns the reply
+// for the caller to post: an error, or, when the PDF cannot be uploaded, the
+// findings as the PDF lists them.
+func (s *Service) reportPreview(ctx context.Context, p mattermost.Post, id, team string) string {
 	rf := s.report
 	r, err := rf.Store.Get(id, rf.now())
 	if err != nil {
@@ -431,10 +437,39 @@ func (s *Service) reportPreview(id, team string) string {
 	if err != nil {
 		return "🚫 " + err.Error()
 	}
-	return fmt.Sprintf("_The email that carries `%s`'s findings (%s), and what its PDF lists for `%s`._\n\n"+
-		"**To:** %s\n**Cc:** %s\n**Subject:** %s\n**Attached:** %s (%d KB)\n```text\n%s```\n**In the PDF, for `%s`:**\n```text\n%s```",
-		team, m.Name, team, orNone(m.To), orNone(m.Cc), e.Subject, e.FileName, (len(e.PDF)+1023)/1024, e.Text,
-		team, bestpractice.FindingsText(fs, rf.Docs))
+	email := fmt.Sprintf("_The email that carries `%s`'s findings (%s)._\n\n"+
+		"**To:** %s\n**Cc:** %s\n**Subject:** %s\n**Attached:** %s (%d KB)\n```text\n%s```",
+		team, m.Name, orNone(m.To), orNone(m.Cc), e.Subject, e.FileName, (len(e.PDF)+1023)/1024, e.Text)
+
+	root := ""
+	if !p.IsDirect() {
+		root = p.ThreadRoot()
+	}
+	fileID, err := rf.Messenger.UploadFile(ctx, p.ChannelID, e.FileName, "application/pdf", e.PDF)
+	if err != nil {
+		s.log.Warn("best-practice report: upload preview PDF", "report", id, "team", team, "err", err)
+		return email + fmt.Sprintf("\n_The PDF could not be attached here._ **In the PDF, for `%s`:**\n```text\n%s```",
+			team, bestpractice.FindingsText(fs, rf.Docs))
+	}
+	caption := fmt.Sprintf("**The attached PDF**, as the email sends it: the findings of %s.", teamsOf(m))
+	msg := email + "\n" + caption
+	if len([]rune(msg)) > maxPostRunes {
+		s.replyTo(ctx, p, email)
+		msg = caption
+	}
+	if _, err := rf.Messenger.CreatePostFiles(ctx, p.ChannelID, msg, root, []string{fileID}); err != nil {
+		s.log.Error("best-practice report: post preview PDF", "report", id, "team", team, "err", err)
+		return "🚫 Could not post the preview: " + err.Error()
+	}
+	return ""
+}
+
+// teamsOf names the teams a mailing's PDF covers.
+func teamsOf(m bestpractice.Mailing) string {
+	if len(m.Teams) == 1 {
+		return "`" + m.Teams[0] + "`"
+	}
+	return fmt.Sprintf("all %d teams in this email (%s)", len(m.Teams), strings.Join(m.Teams, ", "))
 }
 
 func orNone(xs []string) string {
