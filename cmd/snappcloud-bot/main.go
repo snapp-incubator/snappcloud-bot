@@ -243,6 +243,10 @@ func run(configPath, addr string, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		sendInterval, err := optDuration(bp.SendInterval)
+		if err != nil {
+			return fmt.Errorf("parse bestPractice.sendInterval: %w", err)
+		}
 		reportStore = bestpractice.NewStore(bp.Path, expireAfter)
 		reportOpts = &bot.ReportOptions{
 			Store: reportStore,
@@ -260,6 +264,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 			Routing:      routing,
 			Location:     loc,
 			Docs:         bp.Docs,
+			Pace:         sendInterval,
 		}
 	}
 

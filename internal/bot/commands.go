@@ -74,7 +74,7 @@ func helpText(schedules, alerts, reports bool) string {
 	b.WriteString("\nCluster-admins: `diagnostics` shows every MCP server the bot has, its tool count, and anything not answering.")
 	if reports {
 		b.WriteString(" `report status` shows the weekly best-practice report, `report run` builds one now, " +
-			"and `report approve <id>` sends it to the team admins.")
+			"`report approve <id>` sends it to the team admins, and `report resend <id>` retries the emails that did not go out.")
 	}
 	b.WriteString("\n")
 	b.WriteString("\nIn a channel, @-mention me. In a direct message, just write.")

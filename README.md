@@ -232,6 +232,10 @@ Three exemption classes:
   (SMTP), with the findings and their fixes in a PDF. `bestPractice.recipients`
   routes it: each group of teams gets one email, to its teams' admins; the
   teams in no group share one email to `others`; `cc` is on every email.
+  Emails go `bestPractice.sendInterval` apart (default 15s) to stay under the
+  mail server's rate limit; one the server refuses for now (a 4xx) is retried
+  after 1m, 2m and 3m. `report resend <id>` sends again, after another
+  re-check, the emails of a sent report that did not go out.
   `report reject|exclude|preview|run|status` do what they say. Teams mark a
   finding intentional with the `snappcloud.io/best-practice-ignore: <rule>`
   annotation; the preview counts ignores so they stay visible. PDBs that block

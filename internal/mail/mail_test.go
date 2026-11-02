@@ -23,6 +23,8 @@ import (
 type fakeSMTP struct {
 	ln   net.Listener
 	auth bool // advertise AUTH PLAIN LOGIN
+	// mailFrom, when set, is the reply to MAIL FROM, e.g. a rate-limit refusal.
+	mailFrom string
 
 	mu       sync.Mutex
 	commands []string
@@ -76,6 +78,8 @@ func (f *fakeSMTP) session(conn net.Conn) {
 			} else {
 				say("250 fake")
 			}
+		case verb == "MAIL" && f.mailFrom != "":
+			say(f.mailFrom)
 		case verb == "RCPT" && strings.Contains(strings.ToLower(line), "<nobody"):
 			say("550 5.1.1 no such user")
 		case verb == "DATA":
@@ -215,6 +219,33 @@ func TestSendReportsARejectedRecipient(t *testing.T) {
 	}
 	if _, data := f.seen(); data != "" {
 		t.Error("message sent to a rejected recipient")
+	}
+}
+
+// A rate-limited send is temporary: nothing went out, so it may be sent
+// again. A permanent refusal is not.
+func TestSendTellsATemporaryRefusal(t *testing.T) {
+	for reply, temporary := range map[string]bool{
+		"421 4.4.2 Message submission rate for this client has exceeded the configured limit": true,
+		"451 4.3.0 try again later":    true,
+		"550 5.7.1 sender not allowed": false,
+	} {
+		f := newFakeSMTP(t, false)
+		f.mailFrom = reply
+		_, err := newSender(t, f, "").Send(context.Background(),
+			Message{To: []string{"alice@snapp.cab"}, Subject: "x", Text: "x", HTML: "x"})
+		if err == nil {
+			t.Fatalf("%q: no error", reply)
+		}
+		if Temporary(err) != temporary {
+			t.Errorf("%q: Temporary(%v) = %v, want %v", reply, err, !temporary, temporary)
+		}
+		if _, data := f.seen(); data != "" {
+			t.Errorf("%q: message sent anyway", reply)
+		}
+	}
+	if Temporary(errors.New("dial tcp: connection refused")) {
+		t.Error("a dial error is not an SMTP reply")
 	}
 }
 
