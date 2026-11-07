@@ -42,7 +42,7 @@ type reportRunner interface {
 	Next() (time.Time, bool)
 }
 
-// ReportOptions enables the weekly best-practice report.
+// ReportOptions enables the scheduled best-practice report.
 type ReportOptions struct {
 	Store *bestpractice.Store
 	// Collect audits every cluster with the bot's own authority.
@@ -170,6 +170,19 @@ func (s *Service) BuildReport(ctx context.Context) error {
 	s.log.Info("best-practice report built", "report", rep.ID, "findings", len(rep.Findings),
 		"teams", len(rep.Teams()), "failed", len(inv.Failed))
 	return nil
+}
+
+// ReportSlotSkipped tells the admin channel that a scheduled report was given
+// up, because nothing else would: the teams just hear nothing until next.
+func (s *Service) ReportSlotSkipped(slot, next time.Time) {
+	rf := s.report
+	msg := fmt.Sprintf("⚠️ The best-practice report due %s was skipped: it was already later than "+
+		"`bestPractice.catchUp` allows (the bot was down, or the schedule changed). "+
+		"The next scheduled run is %s; `report run` builds one now.",
+		bestpractice.FormatTime(slot, rf.Location), bestpractice.FormatTime(next, rf.Location))
+	if err := s.post(context.Background(), rf.AdminChannel, "", msg); err != nil {
+		s.log.Warn("best-practice report: could not post the skipped slot", "slot", slot, "err", err)
+	}
 }
 
 func observeFindings(fs []bestpractice.Finding) {

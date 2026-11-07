@@ -64,7 +64,7 @@ type Service struct {
 	// trigger starts a manual run of a stored schedule on the scheduler's own
 	// worker pool. Nil when schedules are disabled.
 	trigger func(schedule.Entry) error
-	// report is the weekly best-practice report; nil when disabled.
+	// report is the scheduled best-practice report; nil when disabled.
 	report *reportFeature
 	log    *slog.Logger
 }
@@ -92,7 +92,7 @@ type Options struct {
 	// marked channels. Both nil disables the feature.
 	AlertChannels   *alerts.Channels
 	AlertAggregator *alerts.Aggregator
-	// Reports enables the weekly best-practice report. Nil disables it.
+	// Reports enables the scheduled best-practice report. Nil disables it.
 	Reports *ReportOptions
 }
 

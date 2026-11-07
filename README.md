@@ -216,8 +216,10 @@ Three exemption classes:
   anything over it listed rather than dropped silently. `Watchdog`, resolved notifications and
   below-`minSeverity` alerts are skipped; an alert with *no* recognisable
   severity is investigated rather than dropped.
-- **Best-practice report.** Every Saturday at 00:00 (`bestPractice.schedule`,
-  in `schedules.timezone`) the bot scans every cluster for single-instance
+- **Best-practice report.** On `bestPractice.schedule`, in `schedules.timezone`
+  (e.g. `every saturday at 00:00`, or `biweekly on saturdays at 06:00` for every
+  two weeks, counted from the last timer slot; `report run` does not move it),
+  the bot scans every cluster for single-instance
   RabbitMQ and Redis, PDBs that block node drains (`maxUnavailable: 0`,
   `minAvailable` ≥ the pod count, overlapping PDBs, drains held up by
   unhealthy pods), and quorum systems whose PDB lets a drain take a majority, or
@@ -225,10 +227,12 @@ Three exemption classes:
   namespaces only; drain blockers everywhere. The rules are code, not the
   model, so the same cluster state always gives the same report. Findings are
   grouped by the namespace's `snappcloud.io/team` label and the `Team` CR's
-  admins, and posted as a **preview** in `bestPractice.adminChannel`. Nothing is
+  admins, and posted as a **preview** in `bestPractice.adminChannel`. A slot
+  missed by more than `bestPractice.catchUp` is skipped, and that channel is
+  told so someone can use `report run`. Nothing is
   sent until a cluster-admin says `report approve <id>` there: the bot then
   scans again, sends only what is still true (what was fixed meanwhile is
-  dropped, what is new waits for next week), and emails it through `mail`
+  dropped, what is new waits for the next report), and emails it through `mail`
   (SMTP), with the findings and their fixes in a PDF. `bestPractice.recipients`
   routes it: each group of teams gets one email, to its teams' admins; the
   teams in no group share one email to `others`; `cc` is on every email.

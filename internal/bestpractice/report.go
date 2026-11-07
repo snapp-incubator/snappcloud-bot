@@ -24,7 +24,7 @@ const (
 	StatusExpired  Status = "expired"
 )
 
-// Report is one weekly scan and what became of it.
+// Report is one scan and what became of it.
 type Report struct {
 	ID       string    `json:"id"`
 	Created  time.Time `json:"created"`
@@ -71,7 +71,7 @@ type Delivery struct {
 	// why; their findings were sent as previewed (Unverified).
 	RecheckFailed map[string]string `json:"recheckFailed,omitempty"`
 	// Resolved were in the preview but gone on the re-check; Held are new
-	// since the preview, and wait for next week's approval.
+	// since the preview, and wait for the next report's approval.
 	Resolved int `json:"resolved"`
 	Held     int `json:"held"`
 	// Unverified were sent as previewed because their cluster could not be
@@ -181,7 +181,7 @@ func NewStore(path string, expireAfter time.Duration) *Store {
 }
 
 // Add stores a new report as pending, filling its id, expiry and diff. A
-// report still pending is superseded: its data is a week old. The superseded
+// report still pending is superseded: its data is out of date. The superseded
 // one is returned so its thread can say so.
 func (s *Store) Add(r *Report, now time.Time) (superseded []Report, err error) {
 	s.mu.Lock()
