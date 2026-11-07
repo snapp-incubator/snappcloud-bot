@@ -1,4 +1,4 @@
-// Package bestpractice builds the weekly best-practice report: single-instance
+// Package bestpractice builds the scheduled best-practice report: single-instance
 // broker and cache tools, and PodDisruptionBudgets that block node drains or let a
 // drain break a quorum. The data comes from openshift-mcp's disruption_audit
 // and list_teams; the rules that turn it into findings are plain code here, so

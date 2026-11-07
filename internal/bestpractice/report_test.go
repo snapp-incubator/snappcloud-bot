@@ -118,15 +118,15 @@ func TestSlotsSaturdayMidnight(t *testing.T) {
 	}
 	// Sunday 18 Oct 2026, 10:00 Tehran.
 	now := time.Date(2026, 10, 18, 10, 0, 0, 0, loc)
-	if got, want := sl.Last(now), time.Date(2026, 10, 17, 0, 0, 0, 0, loc); !got.Equal(want) {
+	if got, want := sl.Last(now, time.Time{}), time.Date(2026, 10, 17, 0, 0, 0, 0, loc); !got.Equal(want) {
 		t.Errorf("last = %s, want %s", got, want)
 	}
-	if got, want := sl.Next(now), time.Date(2026, 10, 24, 0, 0, 0, 0, loc); !got.Equal(want) {
+	if got, want := sl.Next(now, time.Time{}), time.Date(2026, 10, 24, 0, 0, 0, 0, loc); !got.Equal(want) {
 		t.Errorf("next = %s, want %s", got, want)
 	}
 	// Exactly at the slot, it is the last one.
 	at := time.Date(2026, 10, 24, 0, 0, 0, 0, loc)
-	if got := sl.Last(at); !got.Equal(at) {
+	if got := sl.Last(at, time.Time{}); !got.Equal(at) {
 		t.Errorf("last at the slot = %s", got)
 	}
 
@@ -137,6 +137,82 @@ func TestSlotsSaturdayMidnight(t *testing.T) {
 	}
 	if sl, err := ParseSlots("", loc); sl != nil || err != nil {
 		t.Errorf("empty spec = no timer, got %v %v", sl, err)
+	}
+}
+
+func TestSlotsBiweeklyOnSaturdays(t *testing.T) {
+	loc := tehran(t)
+	sl, err := ParseSlots("biweekly on saturdays at 06:00", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(m time.Month, d, h int) time.Time { return time.Date(2026, m, d, h, 0, 0, 0, loc) }
+	prev := at(10, 31, 6) // the last report fired on Saturday 31 Oct
+
+	for _, c := range []struct {
+		now, last, next time.Time
+	}{
+		{at(11, 2, 10), at(10, 31, 6), at(11, 14, 6)},                // the next Saturday (7 Nov) is skipped
+		{at(11, 7, 7), at(10, 31, 6), at(11, 14, 6)},                 // past the skipped slot
+		{at(11, 14, 6), at(11, 14, 6), at(11, 28, 6)},                // exactly at the slot
+		{at(12, 30, 0), at(12, 26, 6), at(1, 9, 6).AddDate(1, 0, 0)}, // across the new year
+	} {
+		if got := sl.Last(c.now, prev); !got.Equal(c.last) {
+			t.Errorf("now %s: last = %s, want %s", c.now, got, c.last)
+		}
+		if got := sl.Next(c.now, prev); !got.Equal(c.next) {
+			t.Errorf("now %s: next = %s, want %s", c.now, got, c.next)
+		}
+	}
+	// Nothing fired yet: any Saturday will do.
+	if got := sl.Next(at(11, 2, 10), time.Time{}); !got.Equal(at(11, 7, 6)) {
+		t.Errorf("next with no previous slot = %s", got)
+	}
+
+	for _, bad := range []string{"biweekly", "biweekly on saturdays", "biweekly at 06:00", "biweekly on days at 06:00", "biweekly on saturdays at 06:00 and more"} {
+		if _, err := ParseSlots(bad, loc); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+}
+
+// Switching a weekly schedule to biweekly carries on from the last
+// weekly report instead of starting over.
+func TestRunnerBiweeklyFromWeekly(t *testing.T) {
+	loc := tehran(t)
+	sl, err := ParseSlots("biweekly on saturdays at 06:00", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore("", 0)
+	if err := store.SetLastSlot(time.Date(2026, 10, 31, 6, 0, 0, 0, loc)); err != nil {
+		t.Fatal(err)
+	}
+	var builds atomic.Int32
+	r := NewRunner(store, sl, func(context.Context) error { builds.Add(1); return nil },
+		RunnerOptions{CatchUp: 12 * time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	now := time.Date(2026, 11, 7, 6, 30, 0, 0, loc)
+	r.now = func() time.Time { return now }
+	r.base = context.Background()
+
+	r.check()
+	r.wait()
+	if builds.Load() != 0 {
+		t.Fatal("the in-between Saturday must not fire")
+	}
+	if next, _ := r.Next(); !next.Equal(time.Date(2026, 11, 14, 6, 0, 0, 0, loc)) {
+		t.Errorf("next = %s", next)
+	}
+	now = time.Date(2026, 11, 14, 6, 0, 30, 0, loc)
+	r.check()
+	r.wait()
+	r.check()
+	r.wait()
+	if builds.Load() != 1 {
+		t.Fatalf("builds = %d, want 1", builds.Load())
+	}
+	if next, _ := r.Next(); !next.Equal(time.Date(2026, 11, 28, 6, 0, 0, 0, loc)) {
+		t.Errorf("next after firing = %s", next)
 	}
 }
 
@@ -183,7 +259,12 @@ func TestRunnerCatchUp(t *testing.T) {
 	var builds atomic.Int32
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, loc)
 	r, store := newTestRunner(t, &now, &builds)
+	var skipped [][2]time.Time
+	r.onSkip = func(slot, next time.Time) { skipped = append(skipped, [2]time.Time{slot, next}) }
 	r.check() // marks the previous Saturday
+	if len(skipped) != 0 {
+		t.Fatalf("the first start is not a skip: %v", skipped)
+	}
 
 	// Down over midnight, back at 08:00: inside the window, so it fires.
 	now = time.Date(2026, 10, 17, 8, 0, 0, 0, loc)
@@ -202,6 +283,16 @@ func TestRunnerCatchUp(t *testing.T) {
 	}
 	if got := store.LastSlot(); !got.Equal(time.Date(2026, 10, 24, 0, 0, 0, 0, loc)) {
 		t.Errorf("skipped slot not marked: %s", got)
+	}
+
+	// The skip is told once, with when the timer fires next.
+	r.check()
+	if len(skipped) != 1 {
+		t.Fatalf("skips told = %d, want 1", len(skipped))
+	}
+	if slot, next := skipped[0][0], skipped[0][1]; !slot.Equal(time.Date(2026, 10, 24, 0, 0, 0, 0, loc)) ||
+		!next.Equal(time.Date(2026, 10, 31, 0, 0, 0, 0, loc)) {
+		t.Errorf("skip told slot %s, next %s", slot, next)
 	}
 }
 

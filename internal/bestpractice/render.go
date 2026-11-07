@@ -169,7 +169,7 @@ func DeliverySummary(r Report, loc *time.Location) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "📬 Approved by %s at %s. Sent **%d** email%s", r.DecidedBy, FormatTime(r.DecidedAt, loc),
 		len(d.Sent), plural(len(d.Sent)))
-	fmt.Fprintf(&b, " · %d resolved since the preview · %d new (held for next week)", d.Resolved, d.Held)
+	fmt.Fprintf(&b, " · %d resolved since the preview · %d new (held for the next report)", d.Resolved, d.Held)
 	if d.Unverified > 0 {
 		fmt.Fprintf(&b, " · %d sent as previewed (their cluster could not be re-checked)", d.Unverified)
 	}

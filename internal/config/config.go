@@ -23,7 +23,7 @@ type Config struct {
 	API        API        `yaml:"api"`
 	Schedules  Schedules  `yaml:"schedules"`
 	Alerts     Alerts     `yaml:"alerts"`
-	// BestPractice is the weekly best-practice report to team admins.
+	// BestPractice is the scheduled best-practice report to team admins.
 	BestPractice BestPractice `yaml:"bestPractice"`
 	// Mail is the SMTP server the best-practice report is emailed through.
 	Mail Mail `yaml:"mail"`
@@ -46,7 +46,7 @@ type Mail struct {
 	Timeout string `yaml:"timeout"`
 }
 
-// BestPractice configures the weekly report of single-instance brokers and
+// BestPractice configures the scheduled report of single-instance brokers and
 // caches and of PDBs that block drains or let one break a quorum. The bot reads
 // it cluster-wide on its own authority, so nothing is sent to a team until a
 // cloud admin approves it in AdminChannel.
@@ -55,11 +55,13 @@ type BestPractice struct {
 	Enabled bool `yaml:"enabled"`
 	// Path persists reports and the last timer slot (put it on the PVC).
 	Path string `yaml:"path"`
-	// Schedule is a fixed weekly or daily time in schedules.timezone, e.g.
-	// "every saturday at 00:00". Empty = no timer, only `report run`.
+	// Schedule is a fixed daily, weekly or biweekly time in
+	// schedules.timezone, e.g. "every saturday at 00:00" or "biweekly on
+	// saturdays at 06:00" (every two weeks, counted from the last timer slot;
+	// `report run` does not move it). Empty = no timer, only `report run`.
 	Schedule string `yaml:"schedule"`
 	// CatchUp is how late a slot missed during downtime may still fire
-	// (default 12h).
+	// (default 12h). Later than that it is skipped, and AdminChannel is told.
 	CatchUp string `yaml:"catchUp"`
 	// ExpireAfter is how long a report waits for approval (default 48h).
 	ExpireAfter string `yaml:"expireAfter"`

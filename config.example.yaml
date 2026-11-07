@@ -33,7 +33,7 @@ schedules:
   concurrency: 2
   timeout: 5m
 
-# Weekly best-practice report to team admins: single-instance RabbitMQ/Redis,
+# Scheduled best-practice report to team admins: single-instance RabbitMQ/Redis,
 # PDBs that block node drains, and PDBs that let a drain break a quorum. The bot
 # reads every cluster on its own authority (openshift-mcp's disruption_audit and
 # list_teams), posts a preview to adminChannel, and emails each team admin only
@@ -45,7 +45,9 @@ bestPractice:
   enabled: false
   path: /data/best-practice.json
   schedule: "every saturday at 00:00"   # in schedules.timezone; "" = only `report run`
-  catchUp: 12h          # a slot missed during downtime still fires this late
+                        # or "biweekly on saturdays at 06:00": every two weeks, counted from the
+                        # last timer slot (`report run` does not move it)
+  catchUp: 12h          # a slot missed during downtime still fires this late; later, adminChannel is told
   expireAfter: 48h      # an unapproved report expires
   adminChannel: ""      # channel ID (not name) of the private cloud-admin channel
   timeout: 10m          # one build, or one approval with its emails

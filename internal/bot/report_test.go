@@ -314,6 +314,21 @@ func TestReportBuildPostsPreview(t *testing.T) {
 	}
 }
 
+func TestReportSlotSkippedTellsTheAdminChannel(t *testing.T) {
+	f := newReportFixture(t)
+	f.svc.ReportSlotSkipped(time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC), time.Date(2026, 11, 28, 6, 0, 0, 0, time.UTC))
+	posts := f.mm.in(adminChannel)
+	if len(posts) != 1 {
+		t.Fatalf("posts = %+v", posts)
+	}
+	for _, want := range []string{"skipped", bestpractice.FormatTime(time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC), time.UTC),
+		bestpractice.FormatTime(time.Date(2026, 11, 28, 6, 0, 0, 0, time.UTC), time.UTC), "`report run`"} {
+		if !strings.Contains(posts[0].msg, want) {
+			t.Errorf("message missing %q:\n%s", want, posts[0].msg)
+		}
+	}
+}
+
 func TestReportApproveSendsWhatStillHolds(t *testing.T) {
 	f := newReportFixture(t)
 	f.say(t, "admin@snapp.cab", adminChannel, "report run")

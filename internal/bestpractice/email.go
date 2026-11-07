@@ -137,7 +137,7 @@ type emailBody struct {
 
 func emailText(day time.Time, e emailBody) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Weekly SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, e.Lead)
+	fmt.Fprintf(&b, "SnappCloud best-practice check, %s\n\n%s\n%s\n\n", day.Format("2 Jan 2006"), emailIntro, e.Lead)
 	if e.Hint != "" {
 		b.WriteString("Note: " + e.Hint + "\n\n")
 	}
@@ -184,7 +184,7 @@ var emailTmpl = template.Must(template.New("email").Funcs(template.FuncMap{
 	"code": codeSpans,
 }).Parse(`<!doctype html>
 <html><body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1f2328;max-width:720px">
-<h2 style="font-size:18px;margin:0 0 4px">Weekly SnappCloud best-practice check</h2>
+<h2 style="font-size:18px;margin:0 0 4px">SnappCloud best-practice check</h2>
 <p style="margin:0 0 4px;color:#59636e">{{.Day}}</p>
 <p style="margin:12px 0">{{.Intro}}<br>{{.Lead}}</p>
 {{if .Hint}}<p style="margin:12px 0 16px;padding:8px 12px;background:#fff8c5;border:1px solid #d4a72c;border-radius:6px">{{code .Hint}}</p>

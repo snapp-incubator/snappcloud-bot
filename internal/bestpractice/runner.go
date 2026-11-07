@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,13 +15,20 @@ import (
 )
 
 // Slots turns a schedule spec into its timer slots. Only anchored cadences are
-// allowed ("every saturday at 00:00", "every day at 09:00"): an interval such
-// as "every 6h" counts from whenever it was parsed, so its slots would move on
-// every restart.
+// allowed ("every saturday at 00:00", "every day at 09:00", "biweekly on
+// saturdays at 06:00"): an interval such as "every 6h" counts from whenever it
+// was parsed, so its slots would move on every restart.
+//
+// "biweekly on <weekday>s" uses every second week, counted from the last slot
+// the timer handled (the store's LastSlot: fired, skipped, or marked on first
+// start), so the rhythm survives restarts and a switch from a weekly schedule
+// carries on from its last slot. `report run` does not move it.
 type Slots struct {
-	spec  string
-	every time.Duration
-	loc   *time.Location
+	spec   string
+	weekly string // the spec as one slot a week, of which every weeks-th is used
+	weeks  int
+	every  time.Duration
+	loc    *time.Location
 }
 
 // ParseSlots validates spec in loc. An empty spec means no timer.
@@ -29,24 +39,60 @@ func ParseSlots(spec string, loc *time.Location) (*Slots, error) {
 	if loc == nil {
 		loc = time.Local
 	}
-	e, rest, err := schedule.Parse(spec, time.Now().In(loc))
+	weekly, weeks := spec, 1
+	if m := biweeklyRe.FindStringSubmatch(spec); m != nil {
+		weekly, weeks = "every "+m[1]+" "+m[2], 2
+	}
+	if weeks == 1 && strings.HasPrefix(strings.ToLower(strings.TrimSpace(spec)), "biweekly") {
+		return nil, fmt.Errorf("schedule %q: name a weekday and a time, e.g. \"biweekly on saturdays at 06:00\"", spec)
+	}
+	e, rest, err := schedule.Parse(weekly, time.Now().In(loc))
 	if err != nil {
 		return nil, fmt.Errorf("schedule %q: %w", spec, err)
 	}
 	if rest != "" || e.At == "" {
 		return nil, fmt.Errorf("schedule %q: use a fixed time, e.g. \"every saturday at 00:00\"", spec)
 	}
-	return &Slots{spec: spec, every: time.Duration(e.Every), loc: loc}, nil
+	return &Slots{spec: spec, weekly: weekly, weeks: weeks, every: time.Duration(weeks) * time.Duration(e.Every), loc: loc}, nil
 }
 
-// Next is the first slot strictly after now.
-func (s *Slots) Next(now time.Time) time.Time {
-	e, _, _ := schedule.Parse(s.spec, now.In(s.loc))
-	return e.Next
+// biweeklyRe matches "biweekly on saturdays at 06:00" (or "saturday", "at"
+// optional). "biweekly" alone, or with no weekday or time, is rejected below.
+var biweeklyRe = regexp.MustCompile(`(?i)^\s*biweekly\s+on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\s+((?:at\s+)?\d{1,2}:\d{2})\s*$`)
+
+// Next is the first slot strictly after now. prev is the last slot the timer
+// handled: for "biweekly", a slot an odd number of weeks from it is passed over.
+// Zero prev (none handled yet) accepts any weekly slot.
+func (s *Slots) Next(now, prev time.Time) time.Time {
+	e, _, _ := schedule.Parse(s.weekly, now.In(s.loc))
+	t := e.Next
+	if s.weeks > 1 && !prev.IsZero() {
+		for i := 0; i < s.weeks && weeksApart(prev, t, s.loc)%s.weeks != 0; i++ {
+			t = t.AddDate(0, 0, 7)
+		}
+	}
+	return t
 }
 
-// Last is the latest slot at or before now.
-func (s *Slots) Last(now time.Time) time.Time { return s.Next(now.Add(-s.every)) }
+// Last is the latest slot at or before now; prev as for Next. For "biweekly"
+// with zero prev, it is instead the weekly slot one to two weeks back, so that
+// marking it leaves the next weekly slot as the first to fire.
+func (s *Slots) Last(now, prev time.Time) time.Time { return s.Next(now.Add(-s.every), prev) }
+
+// weeksApart is how many whole weeks lie between the calendar days of a and b
+// in loc, rounded, and never negative. Counted in days, not hours, so a
+// daylight-saving change in between does not shift it.
+func weeksApart(a, b time.Time, loc *time.Location) int {
+	day := func(t time.Time) time.Time {
+		y, m, d := t.In(loc).Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+	days := int(math.Round(day(b).Sub(day(a)).Hours() / 24))
+	if days < 0 {
+		days = -days
+	}
+	return (days + 3) / 7
+}
 
 // Spec is the cadence as configured.
 func (s *Slots) Spec() string { return s.spec }
@@ -58,7 +104,7 @@ var ErrBusy = errors.New("a report job is already running")
 // ErrNotStarted means the runner is not accepting work yet.
 var ErrNotStarted = errors.New("the report runner is not running")
 
-// Runner fires the weekly build and runs every report job — timed or asked
+// Runner fires the scheduled build and runs every report job — timed or asked
 // for in chat — one at a time, on the process context, with a timeout.
 type Runner struct {
 	store   *Store
@@ -66,6 +112,7 @@ type Runner struct {
 	catchUp time.Duration
 	timeout time.Duration
 	tick    time.Duration
+	onSkip  func(slot, next time.Time)
 	build   func(context.Context) error
 	log     *slog.Logger
 	now     func() time.Time
@@ -79,12 +126,16 @@ type Runner struct {
 // RunnerOptions configures the runner.
 type RunnerOptions struct {
 	// CatchUp is how late a missed slot may still fire after downtime
-	// (default 12h). Later than that, the week is skipped.
+	// (default 12h). Later than that, the slot is skipped.
 	CatchUp time.Duration
 	// Timeout bounds one job (default 10m).
 	Timeout time.Duration
 	// Tick is how often the timer looks (default 30s).
 	Tick time.Duration
+	// OnSkip, when set, is told about a slot given up past CatchUp, and when the
+	// timer fires next. It runs on the timer's goroutine, so it must not block
+	// for long.
+	OnSkip func(slot, next time.Time)
 }
 
 // NewRunner builds a runner. slots may be nil: then only jobs asked for in
@@ -100,7 +151,7 @@ func NewRunner(store *Store, slots *Slots, build func(context.Context) error, o 
 		o.Tick = 30 * time.Second
 	}
 	return &Runner{store: store, slots: slots, catchUp: o.CatchUp, timeout: o.Timeout, tick: o.Tick,
-		build: build, log: log, now: time.Now}
+		onSkip: o.OnSkip, build: build, log: log, now: time.Now}
 }
 
 // Start runs the timer until ctx is cancelled, then waits for the job in
@@ -124,7 +175,7 @@ func (r *Runner) Start(ctx context.Context) {
 }
 
 // check fires the latest slot if it has not been handled. On the very first
-// start there is no record of past slots, so the latest one is marked handled
+// start there is no record of past slots, so a past one is marked handled
 // rather than fired: deploying on a Saturday morning must not send a report
 // nobody scheduled.
 func (r *Runner) check() {
@@ -132,8 +183,8 @@ func (r *Runner) check() {
 		return
 	}
 	now := r.now()
-	slot := r.slots.Last(now)
 	last := r.store.LastSlot()
+	slot := r.slots.Last(now, last)
 	switch {
 	case last.IsZero():
 		r.mark(slot)
@@ -144,6 +195,9 @@ func (r *Runner) check() {
 		r.log.Warn("best-practice report skipped: the bot was down past the catch-up window",
 			"slot", slot, "catchUp", r.catchUp)
 		r.mark(slot)
+		if r.onSkip != nil {
+			r.onSkip(slot, r.slots.Next(now, slot))
+		}
 		return
 	}
 	switch err := r.Do("scheduled", r.build); {
@@ -169,7 +223,7 @@ func (r *Runner) Next() (time.Time, bool) {
 	if r.slots == nil {
 		return time.Time{}, false
 	}
-	return r.slots.Next(r.now()), true
+	return r.slots.Next(r.now(), r.store.LastSlot()), true
 }
 
 // Do runs fn in the background, returning once it is accepted. Only one job

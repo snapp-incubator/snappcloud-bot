@@ -7,7 +7,7 @@ import (
 )
 
 // Rule IDs are stable: they are what teams put in the ignore annotation, what
-// metrics are labelled with, and what week-over-week tracking keys on.
+// metrics are labelled with, and what report-over-report tracking keys on.
 const (
 	RuleMaxUnavailableZero = "pdb-max-unavailable-zero"
 	RuleMinAvailableAll    = "pdb-min-available-all"

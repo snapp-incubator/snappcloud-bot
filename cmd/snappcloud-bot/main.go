@@ -135,8 +135,8 @@ func run(configPath, addr string, log *slog.Logger) error {
 
 	// User-defined recurring queries. The store is created before the service
 	// because the service implements the runner's Answerer.
-	// schedules.timezone is where users are: schedule times and the weekly
-	// report's slot are both read and shown in it.
+	// schedules.timezone is where users are: schedule times and the
+	// best-practice report's slot are both read and shown in it.
 	loc := time.Local
 	if cfg.Schedules.Timezone != "" {
 		l, err := time.LoadLocation(cfg.Schedules.Timezone)
@@ -332,6 +332,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		runner := bestpractice.NewRunner(reportStore, slots, svc.BuildReport, bestpractice.RunnerOptions{
 			CatchUp: catchUp,
 			Timeout: timeout,
+			OnSkip:  svc.ReportSlotSkipped,
 		}, log)
 		svc.SetReportRunner(runner)
 		go runner.Start(ctx)
