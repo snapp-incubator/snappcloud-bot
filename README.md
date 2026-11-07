@@ -240,10 +240,15 @@ Three exemption classes:
   mail server's rate limit; one the server refuses for now (a 4xx) is retried
   after 1m, 2m and 3m. `report resend <id>` sends again, after another
   re-check, the emails of a sent report that did not go out.
-  `report reject|exclude|preview|run|status` do what they say. Teams mark a
-  finding intentional with the `snappcloud.io/best-practice-ignore: <rule>`
-  annotation; the preview counts ignores so they stay visible. PDBs that block
-  node drains (`pdb-max-unavailable-zero`, `pdb-min-available-all`,
+  `report reject|exclude|preview|run|status` do what they say. Teams accept a
+  finding by asking the bot: `ignore <cluster>/<namespace>/<kind>/<name> <rule>
+  reason: <why>`, in English, for a finding in a recent report, in a namespace
+  they can access. The bot alone holds this list (in `bestPractice.path`), with
+  who asked, when and why; records are never deleted. An ignore ends after 180
+  days, `unignore` ends it early, and `ignores` lists them. Each change is
+  posted to the admin channel, and the preview and each team's email list what
+  is ignored, so a team whose only finding is ignored still gets an email. PDBs
+  that block node drains (`pdb-max-unavailable-zero`, `pdb-min-available-all`,
   `pdb-overlap`, `pdb-blocked-unhealthy`) cannot be ignored: they must be fixed.
   **This is the one feature that reads without a caller's scope**: the bot
   audits every cluster on its own authority through openshift-mcp's

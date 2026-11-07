@@ -35,8 +35,9 @@ type Report struct {
 	Admins   map[string][]string `json:"admins"`
 	Scanned  []string            `json:"scanned"`
 	Failed   map[string]string   `json:"failed,omitempty"`
-	Ignored  map[string]int      `json:"ignored,omitempty"`
 	Excluded []string            `json:"excluded,omitempty"`
+	// Ignored are the findings left out because a team asked.
+	Ignored []IgnoredFinding `json:"ignores,omitempty"`
 	// RootID is the preview post in the admin channel; everything about the
 	// report is threaded under it.
 	RootID    string    `json:"root,omitempty"`
@@ -107,6 +108,17 @@ func (r Report) Sendable() []Finding {
 	return out
 }
 
+// SendableIgnored is the ignored findings that go to teams: owned, not excluded.
+func (r Report) SendableIgnored() []IgnoredFinding {
+	var out []IgnoredFinding
+	for _, ig := range r.Ignored {
+		if ig.Finding.Team != "" && !contains(r.Excluded, ig.Finding.Team) {
+			out = append(out, ig)
+		}
+	}
+	return out
+}
+
 // Intersect keeps the approved findings that the re-check still sees. A
 // finding fixed since the preview is dropped; one that is new since the
 // preview is held, because nobody approved it. Findings on clusters the
@@ -160,6 +172,8 @@ type storeState struct {
 	Reports   []*Report            `json:"reports"`
 	LastSlot  time.Time            `json:"lastSlot"`
 	FirstSeen map[string]time.Time `json:"firstSeen"`
+	// Ignores is every ignore request ever made; see ignores.go.
+	Ignores []Ignore `json:"ignores,omitempty"`
 }
 
 // NewStore loads path ("" = memory only). expireAfter bounds how long a report

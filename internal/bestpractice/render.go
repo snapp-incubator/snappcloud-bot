@@ -2,6 +2,7 @@ package bestpractice
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,7 +18,6 @@ func FormatTime(t time.Time, loc *time.Location) string {
 	}
 	return t.In(loc).Format("Mon 2 Jan 15:04") + " " + loc.String()
 }
-
 
 func counts(fs []Finding) (high, medium int) {
 	for _, f := range fs {
@@ -38,9 +38,12 @@ func PreviewRoot(r Report, rt Routing, loc *time.Location) string {
 	high, _ := counts(send)
 	fmt.Fprintf(&b, "**Best-practice report `%s`** — %s\n", r.ID, FormatTime(r.Created, loc))
 	fmt.Fprintf(&b, "%d findings for %d teams (%d high) in %d emails", len(send), len(r.Teams()), high,
-		len(rt.Mailings(send, r.Admins)))
+		len(rt.Mailings(send, r.SendableIgnored(), r.Admins)))
 	if n := len(r.Findings) - len(send); n > 0 {
 		fmt.Fprintf(&b, ", plus %d with no owning team", n)
+	}
+	if len(r.Ignored) > 0 {
+		fmt.Fprintf(&b, " · %d ignored on request", len(r.Ignored))
 	}
 	fmt.Fprintf(&b, " · %d clusters scanned", len(r.Scanned))
 	if len(r.Failed) > 0 {
@@ -65,7 +68,7 @@ func PreviewDetail(r Report, rt Routing) string {
 		byTeam[f.Team] = append(byTeam[f.Team], f)
 	}
 
-	if ms := rt.Mailings(r.Sendable(), r.Admins); len(ms) > 0 {
+	if ms := rt.Mailings(r.Sendable(), r.SendableIgnored(), r.Admins); len(ms) > 0 {
 		b.WriteString("**Emails**, each with its findings in a PDF")
 		if len(rt.Cc) > 0 {
 			fmt.Fprintf(&b, "; cc on every one: %s", strings.Join(rt.Cc, ", "))
@@ -103,11 +106,11 @@ func PreviewDetail(r Report, rt Routing) string {
 	}
 
 	if len(r.Ignored) > 0 {
-		parts := make([]string, 0, len(r.Ignored))
-		for _, rule := range sortedKeys(r.Ignored) {
-			parts = append(parts, fmt.Sprintf("`%s` %d", rule, r.Ignored[rule]))
+		list := make([]Ignore, 0, len(r.Ignored))
+		for _, ig := range r.Ignored {
+			list = append(list, ig.Ignore)
 		}
-		fmt.Fprintf(&b, "\nIgnored by `%s`: %s\n", AnnotationIgnore, strings.Join(parts, " · "))
+		b.WriteString("\n**Ignored on request** (also listed in each team's email)\n\n" + IgnoreTable(list))
 	}
 
 	if r.Diff.Previous != "" {
@@ -123,6 +126,23 @@ func PreviewDetail(r Report, rt Routing) string {
 	}
 	return b.String()
 }
+
+// IgnoreTable lists ignores in chat: who asked, when and why. A reason is shown
+// as code, so a mention in it notifies nobody.
+func IgnoreTable(list []Ignore) string {
+	list = slices.Clone(list)
+	slices.SortFunc(list, func(a, b Ignore) int { return strings.Compare(a.Key(), b.Key()) })
+	var b strings.Builder
+	b.WriteString("| object | rule | asked by | on | expires | reason |\n|---|---|---|---|---|---|\n")
+	for _, i := range list {
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | %s | `%s` |\n", i.Target(), i.Rule, cell(i.By),
+			DateOf(i.At), DateOf(i.Expires), i.Reason)
+	}
+	return b.String()
+}
+
+// DateOf renders a date with its year: an ignore outlives the calendar year.
+func DateOf(t time.Time) string { return t.Format("2 Jan 2006") }
 
 func excludedMark(r Report, team string) string {
 	if contains(r.Excluded, team) {

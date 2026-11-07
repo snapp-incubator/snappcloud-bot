@@ -73,6 +73,9 @@ func ReportEmail(m Mailing, docs map[string]string, disabled []string, canReply 
 	if high > 0 {
 		subject += fmt.Sprintf(" (%d high)", high)
 	}
+	if n := len(m.Ignored); n > 0 {
+		subject += fmt.Sprintf(" (%d ignored)", n)
+	}
 	if loc == nil {
 		loc = time.Local
 	}
@@ -90,6 +93,10 @@ func ReportEmail(m Mailing, docs map[string]string, disabled []string, canReply 
 	}
 	lead := fmt.Sprintf("The attached PDF has the %d finding%s for these teams, and how to fix each one.",
 		len(m.Findings), plural(len(m.Findings)))
+	if n := len(m.Ignored); n > 0 {
+		lead += fmt.Sprintf(" It also lists the %d finding%s these teams asked to ignore, with who asked and why: "+
+			"please check that they still hold.", n, plural(n))
+	}
 	body := emailBody{Lead: lead, Hint: ignoreHint(m.Findings), Rows: rows, Checks: Checks(disabled), Footer: footer}
 	return Email{
 		Subject:  subject,
@@ -110,8 +117,9 @@ func ignoreHint(fs []Finding) string {
 	}
 	var hint string
 	if ignorable {
-		hint = fmt.Sprintf("Is a finding intentional? Exclude it by annotating its object with `%s: <rule>` (several rules go comma-separated); "+
-			"the PDF gives the exact annotation for each finding that allows it.", AnnotationIgnore)
+		hint = fmt.Sprintf("Is a finding intentional? Ask the SnappCloud bot in Mattermost to `ignore` it; the PDF gives the exact "+
+			"command for each finding that allows it. The bot records who asked and why, every report lists it, and it ends after %d days.",
+			int(IgnoreTTL.Hours()/24))
 	}
 	if blockers {
 		hint += " PDBs that block node drains cannot be excluded: they must be fixed."
@@ -230,7 +238,7 @@ func codeSpans(s string) template.HTML {
 	return template.HTML(b.String()) //nolint:gosec // every piece is escaped above
 }
 
-// ignoreNote marks a rule the ignore annotation does not silence.
+// ignoreNote marks a rule the ignore command refuses.
 func ignoreNote(rule string) string {
 	if DrainBlocker(rule) {
 		return " (cannot be ignored)"

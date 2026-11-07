@@ -43,7 +43,7 @@ schedules:
 # Keep disruption_audit and list_teams clusterAdminOnly in toolRules.
 bestPractice:
   enabled: false
-  path: /data/best-practice.json
+  path: /data/best-practice.json   # reports, and the record of who asked to ignore what
   schedule: "every saturday at 00:00"   # in schedules.timezone; "" = only `report run`
                         # or "biweekly on saturdays at 06:00": every two weeks, counted from the
                         # last timer slot (`report run` does not move it)

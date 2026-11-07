@@ -467,6 +467,11 @@ func (s *Service) runCommand(ctx context.Context, p mattermost.Post, identity, q
 		return true, "alert_command"
 	}
 
+	if handled, reply := s.ignoreCommand(ctx, identity, query, lg); handled {
+		s.replyTo(ctx, p, reply)
+		return true, "ignore_command"
+	}
+
 	if handled, reply := s.reportCommand(ctx, identity, p, query); handled {
 		s.replyTo(ctx, p, reply)
 		return true, "report_command"
