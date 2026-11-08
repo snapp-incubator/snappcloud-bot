@@ -212,8 +212,9 @@ func newReportFixture(t *testing.T) *reportFixture {
 		inv:   reportInventory(),
 	}
 	resolver := scopeResolver{
-		"admin@snapp.cab":  {"teh-1": {ClusterWide: true, Namespaces: []string{"pay-prod"}}},
-		"tenant@snapp.cab": {"teh-1": {Namespaces: []string{"pay-prod"}}},
+		"admin@snapp.cab":    {"teh-1": {ClusterWide: true, Namespaces: []string{"pay-prod"}}},
+		"tenant@snapp.cab":   {"teh-1": {Namespaces: []string{"pay-prod"}}},
+		"stranger@snapp.cab": {"teh-1": {Namespaces: []string{"other"}}},
 	}
 	f.svc = New(f.mm, &fakeBrain{answer: "agent answer"}, resolver, Options{
 		ConversationTTL: time.Hour, BotUsername: "snappbot", RequireMention: true,
@@ -469,9 +470,9 @@ func TestReportEmailContent(t *testing.T) {
 			}
 		}
 	}
-	// Every finding is a drain blocker: offering the ignore annotation would
+	// Every finding is a drain blocker: offering the ignore command would
 	// invite something that does not work.
-	if strings.Contains(pay[0].Text, bestpractice.AnnotationIgnore) || !strings.Contains(pay[0].Text, "cannot be excluded") {
+	if strings.Contains(pay[0].Text, "SnappCloud bot") || !strings.Contains(pay[0].Text, "cannot be excluded") {
 		t.Errorf("footer:\n%s", pay[0].Text)
 	}
 }

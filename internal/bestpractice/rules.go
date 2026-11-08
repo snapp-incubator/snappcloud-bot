@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Rule IDs are stable: they are what teams put in the ignore annotation, what
+// Rule IDs are stable: they are what teams name when they ask to ignore a finding, what
 // metrics are labelled with, and what report-over-report tracking keys on.
 const (
 	RuleMaxUnavailableZero = "pdb-max-unavailable-zero"
@@ -37,11 +37,6 @@ func Topic(rule string) string {
 	}
 	return "pdb"
 }
-
-// AnnotationIgnore is the annotation teams put on a PDB, CR or workload to
-// mark a finding as intentional. openshift-mcp passes its value through. It
-// does not apply to drain blockers.
-const AnnotationIgnore = "snappcloud.io/best-practice-ignore"
 
 // DrainBlocker reports whether a rule finds a PDB that stops node drains.
 // Those cannot be ignored: a node that cannot be drained holds up maintenance
@@ -94,23 +89,27 @@ type Options struct {
 	ExcludeNamespaces []Selector
 	ExcludeTeams      []string
 	DisabledRules     []string
+	// Ignores are the active ignore requests, by key (Store.ActiveIgnores).
+	Ignores map[string]Ignore
 }
 
-// Result is an evaluation: the findings, and how many were ignored by
-// annotation, per rule, so ignores stay visible to the cloud team.
+// Result is an evaluation: the findings, and those left out because a team
+// asked, so ignores stay visible.
 type Result struct {
 	Findings []Finding
-	Ignored  map[string]int
+	Ignored  []IgnoredFinding
 }
 
 // Evaluate applies every enabled rule to the inventory.
 func Evaluate(inv Inventory, o Options) Result {
-	e := evaluator{opts: o, disabled: toSet(o.DisabledRules), teams: toSet(o.ExcludeTeams),
-		res: Result{Ignored: map[string]int{}}}
+	e := evaluator{opts: o, disabled: toSet(o.DisabledRules), teams: toSet(o.ExcludeTeams)}
 	for _, c := range inv.Clusters {
 		e.cluster(c)
 	}
 	sortFindings(e.res.Findings)
+	sort.SliceStable(e.res.Ignored, func(i, j int) bool {
+		return e.res.Ignored[i].Finding.Key() < e.res.Ignored[j].Finding.Key()
+	})
 	return e.res
 }
 
@@ -173,48 +172,30 @@ func (ce *clusterEval) production(ns string) bool {
 	return false
 }
 
-// add records a finding unless its rule is disabled or the object ignores it.
-// A drain blocker is recorded even when ignored, and says so: the team that
-// annotated it believes it silenced.
-func (ce *clusterEval) add(f Finding, ignores ...string) {
+// add records a finding unless its rule is disabled, or sets it aside when a
+// team asked to ignore it.
+func (ce *clusterEval) add(f Finding) {
 	if ce.disabled[f.Rule] || ce.skipped(f.Namespace) {
-		return
-	}
-	for _, ig := range ignores {
-		if !ignoresRule(ig, f.Rule) {
-			continue
-		}
-		if DrainBlocker(f.Rule) {
-			f.Detail += fmt.Sprintf(" The `%s` annotation does not apply: a PDB that blocks drains must be fixed.",
-				AnnotationIgnore)
-			break
-		}
-		ce.res.Ignored[f.Rule]++
 		return
 	}
 	f.Cluster = ce.ci.Cluster
 	f.Team = ce.ci.Audit.Namespaces[f.Namespace].Team
+	if ig, ok := ce.ignore(f); ok {
+		ce.res.Ignored = append(ce.res.Ignored, IgnoredFinding{Finding: f, Ignore: ig})
+		return
+	}
 	ce.out = append(ce.out, f)
 }
 
-// ignoresRule reads an ignore annotation: comma-separated rule IDs, or "*".
-func ignoresRule(annotation, rule string) bool {
-	for _, r := range strings.Split(annotation, ",") {
-		if r = strings.TrimSpace(r); r == rule || r == "*" {
-			return true
-		}
+// ignore returns the request that covers a finding. A drain blocker is never
+// covered: the command refuses them, and a record that got past it must not
+// hide a node that cannot be drained.
+func (ce *clusterEval) ignore(f Finding) (Ignore, bool) {
+	if DrainBlocker(f.Rule) {
+		return Ignore{}, false
 	}
-	return false
-}
-
-// pdbIgnores are the annotations that can silence a finding on a PDB: its own,
-// and its owning workloads'.
-func pdbIgnores(p *PDB) []string {
-	out := []string{p.Ignore}
-	for _, o := range p.Owners {
-		out = append(out, o.Ignore)
-	}
-	return out
+	ig, ok := ce.opts.Ignores[IgnoreKey(ce.ci.Cluster, f.Namespace, f.Kind, f.Name, f.Rule)]
+	return ig, ok
 }
 
 // headroom is how many pods the PDB lets go when every pod is healthy.
@@ -225,7 +206,6 @@ func (p *PDB) headroom() int { return p.ExpectedPods - p.DesiredHealthy }
 func (p *PDB) blocksDrains() bool { return p.ExpectedPods > 0 && p.headroom() <= 0 }
 
 func (ce *clusterEval) pdbRules(p *PDB) {
-	ig := pdbIgnores(p)
 	owners := ownersText(p.Owners)
 
 	// The drain blockers. The status the disruption controller computed is
@@ -254,7 +234,7 @@ func (ce *clusterEval) pdbRules(p *PDB) {
 				f.Fix = fmt.Sprintf("Allow at least one disruption: `maxUnavailable: 1`, or `minAvailable: %d`.", p.ExpectedPods-1)
 			}
 		}
-		ce.add(f, ig...)
+		ce.add(f)
 	}
 
 	// A pod in two PDBs cannot be evicted at all. One finding per pair, on the
@@ -263,17 +243,13 @@ func (ce *clusterEval) pdbRules(p *PDB) {
 		if p.Name >= other {
 			continue
 		}
-		oig := ig
-		if o, ok := ce.pdbs[p.Namespace+"/"+other]; ok {
-			oig = append(append([]string{}, ig...), pdbIgnores(o)...)
-		}
 		ce.add(Finding{Rule: RuleOverlap, Severity: High, Namespace: p.Namespace, Kind: "PodDisruptionBudget",
 			Name: p.Name, Other: other,
 			Title: fmt.Sprintf("PDBs `%s` and `%s` select the same pods", p.Name, other),
 			Detail: "Eviction refuses a pod covered by more than one PodDisruptionBudget, so a node running one of " +
 				"these pods cannot be drained until a cloud admin forces it.",
 			Fix: "Keep one PDB per workload: narrow the selectors so each pod matches exactly one, or delete the duplicate.",
-		}, oig...)
+		})
 	}
 
 	// Healthy enough to allow a disruption, but not right now: the unhealthy
@@ -286,7 +262,7 @@ func (ce *clusterEval) pdbRules(p *PDB) {
 			Detail: fmt.Sprintf("%d of %d pods of %s are healthy, below the %d it requires, so it allows no evictions: "+
 				"not even of the unhealthy pods, which pin their nodes.", p.CurrentHealthy, p.ExpectedPods, owners, p.DesiredHealthy),
 			Fix: "Fix the unhealthy pods, and set `unhealthyPodEvictionPolicy: AlwaysAllow` so a broken pod never blocks a drain.",
-		}, ig...)
+		})
 	}
 }
 
@@ -312,7 +288,7 @@ func (ce *clusterEval) instanceRules(in *Instance) {
 					"(two members on one node, or two drains running in parallel): the cluster loses quorum.", n, tol)
 				f.Fix = "Add a PDB with `maxUnavailable: 1` that selects its pods."
 			}
-			ce.add(f, in.Ignore)
+			ce.add(f)
 		}
 		for _, name := range in.PDBs {
 			p, ok := ce.pdbs[in.Namespace+"/"+name]
@@ -334,7 +310,7 @@ func (ce *clusterEval) instanceRules(in *Instance) {
 					"loses at most %d.", specText(p), allowed, n, tol)
 				f.Fix = fmt.Sprintf("Set `minAvailable: %d`, or `maxUnavailable: 1`.", n/2+1)
 			}
-			ce.add(f, append(pdbIgnores(p), in.Ignore)...)
+			ce.add(f)
 		}
 	}
 
@@ -374,8 +350,8 @@ func (ce *clusterEval) singleInstance(in *Instance, what string) {
 	if in.Source == "image" {
 		f.Detail += fmt.Sprintf(" (Recognised by its image, `%s`.)", strings.Join(in.Images, "`, `"))
 	}
-	if ce.disabled[f.Rule] || ignoresRule(in.Ignore, f.Rule) {
-		ce.add(f, in.Ignore)
+	if _, ignored := ce.ignore(f); ce.disabled[f.Rule] || ignored {
+		ce.add(f)
 		return
 	}
 
@@ -394,7 +370,7 @@ func (ce *clusterEval) singleInstance(in *Instance, what string) {
 		f.Detail += fmt.Sprintf(" Its PDB `%s` also blocks drains: its node cannot be drained until a cloud admin "+
 			"forces it, which takes it down anyway.", strings.Join(blockers, "`, `"))
 	}
-	ce.add(f, in.Ignore)
+	ce.add(f)
 }
 
 // allowedWhenHealthy is how many of n healthy members the PDB lets go.

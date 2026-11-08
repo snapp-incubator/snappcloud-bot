@@ -101,35 +101,53 @@ func TestBlockedByUnhealthyPods(t *testing.T) {
 	}
 }
 
-func TestIgnoreAnnotation(t *testing.T) {
-	quorum := Instance{Namespace: "app", Name: "zk", Engine: "zookeeper", Kind: "StatefulSet", Replicas: 3,
-		Quorum: true, Source: "image"}
-	for _, ig := range []string{"quorum-no-pdb", "pdb-overlap, quorum-no-pdb", "*"} {
-		quorum.Ignore = ig
-		res := Evaluate(inv("production", nil, []Instance{quorum}), Options{})
-		if len(res.Findings) != 0 || res.Ignored[RuleQuorumNoPDB] != 1 {
-			t.Errorf("annotation %q: findings %v ignored %v", ig, rules(res.Findings), res.Ignored)
-		}
+func ignoring(f Finding) map[string]Ignore {
+	return map[string]Ignore{
+		IgnoreKey("teh-1", f.Namespace, f.Kind, f.Name, f.Rule): {By: "jane", Reason: "accepted"},
 	}
 }
 
-// A PDB that blocks drains holds up maintenance for everyone on the node: no
-// annotation, on the PDB or its workload, silences it.
-func TestDrainBlockersCannotBeIgnored(t *testing.T) {
-	p := pdbOf("app", "p", num(1), nil, 1)
-	p.Ignore = "pdb-overlap, pdb-min-available-all"
-	res := Evaluate(inv("production", []PDB{p}, nil), Options{})
-	if got := rules(res.Findings); !reflect.DeepEqual(got, []string{"pdb-min-available-all:p"}) || len(res.Ignored) != 0 {
-		t.Fatalf("PDB annotation: findings %v ignored %v", got, res.Ignored)
+func TestIgnoreRequestLeavesFindingOut(t *testing.T) {
+	quorum := Instance{Namespace: "app", Name: "zk", Engine: "zookeeper", Kind: "StatefulSet", Replicas: 3,
+		Quorum: true, Source: "image"}
+	in := inv("production", nil, []Instance{quorum})
+	f := Evaluate(in, Options{}).Findings[0]
+	res := Evaluate(in, Options{Ignores: ignoring(f)})
+	if len(res.Findings) != 0 || len(res.Ignored) != 1 {
+		t.Fatalf("findings %v ignored %v", rules(res.Findings), res.Ignored)
 	}
-	if !strings.Contains(res.Findings[0].Detail, "annotation does not apply") {
-		t.Errorf("the finding must tell the team their annotation was overruled: %s", res.Findings[0].Detail)
+	got := res.Ignored[0]
+	if got.Ignore.By != "jane" || got.Finding.Team != "pay" || got.Finding.Cluster != "teh-1" {
+		t.Errorf("the team must see who asked: %+v", got)
 	}
+	other := map[string]Ignore{IgnoreKey("teh-1", "app", "StatefulSet", "other", f.Rule): {}}
+	if res := Evaluate(in, Options{Ignores: other}); len(res.Findings) != 1 {
+		t.Errorf("an ignore on another object must not match: %+v", res)
+	}
+}
 
-	p = pdbOf("app", "p", num(1), nil, 1)
-	p.Owners[0].Ignore = "*"
-	if got := rules(Evaluate(inv("production", []PDB{p}, nil), Options{}).Findings); len(got) != 1 {
-		t.Errorf("owner annotation \"*\" must not silence a drain blocker, got %v", got)
+// A single-instance finding that is ignored folds nothing into itself: the
+// drain blocker on the same instance must stay a finding of its own.
+func TestIgnoredSingleInstanceKeepsItsDrainBlocker(t *testing.T) {
+	p := pdbOf("app", "events-pdb", num(1), nil, 1)
+	rmq := Instance{Namespace: "app", Name: "events", Engine: "rabbitmq", Kind: "RabbitmqCluster", Replicas: 1,
+		PDBs: []string{"events-pdb"}, Source: "operator"}
+	in := inv("production", []PDB{p}, []Instance{rmq})
+	single := Finding{Namespace: "app", Kind: "RabbitmqCluster", Name: "events", Rule: RuleRabbitSingle}
+	res := Evaluate(in, Options{Ignores: ignoring(single)})
+	if got := rules(res.Findings); !reflect.DeepEqual(got, []string{"pdb-min-available-all:events-pdb"}) || len(res.Ignored) != 1 {
+		t.Fatalf("findings %v ignored %v", got, res.Ignored)
+	}
+}
+
+// A PDB that blocks drains holds up maintenance for everyone on the node: even
+// a record that got past the command does not silence it.
+func TestDrainBlockersCannotBeIgnored(t *testing.T) {
+	in := inv("production", []PDB{pdbOf("app", "p", num(1), nil, 1)}, nil)
+	f := Evaluate(in, Options{}).Findings[0]
+	res := Evaluate(in, Options{Ignores: ignoring(f)})
+	if got := rules(res.Findings); !reflect.DeepEqual(got, []string{"pdb-min-available-all:p"}) || len(res.Ignored) != 0 {
+		t.Fatalf("findings %v ignored %v", got, res.Ignored)
 	}
 	for _, r := range Rules {
 		want := r == RuleMaxUnavailableZero || r == RuleMinAvailableAll || r == RuleOverlap || r == RuleBlockedUnhealthy
@@ -385,7 +403,7 @@ func TestFindingCarriesClusterAndTeam(t *testing.T) {
 func TestDecodeAudit(t *testing.T) {
 	raw := `{"pdbs":[{"ns":"pay-prod","name":"api-pdb","minAvailable":1,"expectedPods":1,"currentHealthy":1,
 		"desiredHealthy":1,"disruptionsAllowed":0,"owners":[{"kind":"Deployment","name":"api","replicas":1,
-		"images":["registry.local/pay/api:1"],"ignore":"pdb-overlap"}],"overlapsWith":["api-pdb-2"]},
+		"images":["registry.local/pay/api:1"]}],"overlapsWith":["api-pdb-2"]},
 		{"ns":"pay-prod","name":"api-pdb-2","maxUnavailable":"0%","expectedPods":1,"currentHealthy":1,
 		"desiredHealthy":1,"disruptionsAllowed":0,"owners":[]}],
 		"instances":[{"ns":"pay-prod","name":"events","engine":"rabbitmq","kind":"RabbitmqCluster",

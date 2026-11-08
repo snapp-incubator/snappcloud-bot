@@ -51,23 +51,28 @@ type Mailing struct {
 	// Teams are the teams it has findings for, sorted.
 	Teams    []string
 	Findings []Finding
-	To, Cc   []string
+	// Ignored are its teams' findings left out on request, listed so the
+	// team's admins know about them.
+	Ignored []IgnoredFinding
+	To, Cc  []string
 	// NoAdmins are the teams in it whose Team CR names no admin.
 	NoAdmins []string
 }
 
 // Mailings splits the findings into emails: the groups in configured order,
-// then the other teams. A group without findings sends nothing. When a
-// mailing has nobody in To, the Cc receive it alone.
-func (rt Routing) Mailings(fs []Finding, admins map[string][]string) []Mailing {
+// then the other teams. A group with neither findings nor ignored findings
+// sends nothing: a team whose only finding is ignored still hears about it.
+// When a mailing has nobody in To, the Cc receive it alone.
+func (rt Routing) Mailings(fs []Finding, ignored []IgnoredFinding, admins map[string][]string) []Mailing {
 	byTeam := GroupByTeam(fs)
+	igByTeam := groupIgnored(ignored)
 	grouped := map[string]bool{}
 	var out []Mailing
 	for _, g := range rt.Groups {
 		m := Mailing{Name: strings.Join(g, ", "), Cc: rt.Cc}
 		for _, t := range g {
 			grouped[t] = true
-			if len(byTeam[t]) == 0 {
+			if len(byTeam[t]) == 0 && len(igByTeam[t]) == 0 {
 				continue
 			}
 			m.Teams = append(m.Teams, t)
@@ -82,18 +87,23 @@ func (rt Routing) Mailings(fs []Finding, admins map[string][]string) []Mailing {
 		}
 		if len(m.Teams) > 0 {
 			slices.Sort(m.Teams)
-			m.Findings = teamFindings(byTeam, m.Teams)
+			m.Findings = teamItems(byTeam, m.Teams)
+			m.Ignored = teamItems(igByTeam, m.Teams)
 			out = append(out, m)
 		}
 	}
 	others := Mailing{Name: OthersName, To: rt.Others, Cc: rt.Cc}
-	for _, t := range sortedKeys(byTeam) {
-		if !grouped[t] {
+	seen := map[string]bool{}
+	for _, t := range append(sortedKeys(byTeam), sortedKeys(igByTeam)...) {
+		if !grouped[t] && !seen[t] {
+			seen[t] = true
 			others.Teams = append(others.Teams, t)
 		}
 	}
 	if len(others.Teams) > 0 {
-		others.Findings = teamFindings(byTeam, others.Teams)
+		slices.Sort(others.Teams)
+		others.Findings = teamItems(byTeam, others.Teams)
+		others.Ignored = teamItems(igByTeam, others.Teams)
 		out = append(out, others)
 	}
 	return out
@@ -112,8 +122,17 @@ func MailingOf(ms []Mailing, team string) (Mailing, bool) {
 	return Mailing{}, false
 }
 
-func teamFindings(byTeam map[string][]Finding, teams []string) []Finding {
-	var out []Finding
+// groupIgnored splits ignored findings by team.
+func groupIgnored(ignored []IgnoredFinding) map[string][]IgnoredFinding {
+	out := map[string][]IgnoredFinding{}
+	for _, ig := range ignored {
+		out[ig.Finding.Team] = append(out[ig.Finding.Team], ig)
+	}
+	return out
+}
+
+func teamItems[T any](byTeam map[string][]T, teams []string) []T {
+	var out []T
 	for _, t := range teams {
 		out = append(out, byTeam[t]...)
 	}

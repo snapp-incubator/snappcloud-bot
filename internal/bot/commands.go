@@ -71,6 +71,14 @@ func helpText(schedules, alerts, reports bool) string {
 		b.WriteString("| `alerts status` | whose access it uses, and the current limits |\n")
 	}
 
+	if reports {
+		b.WriteString("\n**Best-practice findings** — for a finding your team has decided to accept\n")
+		b.WriteString("| Command | What it does |\n| --- | --- |\n")
+		b.WriteString("| `ignore <cluster>/<namespace>/<kind>/<name> <rule> reason: <why>` | leave it out of the reports; your name and reason are recorded, and every report lists it |\n")
+		b.WriteString("| `unignore <cluster>/<namespace>/<kind>/<name> <rule>` | report it again |\n")
+		b.WriteString("| `ignores` | what is ignored in your namespaces |\n")
+	}
+
 	b.WriteString("\nCluster-admins: `diagnostics` shows every MCP server the bot has, its tool count, and anything not answering.")
 	if reports {
 		b.WriteString(" `report status` shows the best-practice report and when it runs next, `report run` builds one now, " +

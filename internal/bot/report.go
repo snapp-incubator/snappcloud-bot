@@ -92,6 +92,27 @@ func newReportFeature(o *ReportOptions) *reportFeature {
 	return &reportFeature{ReportOptions: *o, now: time.Now}
 }
 
+// rules is the evaluation options, with what is ignored right now.
+func (rf *reportFeature) rules() bestpractice.Options {
+	o := rf.Rules
+	o.Ignores = rf.Store.ActiveIgnores(rf.now())
+	return o
+}
+
+// ignoredToMail is what a report's emails list as ignored: what the preview
+// showed, as long as it still holds, since an ignore can end before approval.
+func (rf *reportFeature) ignoredToMail(r bestpractice.Report) []bestpractice.IgnoredFinding {
+	active := rf.Store.ActiveIgnores(rf.now())
+	var out []bestpractice.IgnoredFinding
+	for _, ig := range r.SendableIgnored() {
+		if cur, ok := active[ig.Ignore.Key()]; ok {
+			ig.Ignore = cur
+			out = append(out, ig)
+		}
+	}
+	return out
+}
+
 // SetReportRunner supplies the runner the report commands start jobs on. Set
 // after construction because the runner needs the service to build reports.
 func (s *Service) SetReportRunner(r reportRunner) {
@@ -120,7 +141,7 @@ func (s *Service) BuildReport(ctx context.Context) error {
 		return errors.New("no cluster could be read")
 	}
 
-	res := bestpractice.Evaluate(inv, rf.Rules)
+	res := bestpractice.Evaluate(inv, rf.rules())
 	r := &bestpractice.Report{
 		Findings: res.Findings,
 		Admins:   inv.TeamAdmins(),
@@ -356,7 +377,8 @@ func (s *Service) reportApprove(identity, id string) string {
 	if why != "" {
 		return why
 	}
-	if len(r.Sendable()) == 0 {
+	mailings := s.report.Routing.Mailings(r.Sendable(), r.SendableIgnored(), r.Admins)
+	if len(mailings) == 0 {
 		return fmt.Sprintf("Report `%s` has nothing to send to any team. `report reject %s` closes it.", id, id)
 	}
 	if msg := s.reportDo("approve", func(ctx context.Context) error {
@@ -365,7 +387,16 @@ func (s *Service) reportApprove(identity, id string) string {
 		return msg
 	}
 	return fmt.Sprintf("✅ Approved `%s`. Re-checking the clusters, then sending %d emails for %d teams; "+
-		"the result posts in the report thread.", id, len(s.report.Routing.Mailings(r.Sendable(), r.Admins)), len(r.Teams()))
+		"the result posts in the report thread.", id, len(mailings), mailingTeams(mailings))
+}
+
+// mailingTeams counts the teams the emails cover.
+func mailingTeams(ms []bestpractice.Mailing) int {
+	n := 0
+	for _, m := range ms {
+		n += len(m.Teams)
+	}
+	return n
 }
 
 func (s *Service) reportReject(ctx context.Context, identity, id string) string {
@@ -406,6 +437,9 @@ func (s *Service) reportExclude(id string, teams []string) string {
 		has := map[string]bool{}
 		for _, f := range r.Findings {
 			has[f.Team] = true
+		}
+		for _, ig := range r.Ignored {
+			has[ig.Finding.Team] = true
 		}
 		for _, t := range teams {
 			switch {
@@ -453,14 +487,15 @@ func (s *Service) reportPreview(ctx context.Context, p mattermost.Post, id, team
 			fs = append(fs, f)
 		}
 	}
-	if len(fs) == 0 {
+	ignored := r.SendableIgnored()
+	if len(fs) == 0 && !slices.ContainsFunc(ignored, func(ig bestpractice.IgnoredFinding) bool { return ig.Finding.Team == team }) {
 		return fmt.Sprintf("Report `%s` has no findings for team `%s`.", id, team)
 	}
 	if contains(r.Excluded, team) {
 		return fmt.Sprintf("Team `%s` is **excluded** from report `%s`, so nothing is sent for it. Its findings:\n```text\n%s```",
 			team, id, bestpractice.FindingsText(fs, rf.Docs))
 	}
-	m, _ := bestpractice.MailingOf(rf.Routing.Mailings(r.Sendable(), r.Admins), team)
+	m, _ := bestpractice.MailingOf(rf.Routing.Mailings(r.Sendable(), ignored, r.Admins), team)
 	e, err := bestpractice.ReportEmail(m, rf.Docs, rf.Rules.DisabledRules, rf.Mailer.CanReply(), r.Created, rf.Location)
 	if err != nil {
 		return "🚫 " + err.Error()
@@ -524,7 +559,7 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 	}
 
 	send, d := s.recheckReport(ctx, r)
-	s.sendMailings(ctx, r, rf.Routing.Mailings(send, r.Admins), d)
+	s.sendMailings(ctx, r, rf.Routing.Mailings(send, rf.ignoredToMail(r), r.Admins), d)
 
 	r, err = rf.Store.Update(id, rf.now(), func(r *bestpractice.Report) error {
 		r.Status, r.Delivery = bestpractice.StatusSent, d
@@ -548,7 +583,7 @@ func (s *Service) deliverReport(ctx context.Context, id, by string) error {
 func (s *Service) recheckReport(ctx context.Context, r bestpractice.Report) ([]bestpractice.Finding, *bestpractice.Delivery) {
 	rf := s.report
 	inv := rf.Collect(ctx)
-	cur := bestpractice.Evaluate(inv, rf.Rules)
+	cur := bestpractice.Evaluate(inv, rf.rules())
 	var current []bestpractice.Finding
 	for _, f := range cur.Findings {
 		if f.Team != "" && !contains(r.Excluded, f.Team) {
@@ -635,7 +670,7 @@ func (s *Service) resendReport(ctx context.Context, id, by string) error {
 	send, _ := s.recheckReport(ctx, r)
 	var todo []bestpractice.Mailing
 	now := map[string]bool{}
-	for _, m := range rf.Routing.Mailings(send, r.Admins) {
+	for _, m := range rf.Routing.Mailings(send, rf.ignoredToMail(r), r.Admins) {
 		now[m.Name] = true
 		if !contains(old.Sent, m.Name) {
 			todo = append(todo, m)

@@ -33,7 +33,7 @@ func TestMailingsGroupTeamsAndSendTheRestToOthers(t *testing.T) {
 	admins := map[string][]string{
 		"box": {"a@snapp.cab", "b@snapp.cab"}, "box-ai": {"b@snapp.cab", "c@snapp.cab"}, "ride": {"r@snapp.cab"},
 	}
-	ms := rt.Mailings(fs, admins)
+	ms := rt.Mailings(fs, nil, admins)
 	if len(ms) != 3 {
 		t.Fatalf("mailings = %+v", ms)
 	}
@@ -118,37 +118,38 @@ func TestReportPDFHoldsEveryFinding(t *testing.T) {
 		t.Fatalf("not a PDF: %q", e.PDF[:min(20, len(e.PDF))])
 	}
 	for _, want := range []string{"(Team box)", "(Team pay)", "(teh-1 / box-prod)", "(maxUnavailable: 1)",
-		"(This PDB blocks node drains, so it cannot be excluded by annotation: it must be fixed. Rule )",
-		"(pdb-min-available-all)", "(Intentional? Exclude this finding by annotating the RabbitmqCluster with:)",
-		"(snappcloud.io/best-practice-ignore: quorum-no-pdb)", "/URI (https://docs/pdb)", "page 1 of"} {
+		"(This PDB blocks node drains, so it cannot be excluded: it must be fixed. Rule )",
+		"(pdb-min-available-all)", "(Intentional? Send this to the SnappCloud bot in Mattermost:)",
+		"quorum-no-pdb reason: <why>", "/URI (https://docs/pdb)", "page 1 of"} {
 		if !bytes.Contains(e.PDF, []byte(want)) {
 			t.Errorf("PDF missing %q", want)
 		}
 	}
 }
 
-// The ignore annotation is offered only for findings it can silence, above
+// The ignore command is offered only for findings it can silence, above
 // the team table, where it is seen.
 func TestIgnoreHintOffersIgnoreOnlyWhereItWorks(t *testing.T) {
+	const ignoreWord = "the SnappCloud bot"
 	blocker := teamFinding("pay", RuleMinAvailableAll, High)
 	quorum := teamFinding("pay", RuleQuorumNoPDB, High)
 
-	if only := ignoreHint([]Finding{blocker}); strings.Contains(only, AnnotationIgnore) ||
+	if only := ignoreHint([]Finding{blocker}); strings.Contains(only, ignoreWord) ||
 		!strings.Contains(only, "cannot be excluded: they must be fixed") {
 		t.Errorf("blockers only: %s", only)
 	}
 	mixed := ignoreHint([]Finding{blocker, quorum})
-	if !strings.Contains(mixed, AnnotationIgnore) || !strings.Contains(mixed, "cannot be excluded: they must be fixed") {
+	if !strings.Contains(mixed, ignoreWord) || !strings.Contains(mixed, "cannot be excluded: they must be fixed") {
 		t.Errorf("mixed: %s", mixed)
 	}
 	e, err := ReportEmail(Mailing{Teams: []string{"pay"}, Findings: []Finding{quorum}}, nil, nil, false, day, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h, tbl := strings.Index(e.HTML, AnnotationIgnore), strings.Index(e.HTML, "<table"); h < 0 || h > tbl {
+	if h, tbl := strings.Index(e.HTML, ignoreWord), strings.Index(e.HTML, "<table"); h < 0 || h > tbl {
 		t.Errorf("hint not above the table:\n%s", e.HTML)
 	}
-	if h, tbl := strings.Index(e.Text, AnnotationIgnore), strings.Index(e.Text, "Team "); h < 0 || h > tbl {
+	if h, tbl := strings.Index(e.Text, ignoreWord), strings.Index(e.Text, "Team "); h < 0 || h > tbl {
 		t.Errorf("hint not above the table:\n%s", e.Text)
 	}
 	if text := FindingsText([]Finding{blocker, quorum}, nil); !strings.Contains(text, "Rule: pdb-min-available-all (cannot be ignored)") ||

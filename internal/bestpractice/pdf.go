@@ -86,8 +86,12 @@ func reportPDF(m Mailing, docs map[string]string, footer string, day time.Time) 
 	f.Ln(4)
 	d.color(pdfInk)
 	high, medium := counts(m.Findings)
-	f.MultiCell(0, 5, d.tr(fmt.Sprintf("%s %d finding%s: %d high, %d medium.", emailIntro,
-		len(m.Findings), plural(len(m.Findings)), high, medium)), "", "", false)
+	summary := fmt.Sprintf("%s %d finding%s: %d high, %d medium.", emailIntro,
+		len(m.Findings), plural(len(m.Findings)), high, medium)
+	if n := len(m.Ignored); n > 0 {
+		summary += fmt.Sprintf(" %d more ignored on request.", n)
+	}
+	f.MultiCell(0, 5, d.tr(summary), "", "", false)
 	f.Ln(4)
 
 	// The summary table.
@@ -103,6 +107,7 @@ func reportPDF(m Mailing, docs map[string]string, footer string, day time.Time) 
 	}
 	f.Ln(-1)
 	byTeam := GroupByTeam(m.Findings)
+	igByTeam := groupIgnored(m.Ignored)
 	for _, t := range m.Teams {
 		h, md := counts(byTeam[t])
 		f.SetFont(pdfFont, "", 10)
@@ -130,6 +135,16 @@ func reportPDF(m Mailing, docs map[string]string, footer string, day time.Time) 
 		for _, fd := range byTeam[t] {
 			d.finding(fd, docs)
 		}
+		if ig := igByTeam[t]; len(ig) > 0 {
+			f.SetFont(pdfFont, "B", 11)
+			d.color(pdfInk)
+			f.SetX(pdfMargin)
+			f.CellFormat(0, 7, "Ignored on request", "", 1, "", false, 0, "")
+			f.Ln(1)
+			for _, i := range ig {
+				d.ignored(i)
+			}
+		}
 	}
 
 	if footer != "" {
@@ -147,26 +162,44 @@ func reportPDF(m Mailing, docs map[string]string, footer string, day time.Time) 
 }
 
 // ignoreStatement tells how to exclude a finding, or that it cannot be. The
-// annotation gets a line of its own, so it is not split and copies whole.
+// command gets a line of its own, so it copies whole.
 func (d pdfDoc) ignoreStatement(fd Finding) {
 	d.color(pdfMuted)
 	if DrainBlocker(fd.Rule) {
-		d.rich(4.5, 9, "", fmt.Sprintf("This PDB blocks node drains, so it cannot be excluded by annotation: "+
+		d.rich(4.5, 9, "", fmt.Sprintf("This PDB blocks node drains, so it cannot be excluded: "+
 			"it must be fixed. Rule `%s`.", fd.Rule))
 		d.Ln(4.5)
 		return
 	}
-	obj := "object"
-	if fd.Kind != "" {
-		obj = fd.Kind
-	}
 	d.SetFont(pdfFont, "", 9)
-	d.Write(4.5, d.tr(fmt.Sprintf("Intentional? Exclude this finding by annotating the %s with:", obj)))
+	d.Write(4.5, "Intentional? Send this to the SnappCloud bot in Mattermost:")
 	d.Ln(4.5)
 	d.SetFont(pdfMono, "", 9)
 	d.color(pdfInk)
-	d.Write(4.5, d.tr(AnnotationIgnore+": "+fd.Rule))
+	d.Write(4.5, d.tr(IgnoreCommand(fd)))
 	d.Ln(4.5)
+}
+
+// ignored writes a finding left out on request: what it risks, and who asked.
+func (d pdfDoc) ignored(ig IgnoredFinding) {
+	_, pageH := d.GetPageSize()
+	if d.GetY() > pageH-45 {
+		d.AddPage()
+	}
+	fd, i := ig.Finding, ig.Ignore
+	d.SetFont(pdfFont, "B", 10)
+	d.color(pdfInk)
+	d.Write(5, d.tr(fd.Cluster+" / "+fd.Namespace))
+	d.Ln(5)
+	d.rich(5, 10, "B", fd.Title)
+	d.Ln(5)
+	d.rich(5, 10, "", fd.Detail)
+	d.Ln(5)
+	d.color(pdfMuted)
+	d.rich(4.5, 9, "", fmt.Sprintf("Asked by %s on %s, until %s. Reason: %s", i.By, DateOf(i.At), DateOf(i.Expires), i.Reason))
+	d.Ln(4.5)
+	d.rich(4.5, 9, "", fmt.Sprintf("To report it again, send the bot: `unignore %s %s`", i.Target(), i.Rule))
+	d.Ln(8)
 }
 
 // finding writes one finding, indented behind a bar in its severity's colour.

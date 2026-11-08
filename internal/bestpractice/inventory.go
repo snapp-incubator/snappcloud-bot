@@ -83,7 +83,6 @@ type PDB struct {
 	DisruptionsAllowed         int           `json:"disruptionsAllowed"`
 	Owners                     []Owner       `json:"owners"`
 	OverlapsWith               []string      `json:"overlapsWith,omitempty"`
-	Ignore                     string        `json:"ignore,omitempty"`
 }
 
 // Owner is a controller of the pods a PDB selects.
@@ -93,7 +92,6 @@ type Owner struct {
 	Replicas     *int     `json:"replicas,omitempty"`
 	Images       []string `json:"images,omitempty"`
 	OperatorKind string   `json:"operatorKind,omitempty"`
-	Ignore       string   `json:"ignore,omitempty"`
 }
 
 // Instance is a broker, cache or quorum system: an operator CR, or a plain
@@ -113,7 +111,6 @@ type Instance struct {
 	Source          string   `json:"source"`
 	PDBs            []string `json:"pdbs"`
 	Images          []string `json:"images,omitempty"`
-	Ignore          string   `json:"ignore,omitempty"`
 }
 
 // NSOwner is a namespace's team and environment, and all its labels.
