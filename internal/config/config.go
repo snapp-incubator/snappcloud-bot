@@ -10,19 +10,22 @@ import (
 	"os"
 	"strings"
 
+	"github.com/snapp-incubator/snappcloud-bot/internal/botoauth"
 	"gopkg.in/yaml.v3"
 )
 
 // Config is the root configuration document.
 type Config struct {
-	Mattermost Mattermost `yaml:"mattermost"`
-	Memory     Memory     `yaml:"memory"`
-	Authz      Authz      `yaml:"authz"`
-	Agent      Agent      `yaml:"agent"`
-	Limits     Limits     `yaml:"limits"`
-	API        API        `yaml:"api"`
-	Schedules  Schedules  `yaml:"schedules"`
-	Alerts     Alerts     `yaml:"alerts"`
+	AIon       *botoauth.Incoming `yaml:"aionOAuth"`
+	Pardis     *botoauth.Outgoing `yaml:"pardisOAuth"`
+	Mattermost Mattermost         `yaml:"mattermost"`
+	Memory     Memory             `yaml:"memory"`
+	Authz      Authz              `yaml:"authz"`
+	Agent      Agent              `yaml:"agent"`
+	Limits     Limits             `yaml:"limits"`
+	API        API                `yaml:"api"`
+	Schedules  Schedules          `yaml:"schedules"`
+	Alerts     Alerts             `yaml:"alerts"`
 	// BestPractice is the scheduled best-practice report to team admins.
 	BestPractice BestPractice `yaml:"bestPractice"`
 	// Mail is the SMTP server the best-practice report is emailed through.
@@ -437,10 +440,26 @@ func (c *Config) validate() error {
 	if strings.TrimSpace(c.Agent.LLM.BaseURL) == "" || strings.TrimSpace(c.Agent.LLM.Model) == "" {
 		return fmt.Errorf("agent.llm.baseURL and agent.llm.model are required")
 	}
-	if len(c.Agent.Clusters) == 0 {
+	if c.AIon != nil {
+		if !c.API.Enabled {
+			return fmt.Errorf("aionOAuth requires api.enabled")
+		}
+		if err := c.AIon.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Pardis != nil {
+		if err := c.Pardis.Validate(); err != nil {
+			return err
+		}
+		if c.API.Enabled || c.Schedules.Enabled || c.Alerts.Enabled || c.BestPractice.Enabled || len(c.Agent.Clusters)+len(c.Agent.GlobalServers)+len(c.Authz.Regions) > 0 {
+			return fmt.Errorf("pardisOAuth requires a dedicated DM bot with no shared MCPs, authz regions, API or unattended features")
+		}
+	}
+	if len(c.Agent.Clusters) == 0 && c.Pardis == nil {
 		return fmt.Errorf("agent.clusters must list at least one cluster with MCP servers")
 	}
-	if len(c.Authz.Regions) == 0 {
+	if len(c.Authz.Regions) == 0 && c.Pardis == nil {
 		return fmt.Errorf("authz.regions must list at least one mcp-authz endpoint")
 	}
 	seen := map[string]bool{}

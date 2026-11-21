@@ -45,9 +45,10 @@ func NewClient(baseURL, token string) *Client {
 
 // User is the subset of a Mattermost user we need.
 type User struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	Email         string `json:"email"`
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {

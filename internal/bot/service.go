@@ -48,6 +48,7 @@ type mmClient interface {
 
 // Service ties identity, authorization, and the agent together.
 type Service struct {
+	pardis         *Pardis
 	mm             mmClient
 	brain          answerer
 	resolver       authzclient.Resolver
@@ -232,6 +233,10 @@ func (s *Service) OnPost(ctx context.Context, p mattermost.Post) error {
 		outcome = "rate_limited"
 		s.replyTo(ctx, p, msgRateLimited)
 		return nil
+	}
+
+	if s.pardis != nil {
+		return s.pardisDM(ctx, p, user, query, reqID)
 	}
 
 	// Refresh command: flush the caller's cached scope and report live access.

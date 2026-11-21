@@ -405,3 +405,10 @@ func decodeSSE(r io.Reader, id int) (*rpcResponse, error) {
 	}
 	return nil, fmt.Errorf("no response for id %d in stream", id)
 }
+
+// NewDelegated limits a user credential to its configured resource endpoint.
+func NewDelegated(resource, token string, timeout time.Duration, tools ...string) *Client {
+	c := New(resource, "Bearer "+token, false, timeout, tools...)
+	c.http.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}

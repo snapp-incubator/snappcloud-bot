@@ -573,3 +573,5 @@ the bearer can never drift.
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
+
+See [Per-user OAuth for MCP](docs/oauth.md) for AIon and Pardis configuration.

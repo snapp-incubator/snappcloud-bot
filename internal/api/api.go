@@ -104,11 +104,15 @@ func bearer(r *http.Request) string {
 // authenticate verifies the caller's token and resolves their scope. On
 // failure it returns an HTTP status and a message for the caller.
 func (h *Handler) authenticate(ctx context.Context, token string, lg *slog.Logger) (authzclient.Identity, authzclient.Scope, int, string) {
-	if token == "" {
+	id, delegated := ctx.Value(oauthIdentity{}).(authzclient.Identity)
+	if !delegated && token == "" {
 		return authzclient.Identity{}, nil, http.StatusUnauthorized,
 			"missing bearer token: send your OpenShift user or ServiceAccount token"
 	}
-	id, err := h.authn.Authenticate(ctx, token)
+	var err error
+	if !delegated {
+		id, err = h.authn.Authenticate(ctx, token)
+	}
 	if err != nil {
 		lg.Info("api authentication failed", "err", err)
 		return authzclient.Identity{}, nil, http.StatusUnauthorized, "token could not be authenticated on any known cluster"

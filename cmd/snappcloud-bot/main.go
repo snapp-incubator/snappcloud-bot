@@ -9,6 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/snapp-incubator/snappcloud-bot/internal/botoauth"
 	"log/slog"
 	"net/http"
 	"os"
@@ -283,6 +284,21 @@ func run(configPath, addr string, log *slog.Logger) error {
 		AlertAggregator: alertAgg,
 		Reports:         reportOpts,
 	}, log)
+	if o := cfg.Pardis; o != nil {
+		verify := func(ctx context.Context, token, email string) error {
+			return brain.VerifyPardis(ctx, o.Resource, token, email)
+		}
+		links, err := botoauth.NewLinks(*o, os.Getenv("PARDIS_OAUTH_CLIENT_SECRET"), os.Getenv("PARDIS_OAUTH_STORAGE_KEY"), verify)
+		if err != nil {
+			return err
+		}
+		svc.SetPardis(&bot.Pardis{Links: links, Verify: verify, Answer: func(ctx context.Context, token, user, question, history, reqID string) (string, error) {
+			return theBrain.AnswerPardis(ctx, o.Resource, token, user, question, history, reqID)
+		}})
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /oauth/callback", links.Callback)
+		go serveAPI(ctx, cfg.API.Addr, mux, time.Minute, log)
+	}
 	go svc.StartSweeper(ctx)
 
 	if schedStore != nil {
@@ -357,7 +373,16 @@ func run(configPath, addr string, log *slog.Logger) error {
 			MaxQueryRunes: cfg.Limits.MaxQueryRunes,
 			Timeout:       apiTimeout,
 		}, log)
-		go serveAPI(ctx, cfg.API.Addr, h, apiTimeout, log)
+		mux := http.NewServeMux()
+		h.Routes(mux)
+		if cfg.AIon != nil {
+			secret := os.Getenv("AION_INTROSPECTION_SECRET")
+			if secret == "" {
+				return fmt.Errorf("AION_INTROSPECTION_SECRET missing")
+			}
+			h.OAuthRoutes(mux, botoauth.Verifier{Config: *cfg.AIon, Secret: secret}, cfg.Mattermost.IdentityMap)
+		}
+		go serveAPI(ctx, cfg.API.Addr, mux, apiTimeout, log)
 		log.Info("query API enabled", "addr", cfg.API.Addr, "timeout", apiTimeout)
 	}
 
@@ -538,9 +563,7 @@ func firstPositive(a, b int) int {
 }
 
 // serveAPI runs the HTTP query interface until ctx is cancelled.
-func serveAPI(ctx context.Context, addr string, h *api.Handler, timeout time.Duration, log *slog.Logger) {
-	mux := http.NewServeMux()
-	h.Routes(mux)
+func serveAPI(ctx context.Context, addr string, mux *http.ServeMux, timeout time.Duration, log *slog.Logger) {
 	hs := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
