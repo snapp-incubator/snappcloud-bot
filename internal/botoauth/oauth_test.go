@@ -49,8 +49,12 @@ func TestIntrospectionBindsResourceAndIdentity(t *testing.T) {
 func TestLinkLifecycle(t *testing.T) {
 	var challenge string
 	var refreshes, revocations int
+	var secret string
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.PostFormValue("client_id") != "client" || r.PostFormValue("client_secret") != secret || r.Header.Get("Authorization") != "" {
+			t.Error("Pardis client credentials missing from request form")
+		}
 		if r.URL.Path == "/revoke" {
 			if r.PostFormValue("token") != "refresh" || r.PostFormValue("client_id") != "client" {
 				t.Error("wrong revocation credential")
@@ -79,7 +83,7 @@ func TestLinkLifecycle(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	open := func() *Links {
-		l, err := NewLinks(cfg, "", base64.StdEncoding.EncodeToString(key), func(_ context.Context, token, email string) error {
+		l, err := NewLinks(cfg, secret, base64.StdEncoding.EncodeToString(key), func(_ context.Context, token, email string) error {
 			if email != "a@example.test" || token != "test-access" {
 				return errors.New("mismatch")
 			}
@@ -106,6 +110,8 @@ func TestLinkLifecycle(t *testing.T) {
 	if _, status := login("b", "b@example.test"); status != 403 {
 		t.Fatal("identity mismatch accepted")
 	}
+	secret = "staging-client-secret"
+	links = open()
 	path, status := login("a", "a@example.test")
 	if status != 200 {
 		t.Fatalf("login failed %d", status)

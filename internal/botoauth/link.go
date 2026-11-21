@@ -56,15 +56,11 @@ func NewLinks(cfg Outgoing, secret, key string, verify func(context.Context, str
 	if err = os.MkdirAll(cfg.StoreDir, 0700); err != nil {
 		return nil, err
 	}
-	style := oauth2.AuthStyleInParams
-	if secret != "" {
-		style = oauth2.AuthStyleInHeader
-	}
 	return &Links{
 		cfg: cfg, cipher: aead, pending: make(map[string]pending), verify: verify,
 		oauth: oauth2.Config{
 			ClientID: cfg.ClientID, ClientSecret: secret, RedirectURL: cfg.CallbackURL,
-			Endpoint: oauth2.Endpoint{AuthURL: cfg.AuthorizeURL, TokenURL: cfg.TokenURL, AuthStyle: style},
+			Endpoint: oauth2.Endpoint{AuthURL: cfg.AuthorizeURL, TokenURL: cfg.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
 			Scopes:   []string{"mcp:tools"},
 		},
 	}, nil
@@ -177,12 +173,12 @@ func (l *Links) Disconnect(ctx context.Context, user string) error {
 		token, hint = t.AccessToken, "access_token"
 	}
 	form := url.Values{"token": {token}, "token_type_hint": {hint}, "client_id": {l.cfg.ClientID}}
+	if l.oauth.ClientSecret != "" {
+		form.Set("client_secret", l.oauth.ClientSecret)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.RevokeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
-	}
-	if l.oauth.ClientSecret != "" {
-		req.SetBasicAuth(url.QueryEscape(l.cfg.ClientID), url.QueryEscape(l.oauth.ClientSecret))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)

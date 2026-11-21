@@ -23,7 +23,7 @@ Point the staging connector at the resource URL with `upstreamAuthType: oauth`. 
 
 ## The Pardis bot calls the user's MCP server
 
-Register the bot at the Pardis issuer for the authorization-code and refresh-token grants, scope `mcp:tools`, and the exact callback URI. Copy the endpoints from the issuer's metadata. Public clients use PKCE S256. For a confidential client registered with `client_secret_basic`, also set `PARDIS_OAUTH_CLIENT_SECRET`.
+Register the bot at the Pardis issuer for the authorization-code and refresh-token grants, scope `mcp:tools`, and the exact callback URI. Copy the endpoints from the issuer's metadata. Public clients use PKCE S256. For a confidential client registered with `client_secret_post`, also set `PARDIS_OAUTH_CLIENT_SECRET`.
 
 ```yaml
 pardisOAuth:
