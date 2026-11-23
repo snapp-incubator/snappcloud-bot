@@ -10,11 +10,14 @@ import (
 )
 
 type Incoming struct {
-	Resource         string `yaml:"resource"`
-	Issuer           string `yaml:"issuer"`
-	IntrospectionURL string `yaml:"introspectionURL"`
-	ClientID         string `yaml:"clientID"`
-	Scope            string `yaml:"scope"`
+	JWKSURL          string            `yaml:"jwksURL"`
+	Audience         string            `yaml:"audience"`
+	SubjectUsers     map[string]string `yaml:"subjectUsers"`
+	Resource         string            `yaml:"resource"`
+	Issuer           string            `yaml:"issuer"`
+	IntrospectionURL string            `yaml:"introspectionURL"`
+	ClientID         string            `yaml:"clientID"`
+	Scope            string            `yaml:"scope"`
 }
 type Outgoing struct {
 	Resource     string `yaml:"resource"`
@@ -32,7 +35,21 @@ func httpsURL(s string) bool {
 }
 func (o Incoming) Validate() error {
 	u, _ := url.Parse(o.Resource)
-	if !httpsURL(o.Resource) || u.Path != "/oauth/mcp" || !httpsURL(o.Issuer) || !httpsURL(o.IntrospectionURL) || o.ClientID == "" || len(strings.Fields(o.Scope)) != 1 || strings.ContainsAny(o.Scope, " \\\"\r\n\t") {
+	if !httpsURL(o.Resource) || u.Path != "/oauth/mcp" || !httpsURL(o.Issuer) {
+		return errors.New("invalid OAuth resource or issuer")
+	}
+	if o.JWKSURL != "" || o.Audience != "" || o.SubjectUsers != nil {
+		if !httpsURL(o.JWKSURL) || strings.TrimSpace(o.Audience) == "" || o.IntrospectionURL != "" || o.ClientID != "" || o.Scope != "" {
+			return errors.New("platform SSO requires jwksURL and audience and cannot be combined with introspection")
+		}
+		for sub, user := range o.SubjectUsers {
+			if strings.TrimSpace(sub) == "" || !clusterUser(user) {
+				return errors.New("invalid SSO subject mapping")
+			}
+		}
+		return nil
+	}
+	if !httpsURL(o.IntrospectionURL) || o.ClientID == "" || len(strings.Fields(o.Scope)) != 1 || strings.ContainsAny(o.Scope, " \\\"\r\n\t") {
 		return errors.New("invalid incoming OAuth resource, issuer, introspection URL, client ID or scope")
 	}
 	return nil

@@ -18,28 +18,45 @@ func (h *Handler) OAuthRoutes(mux *http.ServeMux, v botoauth.Verifier, identityM
 	cfg := v.Config
 	metadataPath := "/.well-known/oauth-protected-resource/oauth/mcp"
 	metadata := strings.TrimSuffix(cfg.Resource, "/oauth/mcp") + metadataPath
-	mux.HandleFunc("GET "+metadataPath, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"resource": cfg.Resource, "authorization_servers": []string{cfg.Issuer}, "scopes_supported": []string{cfg.Scope}, "bearer_methods_supported": []string{"header"}})
+	metadataDoc := map[string]any{"resource": cfg.Resource, "authorization_servers": []string{cfg.Issuer}, "bearer_methods_supported": []string{"header"}}
+	challenge := `Bearer resource_metadata="` + metadata + `"`
+	verify := func(ctx context.Context, token string) (string, error) {
+		email, err := v.Email(ctx, token)
+		if mapped, ok := identityMap[email]; ok {
+			return mapped, err
+		}
+		return email, err
+	}
+	if cfg.JWKSURL != "" {
+		verify = botoauth.NewPlatformSSO(cfg).Username
+	} else {
+		metadataDoc["scopes_supported"] = []string{cfg.Scope}
+		challenge += `, scope="` + cfg.Scope + `"`
+	}
+	mux.HandleFunc("GET "+metadataPath, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, metadataDoc)
 	})
-	mux.HandleFunc("POST /oauth/mcp", func(w http.ResponseWriter, r *http.Request) {
-		email, err := v.Email(r.Context(), bearer(r))
+	mux.HandleFunc("/oauth/mcp", func(w http.ResponseWriter, r *http.Request) {
+		user, err := verify(r.Context(), bearer(r))
 		if err != nil {
 			if errors.Is(err, botoauth.ErrInvalid) {
-				w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+metadata+`", scope="`+cfg.Scope+`"`)
+				w.Header().Set("WWW-Authenticate", challenge)
 				http.Error(w, "OAuth access token required", http.StatusUnauthorized)
 			} else {
 				http.Error(w, "Authorization server unavailable", http.StatusServiceUnavailable)
 			}
 			return
 		}
-		if mapped, ok := identityMap[email]; ok {
-			email = mapped
-		}
-		if email == "" {
+		if user == "" {
 			http.Error(w, "No mapped identity", http.StatusForbidden)
 			return
 		}
-		ctx := context.WithValue(r.Context(), oauthIdentity{}, authzclient.Identity{User: email, Region: "oauth"})
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ctx := context.WithValue(r.Context(), oauthIdentity{}, authzclient.Identity{User: user, Region: "oauth"})
 		h.mcp(w, r.WithContext(ctx))
 	})
 }

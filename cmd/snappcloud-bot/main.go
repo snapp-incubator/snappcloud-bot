@@ -377,7 +377,7 @@ func run(configPath, addr string, log *slog.Logger) error {
 		h.Routes(mux)
 		if cfg.AIon != nil {
 			secret := os.Getenv("AION_INTROSPECTION_SECRET")
-			if secret == "" {
+			if cfg.AIon.JWKSURL == "" && secret == "" {
 				return fmt.Errorf("AION_INTROSPECTION_SECRET missing")
 			}
 			h.OAuthRoutes(mux, botoauth.Verifier{Config: *cfg.AIon, Secret: secret}, cfg.Mattermost.IdentityMap)

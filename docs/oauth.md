@@ -4,22 +4,23 @@ Both modes are opt-in. Installations running both integrations use separate bot 
 
 ## AIon calls the main bot
 
-Enable the query API and configure the resource server with your issuer's introspection endpoint. Example values use a sample domain.
+Enable the query API. For platform SSO, configure the issuer's signing keys and the audience assigned to the gateway. This example uses a staging audience.
 
 ```yaml
 api:
   enabled: true
 aionOAuth:
   resource: https://bot.example.org/oauth/mcp
-  issuer: https://sso.example.org/realms/staging
-  introspectionURL: https://sso.example.org/realms/staging/protocol/openid-connect/token/introspect
-  clientID: bot-introspection
-  scope: mcp:tools
+  issuer: https://sso.example.org/realms/platform
+  jwksURL: https://sso.example.org/realms/platform/protocol/openid-connect/certs
+  audience: ai-staging
 ```
 
-Set `AION_INTROSPECTION_SECRET` for HTTP Basic authentication at the introspection endpoint. Register the AIon gateway with the issuer as an authorization-code client with PKCE, its exact callback URI and the requested scope. Configure the full resource URL as the token audience. The protected-resource metadata links to the issuer, which must publish OAuth or OIDC discovery metadata.
+Set the AIon connector's `upstreamUrl` to the resource URL and `upstreamAuthType` to `oauth`. The gateway sends a user access token on each MCP request. The bot checks the RS256 signature by key ID, issuer, audience, expiry and subject before MCP dispatch. It caches the public keys for five minutes and refreshes on a new key ID, with a rate limit on misses. Use the audience assigned to each environment. Platform SSO requires outbound HTTPS to the signing keys endpoint.
 
-Point the staging connector at the resource URL with `upstreamAuthType: oauth`. Each MCP POST requires an active, unexpired bearer access token for this resource and scope. Introspection must return the configured issuer, subject, verified email and token type. Use directory-managed email addresses. The bot maps email using the existing Mattermost identity map and resolves cluster access with mcp-authz. Test `whoami` and `ask` as two users with different grants. OpenShift clients continue to use `/mcp`.
+The optional `aionOAuth.subjectUsers` map binds immutable SSO subject IDs to OpenShift usernames. Otherwise the bot uses the signed `preferred_username` when available, falling back to the signed subject. When OpenShift usernames differ from the subject and the gateway omits `preferred_username`, configure the mapping for those users. Enable this mode with an issuer whose username claim is directory-controlled. Cluster authorization uses the existing mcp-authz resolver and its OpenShift group lookups.
+
+For an issuer that provides opaque tokens, the existing introspection configuration uses `introspectionURL`, `clientID`, `scope` and `AION_INTROSPECTION_SECRET` with the resource URL as token audience. OpenShift clients use the existing `/mcp` endpoint.
 
 ## The Pardis bot calls the user's MCP server
 

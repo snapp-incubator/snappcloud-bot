@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	codeberg.org/go-pdf/fpdf v0.12.0
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/prometheus v0.54.1
