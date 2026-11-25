@@ -14,9 +14,10 @@ aionOAuth:
   issuer: https://sso.example.org/realms/platform
   jwksURL: https://sso.example.org/realms/platform/protocol/openid-connect/certs
   audience: ai-staging
+  trustedAuthorizedParties: [ai]
 ```
 
-Set the AIon connector's `upstreamUrl` to the resource URL and `upstreamAuthType` to `oauth`. The gateway sends a user access token on each MCP request. The bot checks the RS256 signature by key ID, issuer, audience, expiry and subject before MCP dispatch. It caches the public keys for five minutes and refreshes on a new key ID, with a rate limit on misses. Use the audience assigned to each environment. Platform SSO requires outbound HTTPS to the signing keys endpoint.
+Set the AIon connector's `upstreamUrl` to the resource URL and `upstreamAuthType` to `oauth`. The gateway sends a user access token on each MCP request. The bot checks the RS256 signature by key ID, issuer, expiry and subject before MCP dispatch. It caches the public keys for five minutes and refreshes on a new key ID, with a rate limit on misses. A token must match the configured audience or carry a signed `azp` matching an explicitly trusted gateway client ID. Realms without a custom audience can configure only `trustedAuthorizedParties`. Platform SSO requires outbound HTTPS to the signing keys endpoint.
 
 The optional `aionOAuth.subjectUsers` map binds immutable SSO subject IDs to OpenShift usernames. Otherwise the bot uses the signed `preferred_username` when available, falling back to the signed subject. When OpenShift usernames differ from the subject and the gateway omits `preferred_username`, configure the mapping for those users. Enable this mode with an issuer whose username claim is directory-controlled. Cluster authorization uses the existing mcp-authz resolver and its OpenShift group lookups.
 

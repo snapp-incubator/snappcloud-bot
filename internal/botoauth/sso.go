@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,7 @@ func (v *PlatformSSO) Username(ctx context.Context, raw string) (string, error) 
 	}
 	var claims struct {
 		jwt.Claims
+		AuthorizedParty   string `json:"azp"`
 		PreferredUsername string `json:"preferred_username"`
 		TokenType         string `json:"typ"`
 	}
@@ -105,8 +107,14 @@ func (v *PlatformSSO) Username(ctx context.Context, raw string) (string, error) 
 		return "", ErrInvalid
 	}
 	now := time.Now()
-	expected := jwt.Expected{Issuer: v.cfg.Issuer, AnyAudience: jwt.Audience{v.cfg.Audience}, Time: now}
+	expected := jwt.Expected{Issuer: v.cfg.Issuer, Time: now}
 	if claims.ValidateWithLeeway(expected, 0) != nil || claims.Expiry == nil || !now.Before(claims.Expiry.Time()) || strings.TrimSpace(claims.Subject) == "" || (claims.TokenType != "" && !strings.EqualFold(claims.TokenType, "Bearer")) {
+		return "", ErrInvalid
+	}
+	// Keycloak may issue gateway tokens with only default realm audiences.
+	audienceOK := v.cfg.Audience != "" && claims.Audience.Contains(v.cfg.Audience)
+	partyOK := claims.AuthorizedParty != "" && slices.Contains(v.cfg.TrustedAuthorizedParties, claims.AuthorizedParty)
+	if !audienceOK && !partyOK {
 		return "", ErrInvalid
 	}
 	// OpenShift central-auth uses the issuer's preferred_username. The immutable

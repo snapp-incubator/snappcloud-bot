@@ -43,7 +43,7 @@ func TestPlatformSSOContract(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{*published.Load()}})
 	}))
 	defer keys.Close()
-	cfg := botoauth.Incoming{Resource: "https://bot.example/oauth/mcp", Issuer: issuer, JWKSURL: keys.URL, Audience: "ai-staging", SubjectUsers: map[string]string{"sub-a": "alice"}}
+	cfg := botoauth.Incoming{Resource: "https://bot.example/oauth/mcp", Issuer: issuer, JWKSURL: keys.URL, Audience: "ai-staging", TrustedAuthorizedParties: []string{"ai"}, SubjectUsers: map[string]string{"sub-a": "alice"}}
 	resolver := &authnStub{scope: authzclient.Scope{"region": {Namespaces: []string{"team-a"}}}}
 	brain := &fakeBrain{answer: "ok"}
 	h := New(brain, resolver, nil, Options{}, slog.Default())
@@ -97,11 +97,22 @@ func TestPlatformSSOContract(t *testing.T) {
 	if call("GET", valid, "") != 405 || requests.Load() != 1 {
 		t.Fatal("cached verification failed")
 	}
+	for _, aud := range []any{nil, []string{"account", "grafana"}} {
+		gateway := sign(key, "one", jose.RS256, map[string]any{"aud": aud, "azp": "ai"})
+		before := brain.calls
+		if call("POST", gateway, ask) != http.StatusOK || brain.calls != before+1 || resolver.gotUser != "alice" {
+			t.Fatal("gateway token failed scoped dispatch")
+		}
+	}
 	for _, test := range []struct {
 		name string
 		raw  string
 	}{
 		{"malformed", "broken"},
+		{"unknown client", sign(key, "one", jose.RS256, map[string]any{"aud": "account", "azp": "other"})},
+		{"missing recipients", sign(key, "one", jose.RS256, map[string]any{"aud": nil, "azp": nil})},
+		{"gateway ID token", sign(key, "one", jose.RS256, map[string]any{"aud": "account", "azp": "ai", "typ": "ID"})},
+		{"gateway wrong issuer", sign(key, "one", jose.RS256, map[string]any{"aud": nil, "azp": "ai", "iss": "other"})},
 		{"other signer", sign(replacement, "one", jose.RS256, nil)},
 		{"other algorithm", sign(key, "one", jose.RS512, nil)},
 		{"no kid", sign(key, "", jose.RS256, nil)},

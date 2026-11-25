@@ -10,14 +10,15 @@ import (
 )
 
 type Incoming struct {
-	JWKSURL          string            `yaml:"jwksURL"`
-	Audience         string            `yaml:"audience"`
-	SubjectUsers     map[string]string `yaml:"subjectUsers"`
-	Resource         string            `yaml:"resource"`
-	Issuer           string            `yaml:"issuer"`
-	IntrospectionURL string            `yaml:"introspectionURL"`
-	ClientID         string            `yaml:"clientID"`
-	Scope            string            `yaml:"scope"`
+	TrustedAuthorizedParties []string          `yaml:"trustedAuthorizedParties"`
+	JWKSURL                  string            `yaml:"jwksURL"`
+	Audience                 string            `yaml:"audience"`
+	SubjectUsers             map[string]string `yaml:"subjectUsers"`
+	Resource                 string            `yaml:"resource"`
+	Issuer                   string            `yaml:"issuer"`
+	IntrospectionURL         string            `yaml:"introspectionURL"`
+	ClientID                 string            `yaml:"clientID"`
+	Scope                    string            `yaml:"scope"`
 }
 type Outgoing struct {
 	Resource     string `yaml:"resource"`
@@ -38,9 +39,14 @@ func (o Incoming) Validate() error {
 	if !httpsURL(o.Resource) || u.Path != "/oauth/mcp" || !httpsURL(o.Issuer) {
 		return errors.New("invalid OAuth resource or issuer")
 	}
-	if o.JWKSURL != "" || o.Audience != "" || o.SubjectUsers != nil {
-		if !httpsURL(o.JWKSURL) || strings.TrimSpace(o.Audience) == "" || o.IntrospectionURL != "" || o.ClientID != "" || o.Scope != "" {
-			return errors.New("platform SSO requires jwksURL and audience and cannot be combined with introspection")
+	if o.JWKSURL != "" || o.Audience != "" || o.SubjectUsers != nil || o.TrustedAuthorizedParties != nil {
+		if !httpsURL(o.JWKSURL) || (strings.TrimSpace(o.Audience) == "" && len(o.TrustedAuthorizedParties) == 0) || o.IntrospectionURL != "" || o.ClientID != "" || o.Scope != "" {
+			return errors.New("platform SSO requires jwksURL and an audience or trusted authorized party and cannot be combined with introspection")
+		}
+		for _, party := range o.TrustedAuthorizedParties {
+			if party == "" || strings.TrimSpace(party) != party {
+				return errors.New("invalid trusted authorized party")
+			}
 		}
 		for sub, user := range o.SubjectUsers {
 			if strings.TrimSpace(sub) == "" || !clusterUser(user) {
