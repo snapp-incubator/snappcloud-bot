@@ -40,6 +40,9 @@ func (h *Handler) OAuthRoutes(mux *http.ServeMux, v botoauth.Verifier, identityM
 		user, err := verify(r.Context(), bearer(r))
 		if err != nil {
 			if errors.Is(err, botoauth.ErrInvalid) {
+				if cfg.JWKSURL != "" {
+					h.log.WarnContext(r.Context(), "MCP platform SSO rejected request", "reason", err.Error())
+				}
 				w.Header().Set("WWW-Authenticate", challenge)
 				http.Error(w, "OAuth access token required", http.StatusUnauthorized)
 			} else {

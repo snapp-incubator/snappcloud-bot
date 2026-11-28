@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -46,7 +47,8 @@ func TestPlatformSSOContract(t *testing.T) {
 	cfg := botoauth.Incoming{Resource: "https://bot.example/oauth/mcp", Issuer: issuer, JWKSURL: keys.URL, Audience: "ai-staging", TrustedAuthorizedParties: []string{"ai"}, SubjectUsers: map[string]string{"sub-a": "alice"}}
 	resolver := &authnStub{scope: authzclient.Scope{"region": {Namespaces: []string{"team-a"}}}}
 	brain := &fakeBrain{answer: "ok"}
-	h := New(brain, resolver, nil, Options{}, slog.Default())
+	var logs bytes.Buffer
+	h := New(brain, resolver, nil, Options{}, slog.New(slog.NewTextHandler(&logs, nil)))
 	mux := http.NewServeMux()
 	h.OAuthRoutes(mux, botoauth.Verifier{Config: cfg}, nil)
 	call := func(method, token, body string) int {
@@ -102,6 +104,22 @@ func TestPlatformSSOContract(t *testing.T) {
 		before := brain.calls
 		if call("POST", gateway, ask) != http.StatusOK || brain.calls != before+1 || resolver.gotUser != "alice" {
 			t.Fatal("gateway token failed scoped dispatch")
+		}
+	}
+	const privateMarker = "private-test-marker"
+	rejected := sign(key, "one", jose.RS256, map[string]any{"aud": privateMarker, "azp": privateMarker, "sub": privateMarker})
+	const initialize = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
+	for _, tc := range []struct{ token, reason string }{
+		{"", "missing bearer token"},
+		{privateMarker, "invalid token format"},
+		{rejected, "audience and authorized party do not match"},
+	} {
+		logs.Reset()
+		if status := call("POST", tc.token, initialize); status != http.StatusUnauthorized {
+			t.Errorf("expected 401 for %s, got %d", tc.reason, status)
+		}
+		if !strings.Contains(logs.String(), tc.reason) || strings.Contains(logs.String(), privateMarker) || strings.Contains(logs.String(), rejected) {
+			t.Errorf("missing or unsafe diagnostic for %s", tc.reason)
 		}
 	}
 	for _, test := range []struct {
